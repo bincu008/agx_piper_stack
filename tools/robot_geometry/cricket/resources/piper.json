@@ -1,0 +1,9 @@
+{
+    "name": "Piper",
+    "urdf": "../../foam/scripts/spherized.urdf",
+    "end_effector": "link6",
+    "resolution": 32,
+    "template": "templates/fk_template.hh",
+    "subtemplates": [{"name": "ccfk", "template": "templates/ccfk_template.hh"}],
+    "output": "piper_fk.hh"
+}

@@ -1,0 +1,12 @@
+string object_id
+string object_name
+std_msgs/Header observation_header
+my_actions/GraspCandidate candidate
+bool execute
+# Move only to pre-grasp, reconstruct from the new RGB-D observation, then stop.
+bool refine_only
+---
+bool success
+bool motion_completed
+bool gripper_contact
+string status

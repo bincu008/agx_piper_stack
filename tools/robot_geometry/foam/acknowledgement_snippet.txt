@@ -1,0 +1,38 @@
+This software includes the following third-party packages. These are the property of their respective copyright holders and are used under the terms of the licenses listed:
+
+Python Package Dependencies:
+- contourpy 1.3.1: BSD License  
+- cycler 0.12.1: BSD License  
+- fire 0.7.0: Apache Software License 2.0  
+- fonttools 4.55.3: MIT License  
+- kiwisolver 1.4.8: BSD License  
+- matplotlib 3.10.0: Python Software Foundation License  
+- numpy 2.2.2: BSD License  
+- packaging 24.2: Apache Software License 2.0; BSD License  
+- pillow 11.1.0: CMU License (MIT-CMU variant)  
+- pybullet 3.1.7: zlib/libpng License  
+- pyglet 1.5.31: BSD License  
+- pyparsing 3.2.1: MIT License  
+- python-dateutil 2.9.0.post0: Apache Software License 2.0; BSD License  
+- scipy 1.15.1: BSD License  
+- six 1.17.0: MIT License  
+- termcolor 2.5.0: MIT License  
+- trimesh 4.5.3: MIT License  
+- xmltodict 0.14.2: MIT License  
+
+External Compiled Dependencies:
+
+- Manifold/ManifoldPlus: MIT License  
+- Quadric Mesh Simplification: MIT License  
+- SphereTree: Custom permissive license  
+  - © 2003 Image Synthesis Group, Trinity College Dublin, Ireland  
+  - License permits use, copying, modification, and distribution for educational, research, and non-profit purposes without fee, with proper attribution.  
+  - Disclaimer of liability and warranty applies.  
+  - Original authors: Gareth_Bradshaw@yahoo.co.uk, isg@cs.tcd.ie  
+  - Website: http://isg.cs.tcd.ie  
+  - Full license text included in `third_party_licenses.txt`  
+
+
+For complete license texts and source references, please see `python_third_party_licenses.txt` and `external_dependency_third_party_licenses`.
+
+

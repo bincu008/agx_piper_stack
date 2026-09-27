@@ -1,0 +1,6 @@
+# Hardware driver
+pyAgxArm==1.0.0
+
+# Imported by anyplace_ros. The diffusion checkpoint is optional when using
+# placement_backend:=heightmap, but the current node still requires PyTorch.
+torch>=2.1

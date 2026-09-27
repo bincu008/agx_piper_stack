@@ -1,0 +1,6 @@
+float32[3] obstacle_point_base_link
+float32[3] tcp_point_base_link
+float32[] current_joints
+---
+bool success
+float32[] fallback_joints

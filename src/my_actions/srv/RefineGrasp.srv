@@ -1,0 +1,21 @@
+std_msgs/Header previous_observation_header
+my_actions/GraspCandidate candidate
+---
+bool valid
+string failure_reason
+uint32 candidate_id
+std_msgs/Header observation_header
+int32 seed_u
+int32 seed_v
+int32 left_u
+int32 left_v
+int32 right_u
+int32 right_v
+geometry_msgs/Point corrected_seed_base
+geometry_msgs/Vector3 closing_axis_base
+geometry_msgs/Vector3 approach_axis_base
+float32 closing_angle_rad
+float32 grasp_width_m
+float32 usable_grasp_depth_m
+geometry_msgs/PoseStamped grasp_pose
+float32[6] grasp_joints

@@ -1,0 +1,19 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Eigen3 REQUIRED)
+
+# Include the exported targets
+include("${CMAKE_CURRENT_LIST_DIR}/vamp_cppTargets.cmake")
+
+if(TARGET vamp::vamp_cpp AND NOT TARGET vamp::vamp)
+    add_library(vamp::vamp ALIAS vamp::vamp_cpp)
+endif()
+
+# Check that the main target exists
+if(NOT TARGET vamp::vamp_cpp)
+    message(FATAL_ERROR "Expected target vamp::vamp_cpp not found!")
+endif()
+
+# Set success
+set(vamp_FOUND TRUE)

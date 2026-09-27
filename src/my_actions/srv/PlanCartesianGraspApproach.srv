@@ -1,0 +1,17 @@
+# Measured state at the refined pre-grasp. Both poses must be in base_link.
+geometry_msgs/PoseStamped current_pregrasp_pose
+float32[] current_joints
+# Refined final pose produced by /vamp_planner/refine_grasp.
+geometry_msgs/PoseStamped refined_grasp_pose
+# Refined local contact geometry. The VAMP server supplies the cached target
+# region and applies the contact allowance only to the final inner-pad check.
+geometry_msgs/Point refined_contact_center
+geometry_msgs/Vector3 closing_axis
+float32 grasp_width_m
+# Original FIND_GRASP observation that owns the cached local target region.
+std_msgs/Header target_observation_header
+---
+bool success
+string failure_reason
+float32[] path_flat
+uint32 waypoint_count

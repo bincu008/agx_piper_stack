@@ -1,0 +1,10 @@
+float32[] current_joints
+float32[] remaining_path_flat
+# Optional, narrowly scoped allowed-contact volume for a grasp approach.
+# Ordinary motion leaves this false and receives the original behavior.
+bool allow_target_contact
+geometry_msgs/Point allowed_contact_center
+float32 allowed_contact_radius_m
+---
+bool success
+float32[] path_flat

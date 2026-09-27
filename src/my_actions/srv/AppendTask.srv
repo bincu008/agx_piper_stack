@@ -1,0 +1,6 @@
+string task_type
+string target_name
+float32[] coordinates
+---
+bool success
+string message

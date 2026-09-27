@@ -1,0 +1,14 @@
+std_msgs/Header observation_header
+int32 u
+int32 v
+int32 width
+int32 height
+---
+bool success
+string status
+std_msgs/Header result_header
+int32 corrected_u
+int32 corrected_v
+float64 x
+float64 y
+float64 z

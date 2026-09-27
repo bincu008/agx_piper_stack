@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "foam"
+version = "0.1.1"
+authors = [
+  { name="Zachary Kingston", email="zkingston@purude.edu" },
+]
+description  = "Interface for creating spherical approximation of meshes"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "trimesh",
+    "scipy",
+    "vhacdx"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/KavrakiLab/foam"
+"Bug Tracker" = "https://github.com/KavrakiLab/foam/issues"
+
+[tool.setuptools.packages.find]
+
+[tool.ruff]
+select = ["E", "F", "W", "D", "UP", "B", "A", "C4", "PIE", "RET", "SIM", "ARG", "PTH", "PLE", "PLR", "PLW", "NPY" ]
+ignore = []
+
+fixable = ["E", "F", "W", "D", "UP", "B", "A", "C4", "PIE", "RET", "SIM", "ARG", "PTH", "PLE", "PLR", "PLW", "NPY" ]
+unfixable = []
+exclude = [
+    ".eggs",
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+]
+line-length = 110
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+target-version = "py310"
+
+[tool.pyright]
+include = ["."]
+exclude = [
+    "**/__pycache__",
+    "env",
+    ".eggs",
+    ".git",
+]
+pythonVersion = "3.10"
+pythonPlatform = "Linux"

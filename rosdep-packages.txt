@@ -1,0 +1,21 @@
+# Direct non-workspace rosdep keys declared by packages under src/.
+# Install through:
+#   rosdep install --from-paths src --ignore-src -r -y
+backward_ros
+cmake
+eigen
+libgflags-dev
+libgoogle-glog-dev
+libopencv-dev
+libpcl-all-dev
+libssl-dev
+moveit_ros_perception
+nlohmann-json-dev
+octomap
+opengl
+python3-numpy
+python3-opencv
+python3-pytest
+python3-scipy
+python3-yaml
+topic_tools

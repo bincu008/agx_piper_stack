@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>vamp</name>
+  <version>0.2.0</version>
+  <description>Vector Accelerated Motion Planning library with the Piper robot model.</description>
+  <maintainer email="maintainers@agx-piper-stack.local">AGX Piper Stack maintainers</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>cmake</buildtool_depend>
+  <depend>eigen</depend>
+
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+</package>

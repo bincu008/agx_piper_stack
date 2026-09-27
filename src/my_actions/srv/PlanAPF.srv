@@ -1,0 +1,5 @@
+float32[] current_joints
+float32[] target_joints
+---
+bool success
+float32[] path_flat

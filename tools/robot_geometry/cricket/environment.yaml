@@ -1,0 +1,26 @@
+name: cricket
+
+channels:
+  - conda-forge
+
+dependencies:
+  - pinocchio
+  - cppad
+  - eigen
+  - cgal
+  - inja
+  - nlohmann_json
+  - cmake
+  - cxx-compiler
+  - llvm
+  - llvmdev
+  - clangdev
+  - ninja
+  - python
+  - pip
+  - scikit-build-core
+  - nanobind
+  - fmt
+  - pkg-config
+  - patch
+  - git

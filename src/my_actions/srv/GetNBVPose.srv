@@ -1,0 +1,9 @@
+float32 target_x
+float32 target_y
+float32 target_z
+float32 radius
+---
+bool success
+float32[] candidate_x
+float32[] candidate_y
+float32[] candidate_z

@@ -1,0 +1,9 @@
+string direction
+float32 step_size
+float32 target_x
+float32 target_y
+float32 target_z
+---
+bool success
+float32[] joint_angles
+string message

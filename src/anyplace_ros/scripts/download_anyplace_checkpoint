@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Download and verify the official AnyPlace multitask checkpoint."""
+
+import argparse
+import hashlib
+from pathlib import Path
+import shutil
+import tempfile
+from urllib.request import urlopen
+import zipfile
+
+
+URL = "https://huggingface.co/datasets/yuchiallanzhao/anyplace/resolve/main/anyplace_ckpts.zip"
+ARCHIVE_SHA256 = "edb3ec855ff556d4e39287abe7db3c9390d65c69307b9f7fda8255b5ab925ea0"
+MODEL_SHA256 = "d3d33f0a279633c25f252960a208d4b4447a756f0cff8e94be0faadc20dc5be5"
+MEMBER = "anyplace_ckpts/anyplace_multitask/model.pth"
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            value.update(block)
+    return value.hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--output", default="~/.cache/anyplace_ros/anyplace_multitask_model.pth")
+    arguments = parser.parse_args()
+    output = Path(arguments.output).expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.is_file() and digest(output) == MODEL_SHA256:
+        print(f"Checkpoint already verified: {output}")
+        return
+    with tempfile.TemporaryDirectory(prefix="anyplace-download-") as directory:
+        archive = Path(directory) / "anyplace_ckpts.zip"
+        print(f"Downloading official AnyPlace checkpoints (371 MB): {URL}")
+        with urlopen(URL, timeout=60) as source, archive.open("wb") as target:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
+        if digest(archive) != ARCHIVE_SHA256:
+            raise RuntimeError("downloaded archive checksum mismatch")
+        with zipfile.ZipFile(archive) as bundle, bundle.open(MEMBER) as source:
+            temporary_model = Path(directory) / "model.pth"
+            with temporary_model.open("wb") as target:
+                shutil.copyfileobj(source, target, length=1024 * 1024)
+        if digest(temporary_model) != MODEL_SHA256:
+            raise RuntimeError("extracted checkpoint checksum mismatch")
+        shutil.copy2(temporary_model, output)
+    print(f"Verified checkpoint installed: {output}")
+
+
+if __name__ == "__main__":
+    main()

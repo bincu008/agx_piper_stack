@@ -1,0 +1,27 @@
+# ROS 2 / colcon output
+build/
+install/
+log/
+**/build/
+**/install/
+**/log/
+
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.venv*/
+
+# Native build by-products
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# Editors and operating systems
+.DS_Store
+.vscode/
+.idea/

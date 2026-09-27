@@ -1,0 +1,21 @@
+/**:
+  ros__parameters:
+    enable_gripper_self_filter: true
+    gripper_self_filter_margin_px: 10
+    gripper_self_filter_vertical_margin_px: 6
+    gripper_self_filter_calibration_width_px: 640
+    gripper_self_filter_calibration_height_px: 480
+    # The installed PiPER gripper reports about 10, 50, and 70 mm for these
+    # three calibration images. Coordinates are RGB pixels at 640x480. The
+    # The three polygons are aligned by their first X coordinate and combined
+    # into one fixed envelope per jaw. Their first X coordinates also provide
+    # horizontal position anchors; live feedback translates the envelope only.
+    # The horizontal and small vertical margins suppress registered-depth
+    # artifacts around the jaw silhouette.
+    gripper_self_filter_widths_m: [0.01, 0.05, 0.07]
+    gripper_self_filter_left_closed_xy: [355, 319, 402, 319, 435, 480, 285, 480, 335, 410]
+    gripper_self_filter_left_mid_xy: [250, 319, 290, 319, 358, 420, 383, 480, 50, 480, 170, 400]
+    gripper_self_filter_left_open_xy: [190, 319, 230, 319, 225, 480, 0, 480, 110, 405]
+    gripper_self_filter_right_closed_xy: [398, 319, 455, 319, 640, 429, 640, 480, 435, 480]
+    gripper_self_filter_right_mid_xy: [525, 319, 640, 319, 640, 480, 500, 480, 495, 420, 516, 390]
+    gripper_self_filter_right_open_xy: [585, 319, 640, 319, 640, 480, 625, 480, 572, 390]

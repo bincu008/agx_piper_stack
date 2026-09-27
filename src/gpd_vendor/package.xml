@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>gpd_vendor</name>
+  <version>2.0.0</version>
+  <description>Portable, pinned vendor build of Grasp Pose Detection (GPD).</description>
+  <maintainer email="parallels@todo.todo">parallels</maintainer>
+  <license>BSD-2-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>eigen</depend>
+  <depend>libopencv-dev</depend>
+  <depend>libpcl-all-dev</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

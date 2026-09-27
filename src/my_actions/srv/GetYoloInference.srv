@@ -1,0 +1,14 @@
+---
+bool success
+std_msgs/Header observation_header
+sensor_msgs/Image rgb_image
+string[] classes
+float32[] confidences
+int32[] bbox_x_min
+int32[] bbox_y_min
+int32[] bbox_x_max
+int32[] bbox_y_max
+float32[] position_x
+float32[] position_y
+float32[] position_z
+sensor_msgs/Image[] masks

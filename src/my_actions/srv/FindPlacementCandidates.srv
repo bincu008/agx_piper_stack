@@ -1,0 +1,10 @@
+std_msgs/Header observation_header
+sensor_msgs/Image destination_mask
+string orientation_policy
+string object_name
+string destination_name
+---
+bool success
+string status
+geometry_msgs/Point source_object_center
+my_actions/PlacementCandidate[] candidates

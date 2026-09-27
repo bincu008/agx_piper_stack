@@ -1,0 +1,7 @@
+# Camera-to-tool calibration for the current Piper + Orbbec wrist-camera mount.
+# Recalibrate when the camera, bracket, or robot is replaced or repositioned.
+hand_eye_transform:
+  - [-0.212289416073844, 0.9152727994155361, 0.3423578631681684, -0.06633448632053882]
+  - [-0.9770310439657011, -0.19215398923302995, -0.09212591138830124, 0.030003421769613993]
+  - [-0.018534911662018753, -0.35405161639495536, 0.9350421968969105, 0.0435276227894044]
+  - [0.0, 0.0, 0.0, 1.0]

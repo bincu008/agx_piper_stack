@@ -1,0 +1,19 @@
+# Camera-image seed and optional target mask.  The VAMP server reads the
+# registered cloud locally; no point cloud is transferred in this request.
+std_msgs/Header observation_header
+int32 seed_u
+int32 seed_v
+int32 image_width
+int32 image_height
+sensor_msgs/Image target_mask
+string target_description
+# AUTO, HANDLE, RIM, or BODY. This is an explicit routing contract, not a
+# free-form prompt heuristic in the planner.
+string affordance_type
+---
+bool success
+string status
+geometry_msgs/Point corrected_seed_camera
+geometry_msgs/Point corrected_seed_base
+float32 correction_distance_px
+my_actions/GraspCandidate[] candidates

@@ -1,0 +1,16 @@
+my_actions/GraspCandidate grasp_candidate
+geometry_msgs/Point source_object_center
+my_actions/PlacementCandidate[] candidates
+string object_name
+string destination_name
+string orientation_policy
+---
+bool success
+string status
+my_actions/PlacementCandidate selected_candidate
+geometry_msgs/PoseStamped placement_ee_pose
+geometry_msgs/PoseStamped preplace_ee_pose
+float32[6] placement_joints
+float32[6] preplace_joints
+float32 position_error_m
+float32 orientation_error_rad

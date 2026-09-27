@@ -1,0 +1,14 @@
+float32 look_at_x
+float32 look_at_y
+float32 look_at_z
+float32 current_pose_x
+float32 current_pose_y
+float32 current_pose_z
+float32[] current_joints
+bool lock_base
+bool use_tcp_pose
+bool ignore_collision
+geometry_msgs/Pose tcp_pose
+---
+bool success
+float32[] joint_angles

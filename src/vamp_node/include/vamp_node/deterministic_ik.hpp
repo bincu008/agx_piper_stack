@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -11,6 +12,26 @@ namespace vamp_node
 {
 
 using PiperJointArray = std::array<float, 6>;
+
+// A placement search may abandon a stationary seed and try the next branch.
+// Continuing improvement, however small, resets this guard.
+class IkStagnationGuard
+{
+public:
+  explicit IkStagnationGuard(int limit) : limit_(limit) {}
+  bool stalled(float error)
+  {
+    if (!std::isfinite(error)) return true;
+    if (error < best_) { best_ = error; stale_ = 0; }
+    else { ++stale_; }
+    return limit_ > 0 && stale_ >= limit_;
+  }
+private:
+  int limit_;
+  int stale_ = 0;
+  float best_ = std::numeric_limits<float>::infinity();
+};
+
 
 inline constexpr PiperJointArray kPiperJointLower{
   -2.6179938F, 0.0F, -2.9670597F, -1.7453292F, -1.2217304F, -2.0943951F};

@@ -4,6 +4,22 @@ my_actions/PlacementCandidate[] candidates
 string object_name
 string destination_name
 string orientation_policy
+# Optional immutable layout collision inputs. Empty inputs retain single-object behavior.
+bool use_layout_scene
+sensor_msgs/PointCloud2 source_object_cloud
+# XYZ plus UINT8 "support": 0 blocking, 1 tray floor, 2 selected stack support TOP.
+sensor_msgs/PointCloud2 placement_scene
+sensor_msgs/PointCloud2 destination_support_cloud
+# Empty/edge permits tray floor only; stack permits only the named support top.
+string support_mode
+# Optional validated alternatives for joint grasp/placement search in one immutable scene.
+my_actions/GraspCandidate[] alternative_grasps
+# Calculation-only: validate lift and held-object VAMP transfer in the frozen scene.
+bool plan_pick_place_motion
+# Shared orchestration policy; legacy backend callers may leave these empty.
+uint32 validation_batch_size
+bool retry_motion_failures
+uint32[] blocked_lift_grasp_ids
 ---
 bool success
 string status
@@ -14,3 +30,29 @@ float32[6] placement_joints
 float32[6] preplace_joints
 float32 position_error_m
 float32 orientation_error_rad
+# Actual finger geometry for ordered RViz inspection (from VAMP configuration).
+geometry_msgs/Pose[] placement_finger_poses
+geometry_msgs/Vector3 placement_finger_dimensions
+
+# Validated fixed-orientation Cartesian descent, six joints per waypoint.
+float32[] descent_path_flat
+uint32 descent_waypoint_count
+
+# The fixed attachment selected by the joint search (primary grasp for legacy clients).
+my_actions/GraspCandidate selected_grasp_candidate
+
+# Optional motion calculation; no hardware execution. Paths contain six joints per waypoint.
+bool motion_success
+string motion_status
+float64 lift_seconds
+float64 transfer_seconds
+uint32 transfer_collision_samples
+float32[] lift_path_flat
+float32[] transfer_path_flat
+float64 pose_validation_seconds
+float64 descent_search_seconds
+# Inclusive shared validation time; detailed substeps overlap this total.
+float64 validation_seconds
+uint32 validated_candidate_count
+uint32[] blocked_lift_grasp_ids
+string validation_calls_json

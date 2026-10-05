@@ -57,7 +57,8 @@ target_link_libraries(vlm_reasoning_component ${ONNXRUNTIME_LIBRARY})
 rclcpp_components_register_node(
   vlm_reasoning_component
   PLUGIN "VLMReasoningNode"
-  EXECUTABLE vlm_reasoning_node)
+  EXECUTABLE vlm_reasoning_node
+  EXECUTOR MultiThreadedExecutor)
 
 install(TARGETS
   vlm_reasoning_component
@@ -68,4 +69,14 @@ install(TARGETS
 
 install(DIRECTORY models/
   DESTINATION share/${PROJECT_NAME}/models)
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_layout_prompt test/test_layout_prompt.cpp)
+  target_include_directories(test_layout_prompt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(test_layout_prompt PRIVATE cxx_std_17)
+  ament_add_gtest(test_grounding test/test_grounding.cpp)
+  target_include_directories(test_grounding PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(test_grounding PRIVATE cxx_std_17)
+endif()
+
 ament_package()

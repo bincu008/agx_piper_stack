@@ -1,0 +1,11 @@
+string operation_id
+string function_name
+string backend
+string input_mode
+string scope
+std_msgs/Header observation_header
+string object_name
+bool full_motion
+float64 wall_seconds
+bool success
+string status

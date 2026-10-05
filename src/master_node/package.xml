@@ -19,10 +19,12 @@
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>agx_arm_description</exec_depend>
   <exec_depend>vision_node</exec_depend>
   <exec_depend>vamp_node</exec_depend>
   <exec_depend>vlm_node</exec_depend>
-  <exec_depend>anyplace_ros</exec_depend>
+  <exec_depend>placement_node</exec_depend>
+  <exec_depend>task_pipeline</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
@@ -32,4 +34,5 @@
   <export>
     <build_type>ament_python</build_type>
   </export>
+  <exec_depend>python3-yaml</exec_depend>
 </package>

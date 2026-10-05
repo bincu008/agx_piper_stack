@@ -1,0 +1,7 @@
+---
+bool success
+string status
+sensor_msgs/Image image
+sensor_msgs/PointCloud2 cloud
+# ActiveVision's synchronized manual FK(joints)*X, never a TF lookup.
+geometry_msgs/TransformStamped camera_transform

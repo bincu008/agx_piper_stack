@@ -1,0 +1,11 @@
+sensor_msgs/Image image
+# Pixel bounds [x1,y1,x2,y2], exclusive upper bounds.
+int32[4] bbox
+---
+bool success
+string status
+sensor_msgs/Image mask
+float32 score
+int32 mask_pixels
+float64 encoder_ms
+float64 decoder_ms

@@ -1,3 +1,5 @@
+#include "vamp_node/pipeline_timing.hpp"
+#include "vamp_node/payload_checked_robot.hpp"
 #include <cstdlib>
 #include <cstdint>
 #include <memory>
@@ -46,9 +48,14 @@
 #include "my_actions/srv/plan_apf.hpp"
 #include "my_actions/srv/look_at.hpp"
 #include "my_actions/srv/find_grasp_candidates.hpp"
+#include "my_actions/srv/find_cloud_grasps.hpp"
 #include "my_actions/srv/refine_grasp.hpp"
 #include "my_actions/srv/plan_cartesian_grasp_approach.hpp"
 #include "my_actions/srv/plan_placement.hpp"
+#include "my_actions/srv/pin_layout_observation.hpp"
+#include "vamp_node/placement_ranking.hpp"
+#include "vamp_node/placement_geometry.hpp"
+#include "vamp_node/placement_point_index.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
@@ -77,6 +84,8 @@ using EnvironmentInput = vamp::collision::Environment<float>;
 using EnvironmentVector = vamp::collision::Environment<vamp::FloatVector<rake>>;
 using RRTC = vamp::planning::RRTC<Robot, rake, Robot::resolution>;
 
+using PayloadPiper = vamp_node::PayloadCheckedRobot<Robot>;
+
 namespace vamp_node
 {
 
@@ -96,11 +105,13 @@ private:
 
   struct PoseIkDiagnostics {
     int attempts = 0;
+    int collision_rejections = 0;
     float best_position_error = std::numeric_limits<float>::infinity();
     float best_rotation_error = std::numeric_limits<float>::infinity();
 
     void keepBest(const PoseIkDiagnostics &other) {
       attempts += other.attempts;
+      collision_rejections += other.collision_rejections;
       const float current_cost = best_position_error + 0.05F * best_rotation_error;
       const float other_cost = other.best_position_error + 0.05F * other.best_rotation_error;
       if (other_cost < current_cost) {
@@ -122,6 +133,10 @@ private:
   sensor_msgs::msg::CameraInfo::SharedPtr latest_camera_info_;
   size_t grasp_observation_cache_size_ = 1000;
   std::vector<float> latest_joints_;
+  // One bounded bundle retains the exact request frame across slow VLM calls.
+  sensor_msgs::msg::PointCloud2::SharedPtr pinned_layout_cloud_;
+  sensor_msgs::msg::Image::SharedPtr pinned_layout_image_;
+  geometry_msgs::msg::TransformStamped::SharedPtr pinned_layout_transform_;
   std::mutex observation_mutex_;
   std::mutex refinement_target_mutex_;
   std::unordered_set<std::tuple<int, int, int>, VoxelHash>
@@ -142,7 +157,7 @@ private:
   double finger_width_m_ = 0.010;
   double finger_height_m_ = 0.020;
   double point_correction_limit_ = 24.0;
-  double pregrasp_offset_ = 0.20;
+  double pregrasp_offset_ = 0.12;
   double pregrasp_position_tolerance_m_ = 0.008;
   double pregrasp_orientation_tolerance_degrees_ = 20.0;
   double gpd_scene_crop_radius_m_ = 0.20;
@@ -186,6 +201,8 @@ private:
   double natural_joint_margin_weight_ = 0.10;
   double natural_pregrasp_override_weight_ = 0.25;
   double natural_corner_penalty_weight_ = 2.0;
+  bool enable_grasp_path_preplanning_ = false;
+  double grasp_path_length_weight_ = 0.50;
   // GPD reports the bottom of its finger closing region.  Piper's
   // gripper_base is 61.5 mm behind the beginning of the physical fingers.
   double gpd_tcp_offset_m_ = -0.0615;
@@ -194,6 +211,9 @@ private:
   double gpd_diversity_position_m_ = 0.015;
   double gpd_diversity_approach_degrees_ = 15.0;
   double gpd_diversity_closing_degrees_ = 15.0;
+  double hggd_diversity_position_m_ = 0.030;
+  double hggd_diversity_approach_degrees_ = 20.0;
+  double hggd_diversity_closing_degrees_ = 30.0;
   std::string gpd_camera_frame_;
   std::string gpd_config_file_;
   std::string grasp_candidate_backend_ = "hggd";
@@ -222,9 +242,18 @@ private:
   float final_approach_translation_step_m_ = 0.002F;
   float final_approach_max_joint_step_rad_ = 0.08F;
   float final_approach_contact_phase_m_ = 0.006F;
-  float placement_position_tolerance_m_ = 0.015F;
+  float placement_position_tolerance_m_ = 0.001F;
+  float placement_descent_orientation_tolerance_rad_ = 0.01F;
+  float placement_descent_step_m_ = 0.002F;
+  float placement_descent_max_joint_step_rad_ = 0.05F;
+  float placement_contact_distance_m_ = 0.006F;
   float placement_orientation_tolerance_rad_ = 0.35F;
+  float placement_upright_tilt_tolerance_rad_ = 0.05236F;
   float placement_preplace_offset_m_ = 0.10F;
+  bool pipeline_profiling_ = false;
+  bool placement_fast_ik_ = true;
+  int placement_transfer_max_iterations_ = 5000;
+  double placement_transfer_timeout_sec_ = 30.0;
 
   float max_workspace_dist_ = 1.5f;
   float ws_x_min_ = -0.8f;
@@ -241,10 +270,12 @@ private:
   rclcpp::Service<my_actions::srv::PlanAPF>::SharedPtr plan_apf_srv_;
   rclcpp::Service<my_actions::srv::LookAt>::SharedPtr look_at_ik_srv_;
   rclcpp::Service<my_actions::srv::FindGraspCandidates>::SharedPtr grasp_candidates_srv_;
+  rclcpp::Service<my_actions::srv::FindCloudGrasps>::SharedPtr cloud_grasps_srv_;
   rclcpp::Service<my_actions::srv::RefineGrasp>::SharedPtr refine_grasp_srv_;
   rclcpp::Service<my_actions::srv::PlanCartesianGraspApproach>::SharedPtr
     plan_cartesian_grasp_approach_srv_;
   rclcpp::Service<my_actions::srv::PlanPlacement>::SharedPtr plan_placement_srv_;
+  rclcpp::Service<my_actions::srv::PinLayoutObservation>::SharedPtr pin_layout_srv_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr map_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr registered_cloud_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr
@@ -266,6 +297,8 @@ private:
   std::mutex placement_plan_mutex_;
   std::optional<my_actions::srv::PlanPlacement::Response> cached_placement_plan_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr grasp_markers_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
+    valid_grasp_markers_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr gpd_proposals_markers_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr analytical_proposals_markers_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
@@ -297,7 +330,7 @@ public:
     finger_width_m_ = this->declare_parameter<double>("finger_width_m", 0.010);
     finger_height_m_ = this->declare_parameter<double>("finger_height_m", 0.020);
     point_correction_limit_ = this->declare_parameter<double>("point_correction_limit", 24.0);
-    pregrasp_offset_ = this->declare_parameter<double>("pregrasp_offset_m", 0.20);
+    pregrasp_offset_ = this->declare_parameter<double>("pregrasp_offset_m", 0.12);
     pregrasp_position_tolerance_m_ = this->declare_parameter<double>(
       "pregrasp_position_tolerance_m", 0.008);
     pregrasp_orientation_tolerance_degrees_ = this->declare_parameter<double>(
@@ -370,11 +403,11 @@ public:
       grasp_contact_depth_m_, 0.0, finger_length_m_);
     pregrasp_opening_clearance_m_ = std::clamp(
       pregrasp_opening_clearance_m_, 0.002, maximum_gripper_width_);
-    pregrasp_offset_ = std::clamp(pregrasp_offset_, 0.02, 0.30);
+    pregrasp_offset_ = std::clamp(pregrasp_offset_, 0.05, 0.15);
     pregrasp_position_tolerance_m_ = std::clamp(
       pregrasp_position_tolerance_m_, 0.004, 0.015);
     pregrasp_orientation_tolerance_degrees_ = std::clamp(
-      pregrasp_orientation_tolerance_degrees_, 0.0, 30.0);
+      pregrasp_orientation_tolerance_degrees_, 0.0, 20.0);
     target_contact_surface_tolerance_m_ = std::clamp(
       target_contact_surface_tolerance_m_, 0.001, 0.010);
     pinch_max_opening_m_ = std::clamp(
@@ -417,6 +450,12 @@ public:
       "natural_pregrasp_override_weight", 0.25);
     natural_corner_penalty_weight_ = this->declare_parameter<double>(
       "natural_corner_penalty_weight", 2.0);
+    enable_grasp_path_preplanning_ = this->declare_parameter<bool>(
+      "enable_grasp_path_preplanning", false);
+    grasp_path_length_weight_ = this->declare_parameter<double>(
+      "grasp_path_length_weight", 0.50);
+    grasp_path_length_weight_ = std::clamp(
+      grasp_path_length_weight_, 0.0, 5.0);
     gpd_tcp_offset_m_ = this->declare_parameter<double>("gpd_tcp_offset_m", -0.0615);
     gpd_min_score_ = this->declare_parameter<double>("gpd_min_score", 0.0);
     gpd_visualization_limit_ = this->declare_parameter<int>("gpd_visualization_limit", 100);
@@ -426,6 +465,12 @@ public:
       "gpd_diversity_approach_degrees", 15.0);
     gpd_diversity_closing_degrees_ = this->declare_parameter<double>(
       "gpd_diversity_closing_degrees", 15.0);
+    hggd_diversity_position_m_ = this->declare_parameter<double>(
+      "hggd_diversity_position_m", 0.030);
+    hggd_diversity_approach_degrees_ = this->declare_parameter<double>(
+      "hggd_diversity_approach_degrees", 20.0);
+    hggd_diversity_closing_degrees_ = this->declare_parameter<double>(
+      "hggd_diversity_closing_degrees", 30.0);
     gpd_camera_frame_ = this->declare_parameter<std::string>("gpd_camera_frame", "");
     if (!gpd_camera_frame_.empty()) {
       RCLCPP_WARN(
@@ -490,10 +535,25 @@ public:
         "final_approach_contact_phase_m", 0.006), 0.0, 0.010));
     placement_position_tolerance_m_ = static_cast<float>(std::clamp(
       this->declare_parameter<double>(
-        "placement_position_tolerance_m", 0.015), 0.005, 0.025));
+        "placement_position_tolerance_m", 0.001), 0.0005, 0.025));
+    placement_descent_orientation_tolerance_rad_ = static_cast<float>(std::clamp(
+      this->declare_parameter<double>("placement_descent_orientation_tolerance_rad", 0.01), 0.002, 0.02));
+    placement_descent_step_m_ = static_cast<float>(std::clamp(
+      this->declare_parameter<double>("placement_descent_step_m", 0.002), 0.001, 0.002));
+    placement_descent_max_joint_step_rad_ = static_cast<float>(std::clamp(
+      this->declare_parameter<double>("placement_descent_max_joint_step_rad", 0.05), 0.01, 0.10));
+    placement_contact_distance_m_ = static_cast<float>(std::clamp(
+      this->declare_parameter<double>("placement_contact_distance_m", 0.006), 0.003, 0.008));
     placement_orientation_tolerance_rad_ = static_cast<float>(std::clamp(
       this->declare_parameter<double>(
         "placement_orientation_tolerance_rad", 0.35), 0.10, 0.60));
+    placement_upright_tilt_tolerance_rad_ = static_cast<float>(std::clamp(
+      this->declare_parameter<double>(
+        "placement_upright_tilt_tolerance_rad", 0.05236), 0.017, 0.175));
+    pipeline_profiling_ = this->declare_parameter<bool>("pipeline_profiling", false);
+    placement_fast_ik_ = this->declare_parameter<bool>("placement_fast_ik", true);
+    placement_transfer_max_iterations_ = this->declare_parameter<int>("placement_transfer_max_iterations", 5000);
+    placement_transfer_timeout_sec_ = this->declare_parameter<double>("placement_transfer_timeout_sec", 30.0);
     placement_preplace_offset_m_ = static_cast<float>(std::clamp(
       this->declare_parameter<double>(
         "placement_preplace_offset_m", 0.10), 0.05, 0.20));
@@ -558,6 +618,12 @@ public:
     gpd_diversity_position_m_ = std::clamp(gpd_diversity_position_m_, 0.001, 0.100);
     gpd_diversity_approach_degrees_ = std::clamp(gpd_diversity_approach_degrees_, 1.0, 90.0);
     gpd_diversity_closing_degrees_ = std::clamp(gpd_diversity_closing_degrees_, 1.0, 90.0);
+    hggd_diversity_position_m_ = std::clamp(
+      hggd_diversity_position_m_, 0.001, 0.100);
+    hggd_diversity_approach_degrees_ = std::clamp(
+      hggd_diversity_approach_degrees_, 1.0, 90.0);
+    hggd_diversity_closing_degrees_ = std::clamp(
+      hggd_diversity_closing_degrees_, 1.0, 90.0);
     analytical_parameters_.voxel_size_m = std::clamp(
       analytical_parameters_.voxel_size_m, 0.002F, 0.020F);
     analytical_parameters_.roll_step_degrees = std::clamp(
@@ -629,6 +695,9 @@ public:
       this->create_publisher<sensor_msgs::msg::Image>(
       "/vamp_planner/segmented_target_mask", visual_qos);
     grasp_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/vamp_planner/grasp_candidates_markers", visual_qos);
+    valid_grasp_markers_pub_ =
+      this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/vamp_planner/valid_grasp_candidates_markers", visual_qos);
     gpd_proposals_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/vamp_planner/gpd_proposals_markers", visual_qos);
     analytical_proposals_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/vamp_planner/analytical_proposals_markers", visual_qos);
     hggd_raw_proposals_markers_pub_ =
@@ -676,6 +745,10 @@ public:
     grasp_candidates_srv_ = this->create_service<my_actions::srv::FindGraspCandidates>(
       "/vamp_planner/find_grasp_candidates",
       std::bind(&VampPlannerServer::handleFindGraspCandidates, this, std::placeholders::_1, std::placeholders::_2));
+    cloud_grasps_srv_ = this->create_service<my_actions::srv::FindCloudGrasps>(
+      "/vamp_planner/find_cloud_grasps",
+      std::bind(&VampPlannerServer::handleFindCloudGrasps, this,
+        std::placeholders::_1, std::placeholders::_2));
     refine_grasp_srv_ = this->create_service<my_actions::srv::RefineGrasp>(
       "/vamp_planner/refine_grasp",
       std::bind(&VampPlannerServer::handleRefineGrasp, this,
@@ -689,6 +762,34 @@ public:
       "/vamp_planner/plan_placement",
       std::bind(&VampPlannerServer::handlePlanPlacement, this,
         std::placeholders::_1, std::placeholders::_2));
+
+    pin_layout_srv_ = this->create_service<my_actions::srv::PinLayoutObservation>(
+      "/vamp_planner/pin_layout_observation",
+      [this](const std::shared_ptr<my_actions::srv::PinLayoutObservation::Request> request,
+        std::shared_ptr<my_actions::srv::PinLayoutObservation::Response> response) {
+        std::lock_guard<std::mutex> lock(observation_mutex_);
+        const rclcpp::Time stamp(request->observation_header.stamp);
+        sensor_msgs::msg::PointCloud2::SharedPtr cloud;
+        sensor_msgs::msg::Image::SharedPtr image;
+        geometry_msgs::msg::TransformStamped::SharedPtr transform;
+        for (const auto &entry : registered_cloud_cache_) {
+          if (rclcpp::Time(entry->header.stamp) == stamp) cloud = entry;
+        }
+        for (const auto &entry : observation_image_cache_) {
+          if (rclcpp::Time(entry->header.stamp) == stamp) image = entry;
+        }
+        for (const auto &entry : observation_camera_transform_cache_) {
+          if (rclcpp::Time(entry->header.stamp) == stamp) transform = entry;
+        }
+        response->success = stamp.nanoseconds() != 0 && cloud && image && transform;
+        if (response->success) {
+          pinned_layout_cloud_ = cloud;
+          pinned_layout_image_ = image;
+          pinned_layout_transform_ = transform;
+        }
+        response->status = response->success ? "LAYOUT_OBSERVATION_PINNED" :
+          "LAYOUT_SYNCHRONIZED_OBSERVATION_NOT_AVAILABLE";
+      });
 
     // Subscribe directly to 3D Octree Occupied Voxels from Active Vision
     map_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -706,7 +807,7 @@ public:
       });
     object_support_surface_sub_ =
       this->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "/anyplace/artificial_bottom_cloud",
+        "/placement/artificial_bottom_cloud",
         rclcpp::QoS(1).transient_local().reliable(),
         [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
           if (msg->header.frame_id != "base_link" || msg->width == 0) return;
@@ -799,8 +900,8 @@ private:
           distances.push_back(distance);
         }
       };
-    add(std::clamp(static_cast<float>(pregrasp_offset_), 0.10F, 0.20F));
-    for (const float distance : {0.15F, 0.175F, 0.125F, 0.20F, 0.10F}) {
+    add(std::clamp(static_cast<float>(pregrasp_offset_), 0.05F, 0.15F));
+    for (const float distance : {0.12F, 0.10F, 0.08F, 0.06F, 0.14F}) {
       add(distance);
     }
     return distances;
@@ -835,8 +936,12 @@ private:
     const float height_half_extent = static_cast<float>(
       finger_height_m_ * 0.5 + target_contact_surface_tolerance_m_);
     const float lateral_extent = static_cast<float>(maximum_gripper_width_);
-    std::vector<float> lateral_coordinates;
-    lateral_coordinates.reserve(target_points.size());
+    struct CrossSectionSample {
+      float lateral = 0.0F;
+      Eigen::Vector3f point = Eigen::Vector3f::Zero();
+    };
+    std::vector<CrossSectionSample> cross_section;
+    cross_section.reserve(target_points.size());
     for (const auto &point : target_points) {
       const Eigen::Vector3f relative = point - proposal.sample;
       if (std::abs(relative.dot(approach)) > depth_half_extent ||
@@ -845,14 +950,17 @@ private:
       }
       const float lateral = relative.dot(closing);
       if (std::abs(lateral) <= lateral_extent) {
-        lateral_coordinates.push_back(lateral);
+        cross_section.push_back({lateral, point});
       }
     }
-    if (lateral_coordinates.size() <
+    if (cross_section.size() <
         static_cast<size_t>(antipodal_min_normal_neighbors_)) {
       return false;
     }
-    std::sort(lateral_coordinates.begin(), lateral_coordinates.end());
+    std::sort(cross_section.begin(), cross_section.end(),
+      [](const CrossSectionSample &left, const CrossSectionSample &right) {
+        return left.lateral < right.lateral;
+      });
     // Split the projected cross-section into continuous material bands. This
     // is the common skill selector for every object: a narrow band with free
     // finger space is PINCH; otherwise the jaws span the complete section as
@@ -864,22 +972,22 @@ private:
     constexpr float maximum_material_gap_m = 0.006F;
     std::vector<MaterialInterval> intervals;
     size_t begin = 0;
-    for (size_t index = 1; index < lateral_coordinates.size(); ++index) {
-      if (lateral_coordinates[index] - lateral_coordinates[index - 1] >
+    for (size_t index = 1; index < cross_section.size(); ++index) {
+      if (cross_section[index].lateral - cross_section[index - 1].lateral >
           maximum_material_gap_m) {
         intervals.push_back({begin, index - 1});
         begin = index;
       }
     }
-    intervals.push_back({begin, lateral_coordinates.size() - 1});
+    intervals.push_back({begin, cross_section.size() - 1});
 
     const auto nearest = std::min_element(
-      lateral_coordinates.begin(), lateral_coordinates.end(),
-      [](const float left, const float right) {
-        return std::abs(left) < std::abs(right);
+      cross_section.begin(), cross_section.end(),
+      [](const CrossSectionSample &left, const CrossSectionSample &right) {
+        return std::abs(left.lateral) < std::abs(right.lateral);
       });
     const size_t nearest_index = static_cast<size_t>(
-      std::distance(lateral_coordinates.begin(), nearest));
+      std::distance(cross_section.begin(), nearest));
     size_t selected_interval_index = 0;
     for (size_t index = 0; index < intervals.size(); ++index) {
       if (nearest_index >= intervals[index].begin &&
@@ -895,20 +1003,20 @@ private:
       return false;
     }
 
-    const float local_minimum = lateral_coordinates[local_interval.begin];
-    const float local_maximum = lateral_coordinates[local_interval.end];
+    const float local_minimum = cross_section[local_interval.begin].lateral;
+    const float local_maximum = cross_section[local_interval.end].lateral;
     const float local_opening = local_maximum - local_minimum;
     float largest_adjacent_gap = 0.0F;
     if (selected_interval_index > 0) {
       largest_adjacent_gap = std::max(
         largest_adjacent_gap,
-        local_minimum - lateral_coordinates[
-          intervals[selected_interval_index - 1].end]);
+        local_minimum - cross_section[
+          intervals[selected_interval_index - 1].end].lateral);
     }
     if (selected_interval_index + 1 < intervals.size()) {
       largest_adjacent_gap = std::max(
         largest_adjacent_gap,
-        lateral_coordinates[intervals[selected_interval_index + 1].begin] -
+        cross_section[intervals[selected_interval_index + 1].begin].lateral -
           local_maximum);
     }
 
@@ -932,8 +1040,8 @@ private:
     // Trim isolated depth-edge pixels without shrinking a real surface band.
     const size_t trim = selected_size >= 40 ? selected_size / 40 : 0;
     if (interval_begin + trim >= interval_end - trim) return false;
-    const float minimum_lateral = lateral_coordinates[interval_begin + trim];
-    const float maximum_lateral = lateral_coordinates[interval_end - trim];
+    const float minimum_lateral = cross_section[interval_begin + trim].lateral;
+    const float maximum_lateral = cross_section[interval_end - trim].lateral;
     const float measured_opening = maximum_lateral - minimum_lateral;
     if (!std::isfinite(measured_opening) ||
         measured_opening < static_cast<float>(minimum_gripper_width_) ||
@@ -941,13 +1049,41 @@ private:
       return false;
     }
 
-    const float center_shift = 0.5F * (minimum_lateral + maximum_lateral);
-    const Eigen::Vector3f shift = closing * center_shift;
-    proposal.sample += shift;
-    proposal.hand_base += shift;
+    // Keep contacts on real measured samples.  Reconstructing endpoints only
+    // from their 1-D lateral coordinates can move a curved rim contact several
+    // millimetres away from the surface and falsely fail the downstream
+    // contact/collision tests.  Among the points near each trimmed edge,
+    // choose the pair whose height/depth coordinates agree most closely.
+    const float edge_band = std::max(0.002F, 0.08F * measured_opening);
+    size_t best_left = interval_end - trim;
+    size_t best_right = interval_begin + trim;
+    float best_pair_cost = std::numeric_limits<float>::infinity();
+    for (size_t low = interval_begin + trim;
+         low <= interval_end - trim; ++low) {
+      if (cross_section[low].lateral > minimum_lateral + edge_band) break;
+      for (size_t high = interval_end - trim;; --high) {
+        if (cross_section[high].lateral < maximum_lateral - edge_band) break;
+        const Eigen::Vector3f delta =
+          cross_section[high].point - cross_section[low].point;
+        const float height_error = delta.dot(height);
+        const float depth_error = delta.dot(approach);
+        const float cost = height_error * height_error +
+          depth_error * depth_error;
+        if (cost < best_pair_cost) {
+          best_pair_cost = cost;
+          best_left = high;
+          best_right = low;
+        }
+        if (high == interval_begin + trim) break;
+      }
+    }
+    proposal.contact_left = cross_section[best_left].point;
+    proposal.contact_right = cross_section[best_right].point;
+    proposal.sample = 0.5F *
+      (proposal.contact_left + proposal.contact_right);
+    proposal.hand_base = proposal.sample - approach *
+      static_cast<float>(grasp_contact_depth_m_);
     proposal.opening_m = measured_opening;
-    proposal.contact_left = proposal.sample + closing * (0.5F * measured_opening);
-    proposal.contact_right = proposal.sample - closing * (0.5F * measured_opening);
     proposal.has_contacts = true;
     proposal.grasp_skill = use_pinch ?
       LocalGraspSkill::kPinch : LocalGraspSkill::kPowerGrasp;
@@ -959,7 +1095,59 @@ private:
       const Eigen::Vector3f &camera_origin,
       const Eigen::Matrix3f &current_gripper_rotation,
       const AntipodalContacts *silhouette_pair,
-      GraspProposal &proposal) const {
+      const std::string &requested_affordance,
+      GraspProposal &proposal,
+      std::vector<GraspProposal> *aligned_hypotheses = nullptr) const {
+    Eigen::Vector3f object_centroid = Eigen::Vector3f::Zero();
+    std::vector<float> target_heights;
+    target_heights.reserve(target_points.size());
+    for (const auto &point : target_points) {
+      object_centroid += point;
+      target_heights.push_back(point.z());
+    }
+    object_centroid /= static_cast<float>(target_points.size());
+    const auto top_index = static_cast<std::size_t>(
+      0.95F * static_cast<float>(target_heights.size() - 1));
+    std::nth_element(target_heights.begin(),
+      target_heights.begin() + top_index, target_heights.end());
+    const float robust_top_z = target_heights[top_index];
+    constexpr float rim_top_band_m = 0.012F;
+    std::optional<Eigen::Vector3f> nearby_rim_seed;
+    if ((requested_affordance == "RIM" || requested_affordance == "AUTO") &&
+        proposal.sample.z() < robust_top_z - rim_top_band_m) {
+      // HGGD often centres a bowl on its visible interior. For a requested
+      // rim grasp, move only to a nearby upper surface with local support.
+      // AUTO keeps the original seed for body/handle hypotheses and uses the
+      // snapped copy only to add a distinct rim hypothesis.
+      constexpr float maximum_horizontal_shift_sq = 0.030F * 0.030F;
+      constexpr float upper_band_m = 0.004F;
+      float nearest_xy_sq = maximum_horizontal_shift_sq;
+      Eigen::Vector3f upper_seed = Eigen::Vector3f::Zero();
+      for (const auto &point : target_points) {
+        if (std::abs(point.z() - robust_top_z) > upper_band_m ||
+            std::abs(point.z() - proposal.sample.z()) > 0.050F) continue;
+        const float xy_sq =
+          (point.head<2>() - proposal.sample.head<2>()).squaredNorm();
+        if (xy_sq < nearest_xy_sq) {
+          nearest_xy_sq = xy_sq;
+          upper_seed = point;
+        }
+      }
+      if (nearest_xy_sq < maximum_horizontal_shift_sq) {
+        std::size_t local_support = 0;
+        for (const auto &point : target_points) {
+          if ((point.head<2>() - upper_seed.head<2>()).squaredNorm() <=
+                0.008F * 0.008F &&
+              std::abs(point.z() - upper_seed.z()) <= 0.006F) {
+            ++local_support;
+          }
+        }
+        if (local_support >= 30) nearby_rim_seed = upper_seed;
+      }
+    }
+    if (requested_affordance == "RIM" && nearby_rim_seed) {
+      proposal.sample = *nearby_rim_seed;
+    }
     // Preserve a usable LocalNet centre. Only snap to the measured target as
     // a recovery path when its original 3-D offset has too little local
     // support; unconditional snapping biases thin handles toward the much
@@ -1101,18 +1289,6 @@ private:
     std::vector<ZeroPoseHypothesis> hypotheses;
     const float lambda_middle = std::max(solver.eigenvalues()[1], 1.0e-9F);
     const float local_anisotropy = solver.eigenvalues()[2] / lambda_middle;
-    Eigen::Vector3f object_centroid = Eigen::Vector3f::Zero();
-    std::vector<float> target_heights;
-    target_heights.reserve(target_points.size());
-    for (const auto &point : target_points) {
-      object_centroid += point;
-      target_heights.push_back(point.z());
-    }
-    object_centroid /= static_cast<float>(target_points.size());
-    std::sort(target_heights.begin(), target_heights.end());
-    const float robust_top_z = target_heights[static_cast<std::size_t>(
-      0.95F * static_cast<float>(target_heights.size() - 1))];
-    constexpr float rim_top_band_m = 0.012F;
     const bool seed_is_at_top_edge =
       proposal.sample.z() >= robust_top_z - rim_top_band_m;
 
@@ -1157,7 +1333,7 @@ private:
           candidate.contact_left.z() - candidate.contact_right.z());
         if (contact_height_difference > 0.015F) return;
         if (mode == ZeroPoseHypothesis::Mode::kRim &&
-            (!seed_is_at_top_edge ||
+            (candidate.sample.z() < robust_top_z - rim_top_band_m ||
             candidate.grasp_skill != LocalGraspSkill::kPinch)) return;
         if (mode == ZeroPoseHypothesis::Mode::kSide &&
             candidate.grasp_skill != LocalGraspSkill::kPowerGrasp) {
@@ -1201,7 +1377,7 @@ private:
       have_body_approach = inward_surface.squaredNorm() >= 1.0e-8F;
       if (have_body_approach) inward_surface.normalize();
       const float body_standoff = std::clamp(
-        static_cast<float>(pregrasp_offset_), 0.10F, 0.20F);
+        static_cast<float>(pregrasp_offset_), 0.05F, 0.15F);
       const float depth_below_top = std::max(
         0.0F, robust_top_z - proposal.sample.z());
       const float maximum_vertical_rise = body_standoff *
@@ -1295,6 +1471,12 @@ private:
             Eigen::Vector3f nominal_center(
               top_center.x(), top_center.y(),
               robust_top_z - 0.012F);
+            // Measure both sides at the HGGD seed's position along the
+            // wall. A cup rim curves around the object; using the whole
+            // finger-height strip can pair points from different arcs.
+            nominal_center += top_height *
+              (proposal.sample - nominal_center).dot(top_height);
+            constexpr float paired_wall_tangent_band_m = 0.003F;
             struct WallSample {
               Eigen::Vector3f point = Eigen::Vector3f::Zero();
               float lateral = 0.0F;
@@ -1306,8 +1488,7 @@ private:
               if (point.z() < robust_top_z - 0.040F ||
                   point.z() > robust_top_z + 0.004F ||
                   std::abs(relative.dot(top_height)) >
-                    static_cast<float>(finger_height_m_ * 0.5 +
-                      target_contact_surface_tolerance_m_)) {
+                    paired_wall_tangent_band_m) {
                 continue;
               }
               wall_samples.push_back({point, relative.dot(top_closing)});
@@ -1390,7 +1571,29 @@ private:
     // this trace stops at the first empty image interval and therefore cannot
     // jump across a handle hole to the cup body. Fall back to the generic PCA
     // cross-section only when no stable thin silhouette exists.
-    if (silhouette_pair != nullptr &&
+    bool silhouette_is_local_cross_section = silhouette_pair != nullptr;
+    if (silhouette_pair != nullptr) {
+      const float upper_contact_z = std::max(
+        silhouette_pair->left.z(), silhouette_pair->right.z());
+      const float lower_contact_z = std::min(
+        silhouette_pair->left.z(), silhouette_pair->right.z());
+      const bool mixes_rim_and_body =
+        upper_contact_z >= robust_top_z - 0.015F &&
+        lower_contact_z < robust_top_z - 0.025F &&
+        upper_contact_z - lower_contact_z > 0.020F;
+      const float along_dominant = std::abs(
+        silhouette_pair->closing_axis.normalized().dot(
+          dominant.normalized()));
+      // A silhouette thickness must cross a local elongated feature, not run
+      // along it. Registered depth can turn a short 2-D mask trace into a
+      // diagonal 3-D segment from a mug wall to its upper rim. Such a pair
+      // looks narrow enough for the jaws but would tip the mug violently.
+      // Dedicated rim hypotheses remain available through kRim.
+      constexpr float maximum_along_dominant = 0.55F;
+      silhouette_is_local_cross_section =
+        !mixes_rim_and_body && along_dominant <= maximum_along_dominant;
+    }
+    if (silhouette_is_local_cross_section &&
         silhouette_pair->opening >= static_cast<float>(minimum_gripper_width_) &&
         silhouette_pair->opening <= static_cast<float>(maximum_gripper_width_)) {
       Eigen::Matrix3f rotation;
@@ -1429,6 +1632,10 @@ private:
 
     // Top-rim solution: approach downward and close radially across a single
     // wall, permitting one pad inside and one outside the rim.
+    const Eigen::Vector3f non_rim_sample = proposal.sample;
+    if (requested_affordance == "AUTO" && nearby_rim_seed) {
+      proposal.sample = *nearby_rim_seed;
+    }
     Eigen::Vector3f radial(
       proposal.sample.x() - object_centroid.x(),
       proposal.sample.y() - object_centroid.y(), 0.0F);
@@ -1436,15 +1643,30 @@ private:
       add_hypothesis(
         -Eigen::Vector3f::UnitZ(), radial,
         ZeroPoseHypothesis::Mode::kRim,
-        seed_is_at_top_edge ? 0.0F : 1.0F);
+        proposal.sample.z() >= robust_top_z - rim_top_band_m ? 0.0F : 1.0F);
     }
+    proposal.sample = non_rim_sample;
 
     if (hypotheses.empty()) return false;
-    const auto mode_available = [&hypotheses](ZeroPoseHypothesis::Mode mode) {
+    const auto matches_requested_rim = [requested_affordance, robust_top_z](
+        const ZeroPoseHypothesis &hypothesis) {
+        if (requested_affordance != "RIM") return true;
+        if (hypothesis.mode != ZeroPoseHypothesis::Mode::kRim &&
+            hypothesis.mode != ZeroPoseHypothesis::Mode::kThinPca) {
+          return false;
+        }
+        const float left_z = hypothesis.grasp.contact_left.z();
+        const float right_z = hypothesis.grasp.contact_right.z();
+        return std::abs(left_z - right_z) <= 0.008F &&
+          robust_top_z - std::min(left_z, right_z) <= 0.015F;
+      };
+    const auto mode_available = [&hypotheses, &matches_requested_rim](
+        ZeroPoseHypothesis::Mode mode) {
         return std::any_of(
           hypotheses.begin(), hypotheses.end(),
-          [mode](const auto &hypothesis) {
-            return hypothesis.mode == mode && hypothesis.cost < 1.0F;
+          [mode, &matches_requested_rim](const auto &hypothesis) {
+            return hypothesis.mode == mode && hypothesis.cost < 1.0F &&
+              matches_requested_rim(hypothesis);
           });
       };
     // Choose by observed topology, then compare costs only within that mode.
@@ -1452,13 +1674,22 @@ private:
     // numerical opening is smaller.
     ZeroPoseHypothesis::Mode preferred_mode =
       ZeroPoseHypothesis::Mode::kSide;
-    if (seed_is_at_top_edge &&
+    if (requested_affordance == "RIM" && seed_is_at_top_edge &&
+        mode_available(ZeroPoseHypothesis::Mode::kRim)) {
+      preferred_mode = ZeroPoseHypothesis::Mode::kRim;
+    } else if (requested_affordance == "RIM" &&
+        mode_available(ZeroPoseHypothesis::Mode::kThinPca)) {
+      preferred_mode = ZeroPoseHypothesis::Mode::kThinPca;
+    } else if (requested_affordance == "RIM") {
+      // A broad top-surface or side grasp does not satisfy a rim request.
+      return false;
+    } else if (seed_is_at_top_edge &&
         mode_available(ZeroPoseHypothesis::Mode::kTopSurface)) {
       preferred_mode = ZeroPoseHypothesis::Mode::kTopSurface;
     } else if (seed_is_at_top_edge &&
         mode_available(ZeroPoseHypothesis::Mode::kRim)) {
       preferred_mode = ZeroPoseHypothesis::Mode::kRim;
-    } else if (silhouette_pair != nullptr &&
+    } else if (silhouette_is_local_cross_section &&
         mode_available(ZeroPoseHypothesis::Mode::kThinPca)) {
       preferred_mode = ZeroPoseHypothesis::Mode::kThinPca;
     } else if (local_anisotropy >= 2.0F &&
@@ -1469,18 +1700,57 @@ private:
         ZeroPoseHypothesis::Mode::kThinPca :
         ZeroPoseHypothesis::Mode::kRim;
     }
-    auto best = hypotheses.end();
-    for (auto candidate = hypotheses.begin(); candidate != hypotheses.end();
-         ++candidate) {
-      if (candidate->mode != preferred_mode) continue;
-      if (best == hypotheses.end() || candidate->cost < best->cost) {
-        best = candidate;
+    const auto best_for_mode = [&hypotheses, &matches_requested_rim](
+        ZeroPoseHypothesis::Mode mode) {
+        auto best = hypotheses.end();
+        for (auto candidate = hypotheses.begin();
+             candidate != hypotheses.end(); ++candidate) {
+          if (candidate->mode != mode ||
+              !matches_requested_rim(*candidate)) continue;
+          if (best == hypotheses.end() || candidate->cost < best->cost) {
+            best = candidate;
+          }
+        }
+        return best;
+      };
+    const auto primary = best_for_mode(preferred_mode);
+    if (primary == hypotheses.end()) return false;
+
+    // Preserve one best hypothesis per genuinely different local topology.
+    // Previously every HGGD spatial seed collapsed to exactly one mode before
+    // validation, so a failed side grasp could hide a reachable rim grasp (or
+    // vice versa).  AUTO requests now send these distinct hypotheses through
+    // the unchanged sweep, IK, collision, diversity, and ranking stages.
+    std::vector<ZeroPoseHypothesis::Mode> modes{preferred_mode};
+    if (requested_affordance == "AUTO") {
+      for (const auto mode : {
+          ZeroPoseHypothesis::Mode::kSide,
+          ZeroPoseHypothesis::Mode::kRim,
+          ZeroPoseHypothesis::Mode::kThinPca,
+          ZeroPoseHypothesis::Mode::kTopSurface}) {
+        if (std::find(modes.begin(), modes.end(), mode) == modes.end()) {
+          modes.push_back(mode);
+        }
       }
     }
-    if (best == hypotheses.end()) return false;
-    best->grasp.local_dominant_axis = dominant;
-    best->grasp.has_local_dominant_axis = true;
-    proposal = best->grasp;
+    std::vector<GraspProposal> selected;
+    selected.reserve(modes.size());
+    for (const auto mode : modes) {
+      const auto best = best_for_mode(mode);
+      if (best == hypotheses.end()) continue;
+      GraspProposal candidate = best->grasp;
+      candidate.side_surface_grasp =
+        mode == ZeroPoseHypothesis::Mode::kSide;
+      candidate.rim_grasp = mode == ZeroPoseHypothesis::Mode::kRim;
+      candidate.local_dominant_axis = dominant;
+      candidate.has_local_dominant_axis = true;
+      selected.push_back(std::move(candidate));
+    }
+    if (selected.empty()) return false;
+    proposal = selected.front();
+    if (aligned_hypotheses != nullptr) {
+      *aligned_hypotheses = std::move(selected);
+    }
     return true;
   }
 
@@ -1628,14 +1898,11 @@ private:
       }
     }
 
-    // A grounding rectangle for a handle necessarily includes the empty loop.
-    // Its registered depth is normally the table behind the handle.  The old
-    // support/(seed-distance) score therefore selected the table because it
-    // has many more pixels than the thin handle.  Select a meaningful
-    // foreground layer first, then choose its best-supported component rather
-    // than blindly accepting the closest depth fragment. This also remains
-    // deterministic when the VLM
-    // point lands in the handle hole rather than exactly on material.
+    // EdgeSAM supplies an object silhouette, but missing depth can split a
+    // curved or hollow object into several 3-D connected components. Prefer
+    // the best-supported measured component. The seed remains a secondary
+    // tie-breaker; otherwise a seed in a bowl opening can make a small front
+    // fragment win over the main measured bowl surface.
     // A cluster that collapses to one 5 mm object-world voxel is depth noise,
     // not a usable 70 mm-long-finger target. Require both image and metric
     // extent before it can compete with a real handle surface.
@@ -1698,9 +1965,7 @@ private:
     for (auto component = components.begin(); component != components.end();
          ++component) {
       if (!geometrically_valid(*component) ||
-          component->pixels.size() < required_component_pixels ||
-          component->median_camera_range >
-            nearest_supported_range + foreground_layer_tolerance_m) {
+          component->pixels.size() < required_component_pixels) {
         continue;
       }
       const float support = std::sqrt(
@@ -1711,8 +1976,8 @@ private:
       const float depth_offset = std::max(
         0.0F, component->median_camera_range - nearest_supported_range) /
         foreground_layer_tolerance_m;
-      const float score = 2.0F * support - 0.75F * seed_distance -
-        0.25F * depth_offset;
+      const float score = 3.0F * support - 0.35F * seed_distance -
+        0.05F * depth_offset;
       if (score > best_anchor_score) {
         best_anchor_score = score;
         anchor = component;
@@ -1895,7 +2160,8 @@ private:
   void publishGraspMarkers(
       const std::vector<my_actions::msg::GraspCandidate> &candidates,
       const rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr &publisher = nullptr,
-      const std::string &namespace_prefix = "grasp_candidate_") {
+      const std::string &namespace_prefix = "grasp_candidate_",
+      const bool pre_ranking = false) {
     visualization_msgs::msg::MarkerArray array;
     visualization_msgs::msg::Marker clear;
     clear.header.frame_id = "base_link";
@@ -1915,24 +2181,13 @@ private:
         static_cast<float>(candidate.grasp_pose.pose.orientation.x),
         static_cast<float>(candidate.grasp_pose.pose.orientation.y),
         static_cast<float>(candidate.grasp_pose.pose.orientation.z));
-      Eigen::Vector3f approach_axis(
-        static_cast<float>(candidate.grasp_pose.pose.position.x - candidate.pregrasp_pose.pose.position.x),
-        static_cast<float>(candidate.grasp_pose.pose.position.y - candidate.pregrasp_pose.pose.position.y),
-        static_cast<float>(candidate.grasp_pose.pose.position.z - candidate.pregrasp_pose.pose.position.z));
-      if (approach_axis.squaredNorm() < 1e-8F) {
-        approach_axis = robot_orientation.toRotationMatrix().col(2);
-      } else {
-        approach_axis.normalize();
-      }
-      Eigen::Vector3f closing_axis(
-        static_cast<float>(candidate.contact_left.x - candidate.contact_right.x),
-        static_cast<float>(candidate.contact_left.y - candidate.contact_right.y),
-        static_cast<float>(candidate.contact_left.z - candidate.contact_right.z));
-      if (closing_axis.squaredNorm() < 1e-8F) {
-        closing_axis = robot_orientation.toRotationMatrix().col(1);
-      } else {
-        closing_axis.normalize();
-      }
+      // Render the actual IK pose. The pregrasp retreat and measured contact
+      // line can differ from the final hand axes; using either here makes an
+      // unsafe pose appear aligned in RViz.
+      const Eigen::Matrix3f grasp_rotation =
+        robot_orientation.normalized().toRotationMatrix();
+      const Eigen::Vector3f approach_axis = grasp_rotation.col(2);
+      const Eigen::Vector3f closing_axis = grasp_rotation.col(1);
       const Eigen::Quaternionf marker_orientation(
         visualGripperRotation(closing_axis, approach_axis));
       const Eigen::Vector3f tcp_position(
@@ -1968,7 +2223,8 @@ private:
         finger.scale.x = finger_width_m_;
         finger.scale.y = finger_height_m_;
         finger.scale.z = finger_length_m_;
-        finger.color.r = color[0]; finger.color.g = color[1]; finger.color.b = color[2]; finger.color.a = 0.55f;
+        finger.color.r = color[0]; finger.color.g = color[1]; finger.color.b = color[2];
+        finger.color.a = pre_ranking ? 0.25F : 0.55F;
         array.markers.push_back(finger);
 
         visualization_msgs::msg::Marker marker = finger;
@@ -1977,7 +2233,8 @@ private:
         marker.pose.orientation.w = 1.0;
         marker.pose.position = point;
         marker.scale.x = marker.scale.y = marker.scale.z = 0.012;
-        marker.color.r = 1.0f; marker.color.g = 0.2f; marker.color.b = 0.1f; marker.color.a = 1.0f;
+        marker.color.r = 1.0f; marker.color.g = 0.2f; marker.color.b = 0.1f;
+        marker.color.a = pre_ranking ? 0.45F : 1.0F;
         array.markers.push_back(marker);
       }
       // Accepted candidates also show the actual IK-resolved pre-grasp hand.
@@ -2046,7 +2303,9 @@ private:
       approach_marker.action = visualization_msgs::msg::Marker::ADD;
       approach_marker.points = {candidate.pregrasp_pose.pose.position, candidate.grasp_pose.pose.position};
       approach_marker.scale.x = 0.006; approach_marker.scale.y = 0.012; approach_marker.scale.z = 0.018;
-      approach_marker.color.r = color[0]; approach_marker.color.g = color[1]; approach_marker.color.b = color[2]; approach_marker.color.a = 1.0f;
+      approach_marker.color.r = color[0]; approach_marker.color.g = color[1];
+      approach_marker.color.b = color[2];
+      approach_marker.color.a = pre_ranking ? 0.45F : 1.0F;
       array.markers.push_back(approach_marker);
       visualization_msgs::msg::Marker label;
       label.header = candidate.grasp_pose.header;
@@ -2055,11 +2314,16 @@ private:
       label.pose = candidate.grasp_pose.pose;
       label.id = static_cast<int>(candidate.id * 100 + 21);
       label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+      label.pose.orientation.x = 0.0;
+      label.pose.orientation.y = 0.0;
+      label.pose.orientation.z = 0.0;
       label.pose.orientation.w = 1.0;
       label.pose.position.z += 0.045;
       label.scale.z = 0.025;
-      label.color.r = color[0]; label.color.g = color[1]; label.color.b = color[2]; label.color.a = 1.0f;
-      label.text = "#" + std::to_string(candidate.id);
+      label.color.r = color[0]; label.color.g = color[1]; label.color.b = color[2];
+      label.color.a = pre_ranking ? 0.65F : 1.0F;
+      label.text = (pre_ranking ? "V" : "#") +
+        std::to_string(candidate.id);
       array.markers.push_back(label);
     }
     (publisher ? publisher : grasp_markers_pub_)->publish(array);
@@ -2141,6 +2405,7 @@ private:
     Eigen::Vector3f approach = Eigen::Vector3f::UnitZ();
     Eigen::Vector3f closing = Eigen::Vector3f::UnitY();
     float roll_alignment_cost = 1.0F;
+    bool constrained_seed = false;
   };
 
   // A single RGB-D view does not expose opposing contact normals reliably.
@@ -2859,6 +3124,41 @@ private:
       *positive <= allowed_neighbor_width;
   }
 
+  bool contactSurfaceNormalsSupportPinch(
+      const std::vector<Eigen::Vector3f> &target_points,
+      const AntipodalContacts &contacts,
+      const Eigen::Vector3f &closing, bool strict = false) const {
+    if (!strict && contacts.grasp_skill != LocalGraspSkill::kPinch) return true;
+    Eigen::Vector3f left_normal;
+    Eigen::Vector3f right_normal;
+    if (!estimateObjectNormal(target_points, contacts.left, left_normal) ||
+        !estimateObjectNormal(target_points, contacts.right, right_normal)) {
+      return false;
+    }
+    const Eigen::Vector3f midpoint =
+      0.5F * (contacts.left + contacts.right);
+    if (left_normal.dot(contacts.left - midpoint) < 0.0F) {
+      left_normal = -left_normal;
+    }
+    if (right_normal.dot(contacts.right - midpoint) < 0.0F) {
+      right_normal = -right_normal;
+    }
+    const Eigen::Vector3f jaw_axis = closing.normalized();
+    // A real pinch needs two locally opposed surfaces. A contact pair drawn
+    // diagonally across one continuous mug wall has nearly parallel normals
+    // and must not be accepted merely because its endpoints fit between the
+    // jaws. Keep a moderate angular allowance for RGB-D normal noise.
+    if (strict) return padNormalsAligned(left_normal, right_normal, jaw_axis,
+      static_cast<float>(antipodal_normal_cosine_));
+    const float minimum_facing_cosine = strict ?
+      static_cast<float>(antipodal_normal_cosine_) : 0.65F;
+    const float maximum_normal_dot = strict ?
+      -static_cast<float>(antipodal_normal_cosine_) : -0.30F;
+    return left_normal.dot(jaw_axis) >= minimum_facing_cosine &&
+      right_normal.dot(jaw_axis) <= -minimum_facing_cosine &&
+      left_normal.dot(right_normal) <= maximum_normal_dot;
+  }
+
   void handleRefineGrasp(
     const std::shared_ptr<my_actions::srv::RefineGrasp::Request> request,
     std::shared_ptr<my_actions::srv::RefineGrasp::Response> response)
@@ -3274,6 +3574,10 @@ private:
     const std::shared_ptr<my_actions::srv::PlanPlacement::Request> request,
     std::shared_ptr<my_actions::srv::PlanPlacement::Response> response)
   {
+    PipelineProfile profile(pipeline_profiling_, "placement", [this](const std::string &data) {
+      RCLCPP_INFO(this->get_logger(), "[PIPELINE PROFILE] %s", data.c_str());
+    });
+    const auto placement_started=std::chrono::steady_clock::now();
     response->success = false;
     response->status = "PLACEMENT_PLAN_FAILED";
     {
@@ -3341,8 +3645,38 @@ private:
       return;
     }
 
+    std::vector<my_actions::msg::GraspCandidate> placement_grasps{request->grasp_candidate};
+    for (const auto &alternative : request->alternative_grasps) {
+      Eigen::Isometry3f alternative_pose;
+      const std::vector<float> joints(alternative.grasp_joints.begin(), alternative.grasp_joints.end());
+      if (!request->use_layout_scene ||
+          alternative.grasp_pose.header.frame_id != "base_link" ||
+          alternative.grasp_pose.header.stamp != request->grasp_candidate.grasp_pose.header.stamp ||
+          !pose_from_message(alternative.grasp_pose, alternative_pose) ||
+          !jointsWithinPiperLimits(joints) || !std::isfinite(alternative.jaw_opening_m) ||
+          alternative.jaw_opening_m < 0.0F || alternative.jaw_opening_m > 0.10F) {
+        response->status = "PLACEMENT_INVALID_ALTERNATIVE_GRASP";
+        return;
+      }
+      placement_grasps.push_back(alternative);
+    }
+
     sensor_msgs::msg::PointCloud2::SharedPtr source_cloud;
-    {
+    if (request->use_layout_scene) {
+      const auto &header = request->grasp_candidate.grasp_pose.header;
+      const auto matches = [&header](const auto &cloud) {
+        return cloud.header.frame_id == "base_link" &&
+          cloud.header.stamp == header.stamp && cloud.width > 0;
+      };
+      if (!matches(request->source_object_cloud) ||
+          !matches(request->placement_scene) ||
+          !matches(request->destination_support_cloud)) {
+        response->status = "PLACEMENT_LAYOUT_OBSERVATION_MISMATCH";
+        return;
+      }
+      source_cloud = std::make_shared<sensor_msgs::msg::PointCloud2>(
+        request->source_object_cloud);
+    } else {
       std::lock_guard<std::mutex> lock(segmented_target_mutex_);
       source_cloud = latest_segmented_target_cloud_;
     }
@@ -3401,6 +3735,43 @@ private:
       }
     }
 
+    AttachedObjectScene attached_scene;
+    if (request->use_layout_scene) {
+      // Use the complete immutable virtual scene supplied by the layout
+      // request, including tray, surroundings, future sources and previously
+      // placed objects. Never substitute an asynchronously changing topic.
+      environment.clear();
+      const auto support_field = std::find_if(
+        request->placement_scene.fields.begin(), request->placement_scene.fields.end(),
+        [](const auto &field) { return field.name == "support" &&
+          field.datatype == sensor_msgs::msg::PointField::UINT8 && field.count == 1; });
+      if (support_field == request->placement_scene.fields.end()) {
+        response->status = "PLACEMENT_LAYOUT_SUPPORT_LABELS_MISSING";
+        return;
+      }
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> support(request->placement_scene, "support");
+      sensor_msgs::PointCloud2ConstIterator<float> ex(request->placement_scene, "x");
+      sensor_msgs::PointCloud2ConstIterator<float> ey(request->placement_scene, "y");
+      sensor_msgs::PointCloud2ConstIterator<float> ez(request->placement_scene, "z");
+      for (; ex != ex.end(); ++ex, ++ey, ++ez, ++support) {
+        if (!std::isfinite(*ex) || !std::isfinite(*ey) || !std::isfinite(*ez)) continue;
+        environment.push_back({*ex, *ey, *ez});
+        const bool allowed_support = request->support_mode == "stack" ? *support == 2 : *support == 1;
+        attached_scene.add(Eigen::Vector3f(*ex,*ey,*ez), allowed_support);
+      }
+      if (environment.empty()) {
+        response->status = "PLACEMENT_LAYOUT_SCENE_EMPTY";
+        return;
+      }
+    }
+    std::vector<Eigen::Vector3f> environment_points;
+    if (request->use_layout_scene) {
+      environment_points.reserve(environment.size());
+      for (const auto &point : environment) environment_points.emplace_back(point[0],point[1],point[2]);
+    }
+    float source_bottom_z = std::numeric_limits<float>::infinity();
+    for (const auto &point : source_points) source_bottom_z = std::min(source_bottom_z, point.z());
+
     const Eigen::Vector3f source_center(
       static_cast<float>(request->source_object_center.x),
       static_cast<float>(request->source_object_center.y),
@@ -3421,18 +3792,63 @@ private:
       float position_error = 0.0F;
       float rotation_error = 0.0F;
       float cost = std::numeric_limits<float>::infinity();
+      std::vector<std::vector<float>> descent;
+      size_t grasp_index = 0;
+    };
+    if (request->plan_pick_place_motion) {
+      // Freeze the attachment at the actual cached grasp FK, not the nominal
+      // IK target. Otherwise solver residuals can translate the source through
+      // its support before the first lift waypoint is even calculated.
+      for (auto &candidate_grasp:placement_grasps) {
+        std::array<float,6> joints{};
+        std::copy_n(candidate_grasp.grasp_joints.begin(),6,joints.begin());
+        const auto header=candidate_grasp.grasp_pose.header;
+        pose_to_message(Robot::eefk(joints),candidate_grasp.grasp_pose);
+        candidate_grasp.grasp_pose.header=header;
+      }
+    }
+    const PlacementPointIndex environment_index(environment_points);
+    const PlacementPointIndex source_index(source_points);
+    const auto indexed_pose_safe = [&](const std::vector<float> &joints) {
+      ComponentTimer collision_timer(PipelineComponent::Collision);
+      if (!isCandidatePoseSafe(joints, {})) return false;
+      Robot::ConfigurationBlock<1> configuration;
+      for (size_t j=0;j<6;++j) configuration[j][0]=joints[j];
+      Robot::Spheres<1> spheres;
+      Robot::template sphere_fk<1>(configuration,spheres);
+      for (size_t sphere=0;sphere<Robot::n_spheres;++sphere) {
+        if (!environment_index.sphereClear(Eigen::Vector3f(
+            spheres.x[{sphere,0}],spheres.y[{sphere,0}],spheres.z[{sphere,0}]),
+            spheres.r[{sphere,0}]+0.0025F)) return false;
+      }
+      return true;
+    };
+    const auto pose_safe = [&](const std::vector<float> &joints) {
+      return request->use_layout_scene ? indexed_pose_safe(joints) :
+        isCandidatePoseSafe(joints,environment);
     };
     std::optional<FeasiblePlacement> best;
     int rejected_pose = 0;
     int rejected_ik = 0;
+    int rejected_upright_tilt = 0;
     int rejected_collision = 0;
     int rejected_preplace = 0;
+    int rejected_static_collision = 0;
+    int rejected_finger_collision = 0;
+    int rejected_attached_collision = 0;
+    int rejected_object_arm_collision = 0;
+    int rejected_descent_arm_collision = 0;
+    int rejected_final_pose_collision = 0;
+    int rejected_descent_ik = 0;
+    int rejected_descent_continuity = 0;
     for (size_t index = 0; index < request->candidates.size(); ++index) {
       const auto &candidate = request->candidates[index];
-      if (candidate.object_pose.header.frame_id != "base_link") {
+      if (candidate.object_pose.header.frame_id != "base_link" ||
+        !std::isfinite(candidate.score)) {
         ++rejected_pose;
         continue;
       }
+      if (best && candidate.score < request->candidates[best->index].score) continue;
       Eigen::Isometry3f centered_object_pose;
       if (!pose_from_message(candidate.object_pose, centered_object_pose)) {
         ++rejected_pose;
@@ -3442,79 +3858,367 @@ private:
       object_delta.linear() = centered_object_pose.linear();
       object_delta.translation() = centered_object_pose.translation() -
         centered_object_pose.linear() * source_center;
-      const Eigen::Isometry3f desired = object_delta * grasp_pose;
-      PoseIkDiagnostics ik_diagnostics;
-      std::vector<float> placement_joints;
-      if (!solvePiperPoseIK(
-          desired, grasp_joints, placement_joints, ik_diagnostics, false,
-          placement_position_tolerance_m_,
-          placement_orientation_tolerance_rad_, 1000)) {
-        ++rejected_ik;
-        continue;
-      }
-      if (enable_grasp_collision_check_ &&
-        !isCandidatePoseSafe(placement_joints, environment)) {
-        ++rejected_collision;
-        continue;
-      }
-      std::array<float, 6> placement_array{};
-      std::copy_n(placement_joints.begin(), 6, placement_array.begin());
-      const Eigen::Isometry3f resolved = Robot::eefk(placement_array);
-      const float position_error =
-        (resolved.translation() - desired.translation()).norm();
-      const float rotation_error = std::abs(Eigen::AngleAxisf(
-        desired.linear() * resolved.linear().transpose()).angle());
+      for (size_t grasp_index = 0; grasp_index < placement_grasps.size(); ++grasp_index) {
+        const auto &active_grasp = placement_grasps[grasp_index];
+        pose_from_message(active_grasp.grasp_pose, grasp_pose);
+        grasp_joints.assign(active_grasp.grasp_joints.begin(), active_grasp.grasp_joints.end());
+        const Eigen::Isometry3f desired = object_delta * grasp_pose;
+        // Solve to the acceptance tolerance instead of stopping at a loose pose
+        // and subsequently rejecting an otherwise reachable upright placement.
+        const float rotation_tolerance = request->use_layout_scene ?
+          placement_descent_orientation_tolerance_rad_ : candidate.orientation_policy == "upright" ?
+          std::min(placement_orientation_tolerance_rad_,
+            placement_upright_tilt_tolerance_rad_ * 0.9F) :
+          placement_orientation_tolerance_rad_;
+        const auto check_sample = [&](const std::vector<float> &sample_joints) {
+          ComponentTimer collision_timer(PipelineComponent::Collision);
+          std::array<float,6> sample_array{};
+          std::copy_n(sample_joints.begin(),6,sample_array.begin());
+          const Eigen::Isometry3f sample_pose=Robot::eefk(sample_array);
+          const Eigen::Isometry3f sample_delta=sample_pose*grasp_pose.inverse();
+          const Eigen::Isometry3f inverse_delta=sample_delta.inverse();
+          Robot::ConfigurationBlock<1> configuration;
+          for (size_t j=0;j<6;++j) configuration[j][0]=sample_array[j];
+          Robot::Spheres<1> spheres;
+          Robot::template sphere_fk<1>(configuration,spheres);
+          for (size_t sphere=0;sphere<74;++sphere) {
+            if (!source_index.sphereClear(inverse_delta*Eigen::Vector3f(
+                spheres.x[{sphere,0}],spheres.y[{sphere,0}],spheres.z[{sphere,0}]),
+                spheres.r[{sphere,0}]+0.0025F)) {
+              ++rejected_object_arm_collision;
+              return false;
+            }
+          }
+          if (!environment_index.fingersClear(sample_pose,
+              active_grasp.jaw_opening_m,static_cast<float>(gpd_tcp_offset_m_),
+              static_cast<float>(finger_width_m_),static_cast<float>(finger_height_m_),
+              static_cast<float>(finger_length_m_))) {
+            ++rejected_finger_collision;
+            return false;
+          }
+          if (!pose_safe(sample_joints)) {
+            ++rejected_descent_arm_collision;
+            return false;
+          }
+          const bool contact_segment=(sample_pose.translation()-desired.translation()).norm()<=
+            placement_contact_distance_m_;
+          AttachedObjectScene::CollisionInfo blocked;
+          if (!attached_scene.clear(source_points,sample_delta,source_bottom_z,contact_segment,&blocked)) {
+            ++rejected_attached_collision;
+            RCLCPP_DEBUG(this->get_logger(),
+              "[PLACEMENT HELD BLOCK] object=%s candidate=%u support=%d bottom=%d terminal=%d",
+              request->object_name.c_str(),candidate.id,blocked.named_support,blocked.source_bottom,contact_segment);
+            return false;
+          }
+          return true;
+        };
+        PoseIkDiagnostics ik_diagnostics;
+        std::vector<float> placement_joints;
+        if (!solvePiperPoseIK(
+            desired, grasp_joints, placement_joints, ik_diagnostics, false,
+            placement_position_tolerance_m_,
+            rotation_tolerance, 1000, [&](const auto &joints) {
+              return request->use_layout_scene ? check_sample(joints) :
+                !enable_grasp_collision_check_ || pose_safe(joints);
+            }, request->use_layout_scene && placement_fast_ik_)) {
+          if (ik_diagnostics.collision_rejections > 0) {
+            ++rejected_collision;
+            ++rejected_final_pose_collision;
+            continue;
+          }
+          ++rejected_ik;
+          if (rejected_ik <= 3) {
+            RCLCPP_INFO(this->get_logger(),
+              "[PLACEMENT IK DETAIL] object=%s mode=%s candidate=%u tcp=[%.3f,%.3f,%.3f] "
+              "best_error={position:%.1fmm,orientation:%.1fdeg} tolerance={position:%.1fmm,orientation:%.1fdeg}",
+              request->object_name.c_str(), request->support_mode.c_str(), candidate.id,
+              desired.translation().x(), desired.translation().y(), desired.translation().z(),
+              ik_diagnostics.best_position_error*1000.0F,
+              ik_diagnostics.best_rotation_error*180.0F/static_cast<float>(M_PI),
+              placement_position_tolerance_m_*1000.0F,
+              rotation_tolerance*180.0F/static_cast<float>(M_PI));
+          }
+          continue;
+        }
+        if (enable_grasp_collision_check_ &&
+          !pose_safe(placement_joints)) {
+          ++rejected_collision;
+          ++rejected_static_collision;
+          if (rejected_static_collision == 1) {
+            RCLCPP_INFO(this->get_logger(), "[PLACEMENT COLLISION] candidate=%u static: %s",
+              candidate.id, describeCandidateCollision(placement_joints, environment, nullptr, nullptr, nullptr, 0.0F, nullptr).c_str());
+          }
+          continue;
+        }
+        std::array<float, 6> placement_array{};
+        std::copy_n(placement_joints.begin(), 6, placement_array.begin());
+        Eigen::Isometry3f resolved = Robot::eefk(placement_array);
+        float position_error =
+          (resolved.translation() - desired.translation()).norm();
+        float rotation_error = std::abs(Eigen::AngleAxisf(
+          desired.linear() * resolved.linear().transpose()).angle());
+        Eigen::Isometry3f resolved_object_delta =
+          resolved * grasp_pose.inverse();
+        if (candidate.orientation_policy == "upright") {
+          const Eigen::Vector3f desired_up =
+            centered_object_pose.linear() * Eigen::Vector3f::UnitZ();
+          const Eigen::Vector3f resolved_up =
+            resolved_object_delta.linear() * Eigen::Vector3f::UnitZ();
+          const float upright_tilt_error = std::acos(std::clamp(
+            desired_up.normalized().dot(resolved_up.normalized()), -1.0F, 1.0F));
+          if (upright_tilt_error > placement_upright_tilt_tolerance_rad_) {
+            ++rejected_upright_tilt;
+            continue;
+          }
+        }
 
-      Eigen::Isometry3f preplace_desired = resolved;
-      preplace_desired.translation().z() += placement_preplace_offset_m_;
-      PoseIkDiagnostics preplace_diagnostics;
-      std::vector<float> preplace_joints;
-      if (!solvePiperPoseIK(
-          preplace_desired, placement_joints, preplace_joints,
-          preplace_diagnostics, false,
-          placement_position_tolerance_m_ + 0.005F,
-          placement_orientation_tolerance_rad_ + 0.10F, 800) ||
-        (enable_grasp_collision_check_ &&
-          !isCandidatePoseSafe(preplace_joints, environment))) {
-        ++rejected_preplace;
-        continue;
-      }
-      std::array<float, 6> preplace_array{};
-      std::copy_n(preplace_joints.begin(), 6, preplace_array.begin());
-      const Eigen::Isometry3f resolved_preplace = Robot::eefk(preplace_array);
-      float joint_travel = 0.0F;
-      for (size_t joint = 0; joint < 6; ++joint) {
-        const float difference = placement_joints[joint] - grasp_joints[joint];
-        joint_travel += difference * difference;
-      }
-      const float cost = -candidate.score + 8.0F * position_error +
-        0.25F * rotation_error + 0.02F * std::sqrt(joint_travel);
-      if (!best || cost < best->cost) {
-        best = FeasiblePlacement{
-          index, desired, resolved, resolved_preplace,
-          resolved * grasp_pose.inverse(), placement_joints,
-          preplace_joints, position_error, rotation_error, cost};
+        Eigen::Isometry3f preplace_desired = request->use_layout_scene ? desired : resolved;
+        std::vector<float> preplace_joints;
+        bool hover_found=false;
+        Eigen::Isometry3f resolved_preplace;
+        std::vector<std::vector<float>> descent;
+        for (const float hover : placementHoverDistances(
+            placement_preplace_offset_m_, request->use_layout_scene)) {
+          preplace_desired.translation()=(request->use_layout_scene ? desired : resolved).translation();
+          preplace_desired.translation().z()+=hover;
+          PoseIkDiagnostics preplace_diagnostics;
+          if (solvePiperPoseIK(preplace_desired,placement_joints,preplace_joints,
+              preplace_diagnostics,false,
+              request->use_layout_scene ? placement_position_tolerance_m_ : placement_position_tolerance_m_+0.005F,
+              request->use_layout_scene ? rotation_tolerance : placement_orientation_tolerance_rad_+0.10F,1000,
+              [&](const auto &joints) { return !enable_grasp_collision_check_ || pose_safe(joints); }, request->use_layout_scene && placement_fast_ik_)) {
+            hover_found=true;
+          } else {
+            continue;
+          }
+          std::array<float, 6> preplace_array{};
+          std::copy_n(preplace_joints.begin(), 6, preplace_array.begin());
+          resolved_preplace = Robot::eefk(preplace_array);
+          if (request->use_layout_scene) {
+            if (!check_sample(preplace_joints)) { ++rejected_collision; continue; }
+            std::vector<float> previous=preplace_joints;
+            const auto descent_started=std::chrono::steady_clock::now();
+            const auto path=planCartesianApproach(resolved_preplace,desired,preplace_joints,
+              placement_descent_step_m_,placement_descent_max_joint_step_rad_,
+              [&](const auto &waypoint,const auto &seed,std::vector<float> &solution) {
+                PoseIkDiagnostics diagnostics;
+                return solvePiperPoseIK(waypoint,seed,solution,diagnostics,true,
+                  placement_position_tolerance_m_,rotation_tolerance,600);
+              },
+              [&](const auto &joints,size_t,bool) {
+                std::vector<float> midpoint(6);
+                for (size_t j=0;j<6;++j) midpoint[j]=0.5F*(previous[j]+joints[j]);
+                if (!check_sample(midpoint) || !check_sample(joints)) return false;
+                previous=joints;
+                return true;
+              });
+            response->descent_search_seconds+=std::chrono::duration<double>(
+              std::chrono::steady_clock::now()-descent_started).count();
+            if (!path.success) {
+              if (path.failure_reason.rfind("IK_FAILED", 0) == 0) {
+                ++rejected_descent_ik;
+              } else if (path.failure_reason.rfind("JOINT_", 0) == 0) {
+                ++rejected_descent_continuity;
+              } else {
+                ++rejected_collision;
+              }
+              RCLCPP_INFO(this->get_logger(),"[PLACEMENT DESCENT] object=%s candidate=%u failure=%s",
+                request->object_name.c_str(),candidate.id,path.failure_reason.c_str());
+              continue;
+            }
+            descent=path.waypoint_joints;
+            placement_joints=descent.back();
+            std::copy_n(placement_joints.begin(),6,placement_array.begin());
+            resolved=Robot::eefk(placement_array);
+            resolved_object_delta=resolved*grasp_pose.inverse();
+            position_error=(resolved.translation()-desired.translation()).norm();
+            rotation_error=std::abs(Eigen::AngleAxisf(desired.linear()*resolved.linear().transpose()).angle());
+          }
+          break;
+        }
+        if (!hover_found || (request->use_layout_scene && descent.empty())) {
+          ++rejected_preplace;
+          continue;
+        }
+        float joint_travel = 0.0F;
+        for (size_t joint = 0; joint < 6; ++joint) {
+          const float difference = placement_joints[joint] - grasp_joints[joint];
+          joint_travel += difference * difference;
+        }
+        const float cost = -candidate.score + 8.0F * position_error +
+          0.25F * rotation_error + 0.02F * std::sqrt(joint_travel);
+        if (!best || preferPlacement(candidate.score, cost,
+            request->candidates[best->index].score, best->cost)) {
+          best = FeasiblePlacement{
+            index, desired, resolved, resolved_preplace,
+            resolved_object_delta, placement_joints,
+            preplace_joints, position_error, rotation_error, cost, descent, grasp_index};
+        }
+        if (request->use_layout_scene && best && best->index == index) break;
       }
     }
     if (!best) {
       std::ostringstream status;
       status << "PLACEMENT_NO_REACHABLE_CANDIDATE tested="
              << request->candidates.size() << " rejected={pose:"
-             << rejected_pose << ",ik:" << rejected_ik << ",collision:"
-             << rejected_collision << ",preplace:" << rejected_preplace << "}";
+             << rejected_pose << ",ik:" << rejected_ik << ",upright_tilt:"
+             << rejected_upright_tilt << ",collision:"
+             << rejected_collision << ",preplace:" << rejected_preplace
+             << ",static_collision:" << rejected_static_collision
+             << ",finger_collision:" << rejected_finger_collision
+             << ",attached_collision:" << rejected_attached_collision
+             << ",object_arm_collision:" << rejected_object_arm_collision
+             << ",descent_arm_collision:" << rejected_descent_arm_collision
+             << ",final_pose_collision:" << rejected_final_pose_collision
+             << ",descent_ik:" << rejected_descent_ik
+             << ",descent_continuity:" << rejected_descent_continuity << "}";
       response->status = status.str();
       RCLCPP_WARN(this->get_logger(), "%s", response->status.c_str());
       return;
     }
 
+    response->pose_validation_seconds=std::chrono::duration<double>(
+      std::chrono::steady_clock::now()-placement_started).count();
+    const auto &selected_grasp = placement_grasps[best->grasp_index];
+    response->selected_grasp_candidate = selected_grasp;
     response->selected_candidate = request->candidates[best->index];
     pose_to_message(best->resolved, response->placement_ee_pose);
     pose_to_message(best->preplace, response->preplace_ee_pose);
     std::copy_n(best->joints.begin(), 6, response->placement_joints.begin());
     std::copy_n(
       best->preplace_joints.begin(), 6, response->preplace_joints.begin());
+    response->descent_waypoint_count=static_cast<uint32_t>(best->descent.size());
+    for (const auto &waypoint:best->descent) {
+      response->descent_path_flat.insert(response->descent_path_flat.end(),waypoint.begin(),waypoint.end());
+    }
     response->position_error_m = best->position_error;
     response->orientation_error_rad = best->rotation_error;
+
+    if (request->plan_pick_place_motion) {
+      PipelineProfile motion_profile(pipeline_profiling_, "placement_motion", [this](const auto &line) {
+        RCLCPP_INFO(this->get_logger(), "[PIPELINE PROFILE] %s", line.c_str());
+      });
+      if (!request->use_layout_scene) {
+        response->status="MOTION_REQUIRES_FROZEN_LAYOUT_SCENE";
+        return;
+      }
+      const auto seconds_since=[](const auto &started) {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+      };
+      std::array<float,6> source_joints{};
+      std::copy_n(selected_grasp.grasp_joints.begin(),6,source_joints.begin());
+      const Eigen::Isometry3f source_pose=Robot::eefk(source_joints);
+      Eigen::Isometry3f attachment_pose;
+      pose_from_message(selected_grasp.grasp_pose,attachment_pose);
+      Eigen::Vector3f minimum=source_points.front(),maximum=minimum;
+      for (const auto &point:source_points) {
+        minimum=minimum.cwiseMin(point); maximum=maximum.cwiseMax(point);
+      }
+      // Only the original bottom support inside the object's footprint permits
+      // initial lift contact. All other floor and environment samples block.
+      AttachedObjectScene lift_scene;
+      for (const auto &point:environment_points) {
+        const bool initial_support=initialLiftSupportSample(point,minimum,maximum,source_bottom_z);
+        lift_scene.add(point,initial_support);
+      }
+      bool lifting=true;
+      const auto held_safe=[&](const std::vector<float> &joints) {
+        ComponentTimer collision_timer(PipelineComponent::Collision);
+        ++response->transfer_collision_samples;
+        std::array<float,6> array{};
+        std::copy_n(joints.begin(),6,array.begin());
+        const auto pose=Robot::eefk(array);
+        const Eigen::Isometry3f delta=pose*attachment_pose.inverse();
+        const Eigen::Isometry3f inverse=delta.inverse();
+        Robot::ConfigurationBlock<1> configuration;
+        for (size_t j=0;j<6;++j) configuration[j][0]=array[j];
+        Robot::Spheres<1> spheres;
+        Robot::template sphere_fk<1>(configuration,spheres);
+        for (size_t sphere=0;sphere<74;++sphere) {
+          if (!source_index.sphereClear(inverse*Eigen::Vector3f(
+              spheres.x[{sphere,0}],spheres.y[{sphere,0}],spheres.z[{sphere,0}]),
+              spheres.r[{sphere,0}]+0.0025F)) return false;
+        }
+        if (!indexed_pose_safe(joints) || !environment_index.fingersClear(pose,
+            selected_grasp.jaw_opening_m,static_cast<float>(gpd_tcp_offset_m_),
+            static_cast<float>(finger_width_m_),static_cast<float>(finger_height_m_),
+            static_cast<float>(finger_length_m_))) return false;
+        if (lifting) {
+          const bool initial_contact=(pose.translation()-source_pose.translation()).norm()<=0.006F;
+          return lift_scene.clear(source_points,delta,source_bottom_z,initial_contact);
+        }
+        return attached_scene.clear(source_points,delta,source_bottom_z,false);
+      };
+      auto started=std::chrono::steady_clock::now();
+      Eigen::Isometry3f lift_goal=source_pose;
+      lift_goal.translation().z()+=0.10F;
+      std::vector<float> previous(source_joints.begin(),source_joints.end());
+      CartesianApproachPlan lift;
+      if (held_safe(previous)) {
+        lift=planCartesianApproach(source_pose,lift_goal,previous,0.002F,0.05F,
+          [&](const auto &pose,const auto &seed,std::vector<float> &solution) {
+            PoseIkDiagnostics diagnostics;
+            return solvePiperPoseIK(pose,seed,solution,diagnostics,true,
+              placement_position_tolerance_m_,placement_descent_orientation_tolerance_rad_,600);
+          },[&](const auto &joints,size_t,bool) {
+            std::vector<float> midpoint(6);
+            for (size_t j=0;j<6;++j) midpoint[j]=(previous[j]+joints[j])*0.5F;
+            if (!held_safe(midpoint) || !held_safe(joints)) return false;
+            previous=joints; return true;
+          });
+      } else {
+        lift.failure_reason="INITIAL_HELD_STATE_COLLISION";
+      }
+      response->lift_seconds=seconds_since(started);
+      if (!lift.success) {
+        response->motion_status="LIFT_"+lift.failure_reason;
+        response->status=response->motion_status;
+        RCLCPP_WARN(this->get_logger(),"[PLACEMENT MOTION] lift=%.6fs failure=%s",
+          response->lift_seconds,response->motion_status.c_str());
+        return;
+      }
+      for (const auto &waypoint:lift.waypoint_joints)
+        response->lift_path_flat.insert(response->lift_path_flat.end(),waypoint.begin(),waypoint.end());
+      lifting=false;
+      response->transfer_collision_samples=0;
+      started=std::chrono::steady_clock::now();
+      using HeldRRTC=vamp::planning::RRTC<PayloadPiper,rake,Robot::resolution>;
+      std::array<float,Robot::Configuration::num_scalars_rounded> start_array{},goal_array{};
+      std::copy_n(lift.waypoint_joints.back().begin(),6,start_array.begin());
+      std::copy_n(best->preplace_joints.begin(),6,goal_array.begin());
+      const Robot::Configuration start_configuration(start_array.data()),goal_configuration(goal_array.data());
+      EnvironmentVector empty_environment;
+      vamp::planning::RRTCSettings settings;
+      settings.max_iterations=std::max(1,placement_transfer_max_iterations_);
+      settings.max_samples=settings.max_iterations;
+      settings.range=0.1F;
+      auto rng=std::make_shared<vamp::rng::Halton<PayloadPiper>>();
+      bool timed_out=false;
+      PayloadPiper::ScopedValidator scoped_validator([&](const auto &joints) {
+        if (seconds_since(started)>std::max(0.01,placement_transfer_timeout_sec_)) {
+          timed_out=true; return false;
+        }
+        return held_safe(joints);
+      });
+      if (!held_safe(lift.waypoint_joints.back()) || !held_safe(best->preplace_joints)) {
+        response->motion_status="TRANSFER_ENDPOINT_COLLISION";
+      } else {
+        ComponentTimer rrtc_timer(PipelineComponent::RRTC);
+        const auto result=HeldRRTC::solve(start_configuration,goal_configuration,empty_environment,settings,rng);
+        for (const auto &waypoint:result.path) {
+          const auto array=waypoint.to_array();
+          response->transfer_path_flat.insert(response->transfer_path_flat.end(),array.begin(),array.begin()+6);
+        }
+        response->motion_success=!result.path.empty();
+        response->motion_status=response->motion_success ? "LIFT_TRANSFER_DESCENT_VALIDATED" :
+          timed_out ? "TRANSFER_RRTC_TIMEOUT" : "TRANSFER_RRTC_NO_PATH";
+      }
+      response->transfer_seconds=seconds_since(started);
+      RCLCPP_INFO(this->get_logger(),"[PLACEMENT MOTION] lift=%.6fs transfer=%.6fs lift_waypoints=%zu transfer_waypoints=%zu collision_samples=%u status=%s",
+        response->lift_seconds,response->transfer_seconds,response->lift_path_flat.size()/6,
+        response->transfer_path_flat.size()/6,response->transfer_collision_samples,response->motion_status.c_str());
+      if (!response->motion_success) { response->status=response->motion_status; return; }
+    }
 
     sensor_msgs::msg::PointCloud2 placed_cloud;
     placed_cloud.header.frame_id = "base_link";
@@ -3625,6 +4329,36 @@ private:
       marker.color.b = colors[axis][2]; marker.color.a = 1.0F;
       markers.markers.push_back(marker);
     }
+    const Eigen::Vector3f hand_base = best->resolved.translation() -
+      best->resolved.linear().col(2) * static_cast<float>(gpd_tcp_offset_m_);
+    const Eigen::Quaternionf finger_rotation(visualGripperRotation(
+      best->resolved.linear().col(1), best->resolved.linear().col(2)));
+    response->placement_finger_dimensions.x = finger_width_m_;
+    response->placement_finger_dimensions.y = finger_height_m_;
+    response->placement_finger_dimensions.z = finger_length_m_;
+    for (int finger = 0; finger < 2; ++finger) {
+      visualization_msgs::msg::Marker marker;
+      marker.header = response->placement_ee_pose.header;
+      marker.ns = "selected_placement_fingers";
+      marker.id = 20 + finger;
+      marker.type = visualization_msgs::msg::Marker::CUBE;
+      marker.action = visualization_msgs::msg::Marker::ADD;
+      const Eigen::Vector3f center = hand_base +
+        best->resolved.linear().col(2) * static_cast<float>(finger_length_m_*0.5) +
+        (finger == 0 ? 1.0F : -1.0F)*best->resolved.linear().col(1)*
+          static_cast<float>((selected_grasp.jaw_opening_m + finger_width_m_)*0.5);
+      marker.pose.position.x = center.x();
+      marker.pose.position.y = center.y();
+      marker.pose.position.z = center.z();
+      marker.pose.orientation.x = finger_rotation.x();
+      marker.pose.orientation.y = finger_rotation.y();
+      marker.pose.orientation.z = finger_rotation.z();
+      marker.pose.orientation.w = finger_rotation.w();
+      marker.scale = response->placement_finger_dimensions;
+      marker.color.g = 1.0F; marker.color.a = 0.75F;
+      response->placement_finger_poses.push_back(marker.pose);
+      markers.markers.push_back(marker);
+    }
     placement_plan_markers_pub_->publish(markers);
 
     std::ostringstream status;
@@ -3635,7 +4369,7 @@ private:
            << request->orientation_policy << " error={position:"
            << best->position_error * 1000.0F << "mm,orientation:"
            << best->rotation_error * 180.0F / static_cast<float>(M_PI)
-           << "deg} preplace=" << placement_preplace_offset_m_ * 1000.0F
+           << "deg} preplace=" << (best->preplace.translation()-best->resolved.translation()).norm()*1000.0F
            << "mm calculation_only=true";
     response->status = status.str();
     response->success = true;
@@ -3821,11 +4555,133 @@ private:
       final_approach_contact_phase_m_ * 1000.0F);
   }
 
+  void handleFindCloudGrasps(
+    const std::shared_ptr<my_actions::srv::FindCloudGrasps::Request> request,
+    std::shared_ptr<my_actions::srv::FindCloudGrasps::Response> response) {
+    const auto matches = [&request](const auto &cloud) {
+      return cloud.header.frame_id == "base_link" &&
+        cloud.header.stamp == request->observation_header.stamp && cloud.width > 0;
+    };
+    if (!matches(request->object_cloud) || !matches(request->scene_cloud)) {
+      response->status = "CLOUD_GRASP_OBSERVATION_MISMATCH";
+      return;
+    }
+    std::vector<Eigen::Vector3f> points;
+    const auto append = [&points](const auto &cloud) {
+      sensor_msgs::PointCloud2ConstIterator<float> x(cloud,"x"), y(cloud,"y"), z(cloud,"z");
+      for (; x != x.end(); ++x,++y,++z) {
+        if (std::isfinite(*x) && std::isfinite(*y) && std::isfinite(*z)) points.emplace_back(*x,*y,*z);
+      }
+    };
+    append(request->object_cloud);
+    const size_t object_count = points.size();
+    if (object_count < 80 || object_count > 100000) {
+      response->status = "CLOUD_GRASP_INVALID_OBJECT_SIZE";
+      return;
+    }
+    Eigen::Vector3f center = Eigen::Vector3f::Zero();
+    for (const auto &point : points) center += point;
+    center /= static_cast<float>(object_count);
+    size_t seed = 0;
+    float distance = std::numeric_limits<float>::infinity();
+    for (size_t index=0; index<object_count; ++index) {
+      const float cost = (points[index]-center).squaredNorm() +
+        (points[index].z() < center.z() ? 1.0F : 0.0F);
+      if (cost < distance) { distance=cost; seed=index; }
+    }
+    append(request->scene_cloud);
+    if (points.size() > 500000) { response->status="CLOUD_GRASP_SCENE_TOO_LARGE"; return; }
+    // A two-row storage adapter is an index mask, not a camera projection.
+    // It supplies known cloud membership to the existing geometric pipeline.
+    auto cloud = std::make_shared<sensor_msgs::msg::PointCloud2>();
+    cloud->header = request->object_cloud.header;
+    sensor_msgs::PointCloud2Modifier modifier(*cloud);
+    modifier.setPointCloud2FieldsByString(1,"xyz");
+    const size_t width = (points.size()+1)/2;
+    modifier.resize(width*2);
+    cloud->width=static_cast<uint32_t>(width); cloud->height=2;
+    cloud->row_step=cloud->width*cloud->point_step;
+    sensor_msgs::PointCloud2Iterator<float> x(*cloud,"x"),y(*cloud,"y"),z(*cloud,"z");
+    for (size_t index=0; index<width*2; ++index,++x,++y,++z) {
+      const auto point = index<points.size() ? points[index] :
+        Eigen::Vector3f::Constant(std::numeric_limits<float>::quiet_NaN());
+      *x=point.x(); *y=point.y(); *z=point.z();
+    }
+    auto adapted = std::make_shared<my_actions::srv::FindGraspCandidates::Request>();
+    adapted->observation_header=request->observation_header;
+    adapted->image_width=static_cast<int32_t>(width); adapted->image_height=2;
+    adapted->seed_u=static_cast<int32_t>(seed%width); adapted->seed_v=static_cast<int32_t>(seed/width);
+    adapted->target_mask.header=cloud->header;
+    adapted->target_mask.width=cloud->width; adapted->target_mask.height=2;
+    adapted->target_mask.step=cloud->width; adapted->target_mask.encoding="mono8";
+    adapted->target_mask.data.resize(width*2,0);
+    std::fill_n(adapted->target_mask.data.begin(),object_count,255);
+    adapted->target_description="layout-analytical: "+request->object_name;
+    adapted->affordance_type="AUTO";
+    auto result=std::make_shared<my_actions::srv::FindGraspCandidates::Response>();
+    std::vector<GraspProposal> fixture_seeds;
+    if (request->contact_left.size() != request->contact_right.size() ||
+        request->contact_left.size() != request->approaches.size() ||
+        request->contact_left.size() > 64) {
+      response->status = "CLOUD_GRASP_INVALID_SEED_ARRAYS";
+      return;
+    }
+    for (size_t i=0; i<request->contact_left.size(); ++i) {
+      const auto &l=request->contact_left[i], &r=request->contact_right[i];
+      const auto &a=request->approaches[i];
+      GraspProposal proposal;
+      proposal.contact_left=Eigen::Vector3f(l.x,l.y,l.z);
+      proposal.contact_right=Eigen::Vector3f(r.x,r.y,r.z);
+      proposal.closing=proposal.contact_left-proposal.contact_right;
+      proposal.approach=Eigen::Vector3f(a.x,a.y,a.z);
+      proposal.opening_m=proposal.closing.norm();
+      if (!proposal.contact_left.allFinite() || !proposal.contact_right.allFinite() ||
+          !proposal.approach.allFinite() || proposal.opening_m < 0.01F ||
+          proposal.opening_m > 0.10F || proposal.approach.norm() < 1e-6F) {
+        response->status="CLOUD_GRASP_INVALID_SEED_GEOMETRY";
+        return;
+      }
+      proposal.closing.normalize();
+      proposal.approach.normalize();
+      if (std::abs(proposal.closing.dot(proposal.approach)) > 0.001F) {
+        response->status="CLOUD_GRASP_NONORTHOGONAL_SEED";
+        return;
+      }
+      proposal.sample=(proposal.contact_left+proposal.contact_right)*0.5F;
+      proposal.hand_base=proposal.sample-proposal.approach*static_cast<float>(grasp_contact_depth_m_);
+      proposal.height_axis=proposal.approach.cross(proposal.closing).normalized();
+      proposal.has_contacts=true;
+      proposal.grasp_skill=LocalGraspSkill::kPowerGrasp;
+      proposal.quality=1.0F;
+      fixture_seeds.push_back(proposal);
+    }
+    computeGraspCandidates(adapted,result,cloud,fixture_seeds);
+    response->status=result->status;
+    for (const auto &candidate:result->candidates) {
+      if (candidate.ik_valid && candidate.measured_contacts_valid &&
+          candidate.grasp_collision_valid && candidate.pregrasp_collision_valid &&
+          !candidate.pregrasp_collision_overridden) response->candidates.push_back(candidate);
+    }
+    response->success=!response->candidates.empty();
+  }
+
   void handleFindGraspCandidates(
     const std::shared_ptr<my_actions::srv::FindGraspCandidates::Request> request,
     std::shared_ptr<my_actions::srv::FindGraspCandidates::Response> response) {
+    computeGraspCandidates(request,response);
+  }
+
+  void computeGraspCandidates(
+    const std::shared_ptr<my_actions::srv::FindGraspCandidates::Request> request,
+    std::shared_ptr<my_actions::srv::FindGraspCandidates::Response> response,
+    const sensor_msgs::msg::PointCloud2::SharedPtr &object_scene = nullptr,
+    const std::vector<GraspProposal> &fixture_seeds = {}) {
+    PipelineProfile profile(pipeline_profiling_, "grasp", [this](const std::string &data) {
+      RCLCPP_INFO(this->get_logger(), "[PIPELINE PROFILE] %s", data.c_str());
+    });
     const auto computation_started = std::chrono::steady_clock::now();
     publishGraspMarkers({});
+    publishGraspMarkers({}, valid_grasp_markers_pub_, "valid_grasp_candidate_", true);
     publishGraspMarkers({}, gpd_proposals_markers_pub_, "gpd_proposal_");
     publishGraspMarkers({}, analytical_proposals_markers_pub_, "analytical_proposal_");
     publishGraspMarkers({}, hggd_raw_proposals_markers_pub_, "hggd_raw_proposal_");
@@ -3873,6 +4729,16 @@ private:
         }
       }
     }
+    if (!cloud && requested_stamp.nanoseconds() != 0) {
+      std::lock_guard<std::mutex> lock(observation_mutex_);
+      if (pinned_layout_cloud_ &&
+        rclcpp::Time(pinned_layout_cloud_->header.stamp) == requested_stamp) {
+        cloud = pinned_layout_cloud_;
+        observation_image = pinned_layout_image_;
+        observation_camera_transform = pinned_layout_transform_;
+        selected_from_cache = true;
+      }
+    }
     if (!cloud) {
       response->status = requested_stamp.nanoseconds() == 0 ?
         "NO_SYNCHRONIZED_OBSERVATION" : "OBSERVATION_NOT_IN_CACHE";
@@ -3881,6 +4747,14 @@ private:
         "[GRASP POC] Observation %ld is unavailable in the %zu-frame cache.",
         requested_stamp.nanoseconds(), grasp_observation_cache_size_);
       return;
+    }
+    if (object_scene) {
+      if (cloud->header.stamp != object_scene->header.stamp ||
+          object_scene->header.frame_id != "base_link") {
+        response->status="CLOUD_GRASP_MANUAL_OBSERVATION_MISMATCH";
+        return;
+      }
+      cloud=object_scene;
     }
     if (cloud->height <= 1 || joints.size() != 6) {
       response->status = "NO_SYNCHRONIZED_OBSERVATION";
@@ -3922,7 +4796,7 @@ private:
         "TF fallback is disabled.");
       return;
     }
-    if (grasp_candidate_backend_ == "hggd") {
+    if (grasp_candidate_backend_ == "hggd" && !object_scene) {
       if (!hggd_adapter_) {
         response->status = "HGGD_UNAVAILABLE: " + hggd_initialization_error_;
         return;
@@ -3949,7 +4823,7 @@ private:
         return;
       }
     }
-    const bool request_uses_hggd = grasp_candidate_backend_ == "hggd";
+    const bool request_uses_hggd = grasp_candidate_backend_ == "hggd" && !object_scene;
     const Eigen::Vector3f camera_origin_in_cloud(
       static_cast<float>(observation_camera_transform->transform.translation.x),
       static_cast<float>(observation_camera_transform->transform.translation.y),
@@ -3961,15 +4835,25 @@ private:
     // HGGD provides the actual grasp seeds. Its request pixel is only the ROI
     // centre retained for API compatibility, so foreground selection must not
     // require valid depth at that pixel (it may lie in a handle hole).
-    if (!request_uses_hggd &&
+    if (!request_uses_hggd && !object_scene &&
         !findCorrectedSeed(*cloud, *request, u, v, seed_camera, correction)) {
       response->status = "NO_VALID_DEPTH_NEAR_POINT";
       return;
     }
     size_t connected_target_points = 0;
-    const sensor_msgs::msg::Image target_mask = buildConnectedTargetMask(
-      *cloud, request->target_mask, camera_origin_in_cloud,
-      u, v, connected_target_points);
+    const sensor_msgs::msg::Image target_mask = object_scene ? request->target_mask :
+      buildConnectedTargetMask(*cloud, request->target_mask, camera_origin_in_cloud,
+        u, v, connected_target_points);
+    if (object_scene) connected_target_points=static_cast<size_t>(std::count(
+      target_mask.data.begin(), target_mask.data.end(), uint8_t{255}));
+    if (connected_target_points == 0) {
+      response->status = "NO_VALID_DEPTH_ON_CONNECTED_TARGET";
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[GRASP POC] Connected target extraction returned no valid depth; "
+        "returning the failed request immediately.");
+      return;
+    }
     if (!pointAtPixel(*cloud, u, v, seed_camera)) {
       response->status = "NO_VALID_DEPTH_ON_CONNECTED_TARGET";
       return;
@@ -4025,7 +4909,7 @@ private:
         const Eigen::Vector3f base(point[0], point[1], point[2]);
         const bool target = maskAllows(target_mask, pixel_u, pixel_v);
         const float seed_distance_sq = (base - seed).squaredNorm();
-        if (seed_distance_sq <= scene_radius_sq || target) {
+        if (object_scene || seed_distance_sq <= scene_radius_sq || target) {
           scene_points.push_back(base);
           scene_target_flags.push_back(target ? 1U : 0U);
         }
@@ -4072,9 +4956,17 @@ private:
         affordance != "BODY" && affordance != "AUTO") {
       affordance = "AUTO";
     }
-    const bool pure_gpd = grasp_candidate_backend_ == "gpd";
-    const bool pure_hggd = grasp_candidate_backend_ == "hggd";
-    const bool pure_learned = pure_gpd || pure_hggd;
+    std::string normalized_description = request->target_description;
+    std::transform(
+      normalized_description.begin(), normalized_description.end(),
+      normalized_description.begin(),
+      [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    const bool force_layout_analytical =
+      normalized_description.rfind("layout-analytical:", 0) == 0;
+    const bool pure_gpd = grasp_candidate_backend_ == "gpd" && !object_scene;
+    bool pure_hggd = grasp_candidate_backend_ == "hggd" &&
+      !force_layout_analytical;
+    bool pure_learned = pure_gpd || pure_hggd;
     size_t local_surface_count = 0;
     std::vector<AntipodalContacts> local_antipodal_pairs;
     AntipodalContacts silhouette_pair;
@@ -4083,7 +4975,7 @@ private:
     if (require_measured_antipodal_contacts_ && !pure_learned) {
       local_antipodal_pairs = buildLocalAntipodalPairs(
         target_samples, seed, local_surface_count);
-      if (!silhouette_pair_available && buildSilhouetteThicknessPair(
+      if (!object_scene && !silhouette_pair_available && buildSilhouetteThicknessPair(
             *cloud, target_mask, u, v, silhouette_pair)) {
         silhouette_pair_available = true;
       }
@@ -4144,8 +5036,10 @@ private:
     double hggd_seed_selection_ms = 0.0;
     std::string hggd_heatmap_output;
     const auto proposal_started = std::chrono::steady_clock::now();
-    if (grasp_candidate_backend_ == "analytical" ||
-        grasp_candidate_backend_ == "hybrid") {
+    if (!fixture_seeds.empty()) {
+      proposals = fixture_seeds;
+    } else if (grasp_candidate_backend_ == "analytical" ||
+        grasp_candidate_backend_ == "hybrid" || force_layout_analytical) {
       proposals = analytical_generator_->generate(
         target_samples, seed, camera_origin, &analytical_diagnostics);
     }
@@ -4194,12 +5088,15 @@ private:
         intrinsics.cx = static_cast<float>(camera_info->k[2]);
         intrinsics.cy = static_cast<float>(camera_info->k[5]);
         cv::Mat heatmap;
+        {
+        ComponentTimer hggd_timer(PipelineComponent::HGGD);
         proposals = hggd_adapter_->detect(
           *cloud, *observation_image, target_mask, intrinsics,
           cloud_to_camera_eigen, camera_to_base_eigen,
           static_cast<float>(grasp_contact_depth_m_),
           static_cast<std::size_t>(hggd_maximum_proposals_), heatmap,
           hggd_diagnostics);
+        }
 
         // Prepare one raw marker per spatial family. Publication is delayed
         // until after the quick seed IK/collision prefilter so this RViz layer
@@ -4281,6 +5178,22 @@ private:
           message.data.assign(heatmap.datastart, heatmap.dataend);
           hggd_heatmap_pub_->publish(message);
           hggd_heatmap_output = "/vamp_planner/hggd_heatmap";
+          const char *home = std::getenv("HOME");
+          if (home != nullptr && *home != '\0') {
+            const auto capture_dir = std::filesystem::path(home) /
+              "robobrain_inference";
+            try {
+              std::filesystem::create_directories(capture_dir);
+              const auto path = capture_dir / "hggd_heatmap.png";
+              if (!cv::imwrite(path.string(), heatmap)) {
+                RCLCPP_WARN(this->get_logger(),
+                  "Could not save HGGD heatmap: %s", path.c_str());
+              }
+            } catch (const std::exception &error) {
+              RCLCPP_WARN(this->get_logger(),
+                "Could not save HGGD heatmap: %s", error.what());
+            }
+          }
         }
         float raw_minimum_opening = std::numeric_limits<float>::infinity();
         float raw_maximum_opening = 0.0F;
@@ -4453,15 +5366,20 @@ private:
               thin_silhouette_pair);
 
           GraspProposal aligned = direct;
+          std::vector<GraspProposal> aligned_hypotheses;
           if (!alignHggdSeedToLocalDominantAxis(
               target_samples, camera_origin, current_gripper_rotation,
               have_thin_silhouette ? &thin_silhouette_pair : nullptr,
-              aligned))
+              affordance,
+              aligned, &aligned_hypotheses))
           {
             ++hggd_geometry_rejected;
             continue;
           }
-          aligned_seeds.push_back(std::move(aligned));
+          aligned_seeds.insert(
+            aligned_seeds.end(),
+            std::make_move_iterator(aligned_hypotheses.begin()),
+            std::make_move_iterator(aligned_hypotheses.end()));
           ++hggd_aligned_centers;
         }
         publishGraspMarkers(
@@ -4527,16 +5445,12 @@ private:
     const size_t visualization_limit =
       static_cast<size_t>(std::max(0, gpd_visualization_limit_));
     raw_markers.reserve(std::min(proposals.size(), visualization_limit));
-    std::unordered_map<std::size_t, bool> visualized_hggd_families;
     for (const auto &proposal : proposals) {
       GraspProposal visual_proposal = proposal;
-      if (proposal.source == GraspProposalSource::kHggd) {
-        // Show exactly one geometry-aligned zero frame for each HGGD center.
-        // The subsequent dominant-axis orbit is deliberately not published
-        // on this debug layer.
-        if (visualized_hggd_families[proposal.family_index]) continue;
-        visualized_hggd_families[proposal.family_index] = true;
-      }
+      // Each HGGD marker is one geometry-aligned topology hypothesis.  The
+      // subsequent bounded IK orbit is still deliberately not published on
+      // this layer, so RViz shows useful side/rim/top alternatives without
+      // showing every small solver perturbation.
       auto *marker_group = &raw_markers;
       if (proposal.source == GraspProposalSource::kAnalytical) {
         marker_group = &analytical_markers;
@@ -4587,15 +5501,20 @@ private:
     std::vector<Point> env;
     std::vector<uint8_t> env_target_flags;
     if (enable_grasp_collision_check_) {
-      { std::lock_guard<std::mutex> lock(cloud_mutex_); env = getFilteredEnvironment(joints); }
+      if (object_scene) {
+        for (const auto &point : scene_points) env.push_back({point.x(),point.y(),point.z()});
+      } else {
+        std::lock_guard<std::mutex> lock(cloud_mutex_); env = getFilteredEnvironment(joints);
+      }
       // Preserve the complete low-resolution target in the collision world.
-      // Candidate-specific validation below permits only gripper-base contact
+      // Candidate-specific validation below permits only inner-pad contact
       // near the two reconstructed jaw contacts. Arm/wrist contact with the
       // object, and gripper contact elsewhere on it, remain blocking.
       const float target_clearance_sq = static_cast<float>(
         target_collision_clearance_m_ * target_collision_clearance_m_);
       env_target_flags.assign(env.size(), 0);
-      for (size_t obstacle_index = 0; obstacle_index < env.size();
+      if (object_scene) env_target_flags=scene_target_flags;
+      for (size_t obstacle_index = 0; !object_scene && obstacle_index < env.size();
            ++obstacle_index) {
         const Point &obstacle = env[obstacle_index];
         const Eigen::Vector3f obstacle_point(
@@ -4628,6 +5547,7 @@ private:
     float first_target_sweep_opening = 0.0F;
     bool first_target_sweep_silhouette = false;
     int rejected_pregrasp_ik = 0, rejected_pregrasp_visibility = 0;
+    int rejected_pregrasp_envelope = 0;
     int rejected_grasp_collision = 0, rejected_pregrasp_collision = 0;
     int retained_pregrasp_overrides = 0;
     size_t ranking_pool_candidate_count = 0;
@@ -4639,11 +5559,21 @@ private:
       }
     };
     int tested = 0;
-    const int candidate_test_limit = pure_hggd ?
-      std::min(maximum_candidates_to_test_, 100) : maximum_candidates_to_test_;
+    const bool quick_layout_validation =
+      pure_hggd || force_layout_analytical;
+    const int candidate_test_limit = quick_layout_validation ?
+      std::min(maximum_candidates_to_test_,
+        force_layout_analytical ? 120 : 100) : maximum_candidates_to_test_;
+    const int ranking_pool_limit = quick_layout_validation ?
+      std::min(maximum_ranking_pool_candidates_, 3) :
+      maximum_ranking_pool_candidates_;
+    int hggd_duplicate_valid_rejected = 0;
     std::unordered_map<uint32_t, std::string> candidate_origins;
     std::unordered_map<uint32_t, size_t> hggd_candidate_seed_indices;
+    std::unordered_map<uint32_t, float> hggd_candidate_variant_costs;
     int geometry_approach_variants_generated = 0;
+    int hggd_contact_axis_fallback_seeds = 0;
+    int hggd_orbit_variants_generated = 0;
     int pinch_candidates_generated = 0;
     int power_candidates_generated = 0;
     int pinch_candidates_accepted = 0;
@@ -4672,21 +5602,16 @@ private:
     for (size_t proposal_index = 0; proposal_index < proposals.size(); ++proposal_index) {
       const auto &proposal = proposals[proposal_index];
       auto &seed_diagnostics = hggd_seed_diagnostics[proposal_index];
-      // Quick exit is seed-scoped, not variant-scoped: finish validating and
-      // ranking every purposeful orbit variant for the first successful PCA-
-      // aligned seed, then skip all lower-confidence spatial seeds.
-      if (pure_hggd && !response->candidates.empty()) {
-        seed_diagnostics.terminal_reason = "SKIPPED_AFTER_SUCCESSFUL_SEED";
-        continue;
-      }
+      // Cache at most three validated HGGD poses from distinct spatial seeds.
+      // Stop the expensive validation path as soon as that pool is full.
       if (tested >= candidate_test_limit ||
           static_cast<int>(response->candidates.size()) >=
-            maximum_ranking_pool_candidates_) {
+            ranking_pool_limit) {
         if (pure_hggd) {
           seed_diagnostics.ik_budget_exhausted = tested >= candidate_test_limit;
           seed_diagnostics.ranking_pool_full =
             static_cast<int>(response->candidates.size()) >=
-            maximum_ranking_pool_candidates_;
+            ranking_pool_limit;
           continue;
         }
         break;
@@ -4731,12 +5656,13 @@ private:
       std::vector<HandleOrientation> approach_variants;
       float corner_penalty = 0.0F;
       const int seed_test_start = tested;
-      constexpr int hggd_variant_test_limit_per_seed = 2;
+      constexpr int hggd_variant_test_limit_per_seed = 9;
       LocalGraspSkill selected_grasp_skill = LocalGraspSkill::kUnknown;
       bool have_constrained_grasp_seed = false;
       std::vector<float> constrained_grasp_seed;
       const bool refine_hggd_geometry = pure_hggd;
       const bool use_measured_contacts = refine_hggd_geometry ||
+        proposal.source == GraspProposalSource::kAnalytical ||
         (require_measured_antipodal_contacts_ && !pure_learned);
       if (use_measured_contacts) {
         std::string contact_failure_reason;
@@ -4765,6 +5691,7 @@ private:
           measured_contacts.opening = proposal.opening_m;
           measured_contacts.quality = 1.0F - proposal.quality;
           measured_contacts.body_model_supported = proposal.model_supported_contacts;
+          measured_contacts.grasp_skill = proposal.grasp_skill;
         } else if (silhouette_pair_available) {
           // The two mask boundaries are the directly observed local handle
           // thickness. Do not discard them merely because GPD proposed the
@@ -4799,50 +5726,112 @@ private:
         }
         closing = measured_contacts.closing_axis;
         if (refine_hggd_geometry) {
-          if (proposal.top_surface_grasp) {
-            // A broad top-down grasp already has a complete gravity-aligned
-            // pose and two contacts sampled from the observed box walls.
-            // The contact-axis solver is intended to flex side/handle poses
-            // around a local PCA axis; applying it here can rotate a valid
-            // top-down pose back toward a side approach or reject it before
-            // the normal full-pose IK solver gets a chance to evaluate it.
-            approach_variants.push_back({
-              proposal.approach.normalized(),
-              proposal.closing.normalized(), 0.0F});
-            ++geometry_approach_variants_generated;
-          } else {
-          const Eigen::Vector3f contact_centroid = 0.5F *
-            (measured_contacts.left + measured_contacts.right);
           std::array<float, 6> capture_joints{};
           std::copy_n(joints.begin(), 6, capture_joints.begin());
           const Eigen::Matrix3f capture_rotation =
             Robot::eefk(capture_joints).linear();
+          if (proposal.top_surface_grasp || proposal.rim_grasp) {
+            // Broad top-down and rim grasps already have complete,
+            // gravity-aligned poses.  The contact-axis solver is intended to
+            // flex side/handle poses around a local PCA axis; applying it to
+            // a rim uses the vertical cup-wall PCA axis as a jaw axis and can
+            // turn a correct top-down rim pinch into a roll-tilted pose.
+            approach_variants.push_back({
+              proposal.approach.normalized(),
+              proposal.closing.normalized(), 0.0F});
+            ++geometry_approach_variants_generated;
+            if (proposal.rim_grasp) {
+              // Keep the radial jaw line fixed and horizontal, but let the
+              // wrist approach the same rim contacts with a modest pitch.
+              // This supplies reachable 6-DoF alternatives without accepting
+              // a loose-IK pose or rolling the jaws toward the cup wall PCA.
+              const Eigen::Vector3f rim_closing =
+                proposal.closing.normalized();
+              const Eigen::Vector3f rim_approach =
+                proposal.approach.normalized();
+              for (const float degrees : {
+                  -5.0F, 5.0F, -10.0F, 10.0F,
+                  -15.0F, 15.0F, -20.0F, 20.0F}) {
+                const Eigen::Vector3f tilted_approach =
+                  (Eigen::AngleAxisf(
+                    degrees * static_cast<float>(M_PI / 180.0),
+                    rim_closing) * rim_approach).normalized();
+                // This is a bounded pitch about the fixed radial jaw axis,
+                // not an unconstrained yaw. Test it even when the generic
+                // capture-frame Euler decomposition labels the same motion
+                // as exceeding one component limit.
+                approach_variants.push_back({
+                  tilted_approach, rim_closing,
+                  std::abs(degrees) / 90.0F});
+                ++geometry_approach_variants_generated;
+                ++hggd_orbit_variants_generated;
+              }
+            }
+          } else {
+          const Eigen::Vector3f contact_centroid = 0.5F *
+            (measured_contacts.left + measured_contacts.right);
           const Eigen::Matrix3f aligned_rotation = piperGripperRotation(
             proposal.closing, proposal.approach);
           Eigen::Matrix3f resolved_rotation = aligned_rotation;
-          if (!solvePiperContactAxisIK(
+          if (solvePiperContactAxisIK(
               contact_centroid, proposal.local_dominant_axis,
               aligned_rotation, capture_rotation, joints,
               constrained_grasp_seed, resolved_rotation)) {
+            have_constrained_grasp_seed = true;
+            const Eigen::Vector3f resolved_approach =
+              resolved_rotation.col(2).normalized();
+            const Eigen::Vector3f resolved_closing =
+              resolved_rotation.col(1).normalized();
+            const float angular_deviation = std::acos(std::clamp(
+              proposal.approach.normalized().dot(resolved_approach),
+              -1.0F, 1.0F));
+            approach_variants.push_back({
+              resolved_approach, resolved_closing,
+              angular_deviation / static_cast<float>(M_PI_2), true});
+            ++geometry_approach_variants_generated;
+          } else {
+            ++hggd_contact_axis_fallback_seeds;
+          }
+          // The contact-axis solver is a preference, not proof that the
+          // measured contact pair is unreachable. Try a small, deterministic
+          // orbit around that same closing axis. Every variant still passes
+          // the measured finger sweep, strict grasp IK, and collision checks.
+          const Eigen::Vector3f orbit_axis = proposal.closing.normalized();
+          const Eigen::Vector3f nominal_approach =
+            proposal.approach.normalized();
+          constexpr float orbit_dedup_cosine = 0.9961947F;  // 5 degrees
+          for (const float degrees : {0.0F, -10.0F, 10.0F,
+                                      -20.0F, 20.0F}) {
+            const float radians = degrees * static_cast<float>(M_PI / 180.0);
+            const Eigen::Vector3f orbit_approach =
+              (Eigen::AngleAxisf(radians, orbit_axis) *
+               nominal_approach).normalized();
+            const Eigen::Matrix3f orbit_rotation = piperGripperRotation(
+              orbit_axis, orbit_approach);
+            if (!graspOrientationWithinCaptureLimits(
+                capture_rotation, orbit_rotation)) continue;
+            const bool duplicate = std::any_of(
+              approach_variants.begin(), approach_variants.end(),
+              [&orbit_approach, orbit_dedup_cosine](
+                  const HandleOrientation &existing) {
+                return existing.approach.dot(orbit_approach) >
+                  orbit_dedup_cosine;
+              });
+            if (duplicate) continue;
+            approach_variants.push_back({
+              orbit_approach, orbit_axis,
+              std::abs(degrees) / 90.0F, false});
+            ++geometry_approach_variants_generated;
+            ++hggd_orbit_variants_generated;
+          }
+          if (approach_variants.empty()) {
             ++rejected_contacts;
             ++contact_rejection_reasons[
-              "constrained_contact_axis_ik_failed"];
+              "contact_axis_and_bounded_orbit_unreachable"];
             seed_diagnostics.terminal_reason =
-              "CONSTRAINED_CONTACT_AXIS_IK_FAILED";
+              "CONTACT_AXIS_AND_ORBIT_UNREACHABLE";
             continue;
           }
-          have_constrained_grasp_seed = true;
-          const Eigen::Vector3f resolved_approach =
-            resolved_rotation.col(2).normalized();
-          const Eigen::Vector3f resolved_closing =
-            resolved_rotation.col(1).normalized();
-          const float angular_deviation = std::acos(std::clamp(
-            proposal.approach.normalized().dot(resolved_approach),
-            -1.0F, 1.0F));
-          approach_variants.push_back({
-            resolved_approach, resolved_closing,
-            angular_deviation / static_cast<float>(M_PI_2)});
-          ++geometry_approach_variants_generated;
           }
         } else if (measured_contacts.silhouette_supported ||
             measured_contacts.body_model_supported) {
@@ -4914,13 +5903,57 @@ private:
           right = oriented_contacts.right;
           opening = oriented_contacts.opening;
           const Eigen::Vector3f contact_midpoint = (left + right) * 0.5F;
-          if (!pinchSectionAwayFromJunction(
+          // The jaw opening and pose must describe the same measured pair.
+          // Top-surface hypotheses choose two observed edge samples; those
+          // samples can lie at different positions along a curved cup rim
+          // even when their projected PCA width looks plausible. Reject that
+          // geometry before the sweep and IK checks grant jaw-pad contact.
+          const Eigen::Vector3f contact_span = left - right;
+          const float measured_jaw_span = contact_span.dot(closing);
+          const float tangent_offset = std::abs(contact_span.dot(height_axis));
+          const float span_tolerance = std::max(0.003F, 0.20F * opening);
+          const float tangent_tolerance = std::max(0.003F, 0.27F * opening);
+          if (measured_jaw_span <= 0.0F ||
+              std::abs(measured_jaw_span - opening) > span_tolerance ||
+              tangent_offset > tangent_tolerance) {
+            ++rejected_contacts;
+            ++contact_rejection_reasons["contact_pair_misaligned_with_jaw"];
+            ++seed_diagnostics.cross_section_rejected;
+            continue;
+          }
+          // The two-sided section probe protects handle pinches from their
+          // junction and tip. A requested upper rim is intentionally at an
+          // endpoint; its separate top-band contact test, finger sweep, and
+          // full collision checks remain mandatory.
+          if (affordance != "RIM" && !proposal.rim_grasp &&
+              !pinchSectionAwayFromJunction(
                 target_samples, oriented_contacts, closing, height_axis,
                 approach)) {
             ++rejected_contacts;
             ++contact_rejection_reasons[
               "pinch_junction_or_endpoint"];
             ++seed_diagnostics.cross_section_rejected;
+            continue;
+          }
+          if (affordance != "RIM" && !proposal.rim_grasp &&
+              !oriented_contacts.silhouette_supported &&
+              !contactSurfaceNormalsSupportPinch(
+                target_samples, oriented_contacts, closing)) {
+            ++rejected_contacts;
+            ++contact_rejection_reasons[
+              "pinch_contact_normals_not_antipodal"];
+            ++seed_diagnostics.cross_section_rejected;
+            continue;
+          }
+          // Analytical PCA extent pairs can lie diagonally across a sloped
+          // plate rim. Require measured pad-normal alignment even when the
+          // proposal has no PINCH skill tag; collision freedom alone is not
+          // evidence that closing the jaws will hold the object stationary.
+          if (proposal.source == GraspProposalSource::kAnalytical &&
+              !contactSurfaceNormalsSupportPinch(
+                target_samples, oriented_contacts, closing, true)) {
+            ++rejected_contacts;
+            ++contact_rejection_reasons["analytical_pad_surface_misalignment"];
             continue;
           }
           // grasp_contact_depth_m is the commanded distance from the physical
@@ -5028,28 +6061,47 @@ private:
         branch_target.linear() = piperGripperRotation(closing, approach, swap_fingers);
         std::vector<float> branch_ik;
         PoseIkDiagnostics grasp_diagnostics;
-        const std::vector<float> &grasp_seed =
-          have_constrained_grasp_seed && !swap_fingers ?
-          constrained_grasp_seed : joints;
         const bool constrained_seed_only =
-          have_constrained_grasp_seed && !swap_fingers;
+          have_constrained_grasp_seed && orientation.constrained_seed &&
+          !swap_fingers;
+        const std::vector<float> &grasp_seed =
+          constrained_seed_only ? constrained_grasp_seed : joints;
         if (!solvePiperPoseIK(
             branch_target, grasp_seed, branch_ik, grasp_diagnostics,
             constrained_seed_only)) {
           best_grasp_diagnostics.keepBest(grasp_diagnostics);
           continue;
         }
+        if (proposal.source == GraspProposalSource::kAnalytical) {
+          std::array<float, 6> actual_joints{};
+          std::copy_n(branch_ik.begin(), 6, actual_joints.begin());
+          const Eigen::Vector3f actual_closing =
+            Robot::eefk(actual_joints).linear().col(1);
+          // Check actual FK, including either finger assignment.
+          AntipodalContacts actual_contacts = measured_contacts;
+          if (actual_closing.dot(actual_contacts.closing_axis) < 0.0F) {
+            std::swap(actual_contacts.left, actual_contacts.right);
+          }
+          if (!contactSurfaceNormalsSupportPinch(
+              target_samples, actual_contacts, actual_closing, true)) {
+            ++rejected_contacts;
+            ++contact_rejection_reasons["analytical_ik_pad_surface_misalignment"];
+            continue;
+          }
+        }
         any_grasp_ik = true;
         best_grasp_diagnostics.keepBest(grasp_diagnostics);
         // A top-down power grasp contacts a flat box wall along the jaw pad,
-        // rather than at one mathematical point. Keep the generic 30 mm
-        // allowance for all other grasps, but cover the bounded 50 mm cached
+        // rather than at one mathematical point. Keep the configured
+        // allowance for other grasps, but cover the bounded 50 mm cached
         // contact region for this measured topology. The exemption below is
         // still restricted to segmented-target points and inner-pad spheres;
         // palm, finger exterior, arm, table, and clutter remain blocking.
         const float candidate_contact_allowance_m =
+          (affordance == "RIM" || proposal.rim_grasp) ? std::min(
+            0.008F, static_cast<float>(target_collision_clearance_m_)) :
           proposal.top_surface_grasp ? 0.050F :
-          static_cast<float>(target_collision_clearance_m_);
+            static_cast<float>(target_collision_clearance_m_);
         if (enable_grasp_collision_check_ && !isCandidatePoseSafe(
             branch_ik, env, &env_target_flags, &left, &right,
             candidate_contact_allowance_m,
@@ -5093,10 +6145,24 @@ private:
           PoseIkDiagnostics pregrasp_diagnostics;
           if (!solveRelaxedPregraspIK(
               branch_pregrasp, branch_ik, branch_pregrasp_ik,
-              pregrasp_diagnostics, resolved_pregrasp,
-              proposal.top_surface_grasp ? 45.0F : -1.0F))
+              pregrasp_diagnostics, resolved_pregrasp))
           {
             best_pregrasp_diagnostics.keepBest(pregrasp_diagnostics);
+            continue;
+          }
+          const float actual_standoff =
+            (branch_target.translation() -
+             resolved_pregrasp.translation()).norm();
+          const float actual_orientation_delta = Eigen::AngleAxisf(
+            branch_target.linear().transpose() *
+            resolved_pregrasp.linear()).angle();
+          if (!std::isfinite(actual_standoff) ||
+              actual_standoff < 0.05F || actual_standoff > 0.15F ||
+              !std::isfinite(actual_orientation_delta) ||
+              actual_orientation_delta > static_cast<float>(
+                pregrasp_orientation_tolerance_degrees_ * M_PI / 180.0) +
+                1.0e-4F) {
+            ++rejected_pregrasp_envelope;
             continue;
           }
           any_pregrasp_ik = true;
@@ -5148,7 +6214,7 @@ private:
           break;
         }
       }
-      if (!accepted && have_pregrasp_collision_fallback) {
+      if (!accepted && have_pregrasp_collision_fallback && !pure_hggd) {
         target_pose = fallback_target;
         rotation = fallback_target.rotation();
         ik = std::move(fallback_ik);
@@ -5225,6 +6291,13 @@ private:
       const float camera_upright_penalty = pure_hggd ?
         0.5F * (1.0F - std::clamp(
           accepted_camera_upright_score, -1.0F, 1.0F)) : 0.0F;
+      // For a side-wall power grasp, a gravity-level jaw line is the natural
+      // solution.  Keep tilted solutions as reachable fallbacks, but rank
+      // them below an otherwise comparable level grasp instead of treating a
+      // solver-induced roll as an equally desirable second candidate.
+      const float side_roll_tilt_penalty =
+        proposal.side_surface_grasp ? 0.5F * std::clamp(
+          std::abs(closing.z()), 0.0F, 1.0F) : 0.0F;
       if (refine_hggd_geometry) {
         Eigen::Vector3f frontal = contact_midpoint - camera_origin;
         frontal -= closing * frontal.dot(closing);
@@ -5243,7 +6316,11 @@ private:
       constexpr float upper_limits[6] = {
         2.6179938F, 3.1415926F, 0.0F, 1.7453292F, 1.2217304F, 2.0943951F};
       for (size_t index = 0; index < 6; ++index) {
-        const float delta = ik[index] - joints[index];
+        // The first commanded destination is the pre-grasp, so rank its
+        // required joint displacement rather than the later contact pose.
+        // This is the inexpensive reachability proxy used when full path
+        // preplanning is disabled.
+        const float delta = pregrasp_ik[index] - joints[index];
         joint_travel_sq += delta * delta;
         const float range = upper_limits[index] - lower_limits[index];
         const float normalized_margin = 2.0F * std::min(
@@ -5265,8 +6342,25 @@ private:
         joint_margin_reward,
         accepted_pregrasp_collision_free ? 0.0F : 1.0F,
         corner_penalty + orientation.roll_alignment_cost +
-          camera_upright_penalty,
+          camera_upright_penalty + side_roll_tilt_penalty,
         camera_approach_penalty};
+      float variant_selection_cost =
+        orientation.roll_alignment_cost + camera_upright_penalty +
+        0.20F * joint_travel_penalty - 0.10F * joint_margin_reward;
+      if (proposal.rim_grasp) {
+        // Prefer a gravity-top-down approach and a level radial jaw line.
+        // IK/collision safety remain hard requirements; this only chooses
+        // among variants of the same spatial HGGD seed.
+        variant_selection_cost += std::acos(std::clamp(
+          approach.dot(-Eigen::Vector3f::UnitZ()), -1.0F, 1.0F));
+        variant_selection_cost += 0.75F * std::abs(closing.z());
+      } else if (proposal.side_surface_grasp) {
+        variant_selection_cost += 1.25F * std::abs(closing.z());
+        variant_selection_cost += 0.25F * camera_approach_penalty;
+      } else {
+        variant_selection_cost += 0.50F * std::abs(closing.z());
+        variant_selection_cost += 0.25F * camera_approach_penalty;
+      }
       candidate.ik_valid = true;
       // Contact reconstruction is diagnostic metadata only.  Do not claim a
       // measured-contact/sweep validation unless fingerVolumesAndClosingSweepClear
@@ -5301,12 +6395,63 @@ private:
         pregrasp_ik.begin(), candidate.pregrasp_joints.size(),
         candidate.pregrasp_joints.begin());
       if (pure_hggd) {
-        hggd_candidate_seed_indices[candidate.id] = proposal_index;
-        if (seed_diagnostics.accepted == 0) {
-          response->corrected_seed_base.x = proposal.sample.x();
-          response->corrected_seed_base.y = proposal.sample.y();
-          response->corrected_seed_base.z = proposal.sample.z();
+        const auto same_seed = std::find_if(
+          response->candidates.begin(), response->candidates.end(),
+          [&](const my_actions::msg::GraspCandidate &existing) {
+            const auto seed = hggd_candidate_seed_indices.find(existing.id);
+            return seed != hggd_candidate_seed_indices.end() &&
+              seed->second == proposal_index;
+          });
+        if (same_seed != response->candidates.end()) {
+          const uint32_t retained_id = same_seed->id;
+          const auto retained_cost =
+            hggd_candidate_variant_costs.find(retained_id);
+          if (retained_cost == hggd_candidate_variant_costs.end() ||
+              variant_selection_cost < retained_cost->second) {
+            candidate.id = retained_id;
+            *same_seed = candidate;
+            hggd_candidate_variant_costs[retained_id] =
+              variant_selection_cost;
+            seed_diagnostics.terminal_reason = "BEST_SAFE_VARIANT_UPDATED";
+          }
+          continue;
         }
+        const Eigen::Vector3f candidate_approach =
+          q * Eigen::Vector3f::UnitZ();
+        const Eigen::Vector3f candidate_closing =
+          q * Eigen::Vector3f::UnitY();
+        const bool duplicate = std::any_of(
+          response->candidates.begin(), response->candidates.end(),
+          [&](const my_actions::msg::GraspCandidate &existing) {
+            const Eigen::Vector3f existing_center(
+              static_cast<float>(0.5 *
+                (existing.contact_left.x + existing.contact_right.x)),
+              static_cast<float>(0.5 *
+                (existing.contact_left.y + existing.contact_right.y)),
+              static_cast<float>(0.5 *
+                (existing.contact_left.z + existing.contact_right.z)));
+            const Eigen::Quaternionf existing_orientation(
+              static_cast<float>(existing.grasp_pose.pose.orientation.w),
+              static_cast<float>(existing.grasp_pose.pose.orientation.x),
+              static_cast<float>(existing.grasp_pose.pose.orientation.y),
+              static_cast<float>(existing.grasp_pose.pose.orientation.z));
+            return gpdPosesAreDuplicates(
+              contact_midpoint, candidate_approach, candidate_closing,
+              existing_center,
+              existing_orientation * Eigen::Vector3f::UnitZ(),
+              existing_orientation * Eigen::Vector3f::UnitY(),
+              static_cast<float>(hggd_diversity_position_m_),
+              hggd_diversity_approach_degrees_,
+              hggd_diversity_closing_degrees_);
+          });
+        if (duplicate) {
+          ++hggd_duplicate_valid_rejected;
+          seed_diagnostics.terminal_reason = "DUPLICATE_VALID_POSE";
+          continue;
+        }
+        hggd_candidate_seed_indices[candidate.id] = proposal_index;
+        hggd_candidate_variant_costs[candidate.id] =
+          variant_selection_cost;
       }
       response->candidates.push_back(candidate);
       ++seed_diagnostics.accepted;
@@ -5327,12 +6472,10 @@ private:
           break;
       }
       if (pure_hggd) {
-        seed_diagnostics.terminal_reason = "FIRST_SAFE_VARIANT";
-        // HGGD is evaluated seed-by-seed. This candidate has passed measured
-        // finger sweep, strict final IK, grasp collision, relaxed pre-grasp
-        // IK, visibility, and pre-grasp collision checks. Do not spend the
-        // remaining budget producing lower-priority variants.
-        break;
+        // Continue through the bounded orientations. If another safe pose
+        // exists for this spatial seed, the topology-aware cost above keeps
+        // only the best one, so the ranking pool remains spatially diverse.
+        seed_diagnostics.terminal_reason = "BEST_SAFE_VARIANT";
       }
     }
     }
@@ -5401,6 +6544,14 @@ private:
       }
     }
 
+    // These poses have completed local contact refinement, strict grasp IK,
+    // pre-grasp IK, and the enabled collision checks. Diversity is applied
+    // below before publication so RViz does not present near-identical poses
+    // as independent choices.
+    RCLCPP_INFO(this->get_logger(),
+      "[GRASP VALID POOL] before_ranking=%zu cap=%d duplicate_valid_rejected=%d",
+      response->candidates.size(), ranking_pool_limit,
+      hggd_duplicate_valid_rejected);
     int diversity_rejected = 0;
     if (!response->candidates.empty()) {
       ranking_pool_candidate_count = response->candidates.size();
@@ -5489,8 +6640,13 @@ private:
               selected_orientation * Eigen::Vector3f::UnitY();
             duplicate = gpdPosesAreDuplicates(
               center, approach, closing, selected_center, selected_approach,
-              selected_closing, static_cast<float>(gpd_diversity_position_m_),
-              gpd_diversity_approach_degrees_, gpd_diversity_closing_degrees_);
+              selected_closing,
+              static_cast<float>(pure_hggd ?
+                hggd_diversity_position_m_ : gpd_diversity_position_m_),
+              pure_hggd ? hggd_diversity_approach_degrees_ :
+                gpd_diversity_approach_degrees_,
+              pure_hggd ? hggd_diversity_closing_degrees_ :
+                gpd_diversity_closing_degrees_);
             if (duplicate) break;
           }
           if (duplicate) {
@@ -5506,8 +6662,12 @@ private:
           "position=%.3fm approach=%.1fdeg closing=%.1fdeg",
           pure_hggd ? "HGGD" : "GPD", response->candidates.size(),
           diversity_rejected, diverse_candidates.size(),
-          gpd_diversity_position_m_, gpd_diversity_approach_degrees_,
-          gpd_diversity_closing_degrees_);
+          pure_hggd ? hggd_diversity_position_m_ :
+            gpd_diversity_position_m_,
+          pure_hggd ? hggd_diversity_approach_degrees_ :
+            gpd_diversity_approach_degrees_,
+          pure_hggd ? hggd_diversity_closing_degrees_ :
+            gpd_diversity_closing_degrees_);
         response->candidates = std::move(diverse_candidates);
       } else if (grasp_candidate_backend_ == "analytical" ||
           grasp_candidate_backend_ == "hybrid") {
@@ -5543,9 +6703,117 @@ private:
       } else if (response->candidates.size() > static_cast<size_t>(maximum_valid_candidates_)) {
         response->candidates.resize(static_cast<size_t>(maximum_valid_candidates_));
       }
+      if (pure_hggd && enable_grasp_path_preplanning_ &&
+          !response->candidates.empty()) {
+        struct PreplannedCandidate {
+          my_actions::msg::GraspCandidate candidate;
+          float path_motion_cost = std::numeric_limits<float>::infinity();
+          double planning_ms = 0.0;
+          size_t waypoints = 0;
+        };
+        const auto preplanning_started = std::chrono::steady_clock::now();
+        std::vector<PreplannedCandidate> feasible;
+        feasible.reserve(response->candidates.size());
+        for (const auto &candidate : response->candidates) {
+          std::vector<float> goal(
+            candidate.pregrasp_joints.begin(),
+            candidate.pregrasp_joints.end());
+          const auto candidate_started = std::chrono::steady_clock::now();
+          std::vector<float> path;
+          {
+            // Keep the obstacle snapshot fixed for the complete RRTC query.
+            // This performs planning only; it never publishes motor commands.
+            std::lock_guard<std::mutex> lock(cloud_mutex_);
+            geometry_msgs::msg::Point unused_contact_center;
+            path = replanRRTC(
+              joints, goal, false, unused_contact_center, 0.0F);
+          }
+          const double planning_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - candidate_started).count();
+          if (path.empty()) {
+            RCLCPP_INFO(
+              this->get_logger(),
+              "[GRASP PREPLAN V%u] reachable=0 planning=%.1fms",
+              candidate.id, planning_ms);
+            continue;
+          }
+          float motion_cost = 0.0F;
+          std::array<float, 6> previous{};
+          std::copy_n(joints.begin(), 6, previous.begin());
+          const size_t waypoints = path.size() / 6;
+          for (size_t waypoint = 0; waypoint < waypoints; ++waypoint) {
+            float synchronized_step = 0.0F;
+            for (size_t joint = 0; joint < 6; ++joint) {
+              const float value = path[waypoint * 6 + joint];
+              synchronized_step = std::max(
+                synchronized_step, std::abs(value - previous[joint]));
+              previous[joint] = value;
+            }
+            motion_cost += synchronized_step;
+          }
+          feasible.push_back({candidate, motion_cost, planning_ms, waypoints});
+          RCLCPP_INFO(
+            this->get_logger(),
+            "[GRASP PREPLAN V%u] reachable=1 planning=%.1fms "
+            "waypoints=%zu motion_cost=%.3frad",
+            candidate.id, planning_ms, waypoints, motion_cost);
+        }
+        if (feasible.empty()) {
+          response->candidates.clear();
+          response->success = false;
+          response->status = "NO_PATH_REACHABLE_PREGRASP";
+          publishGraspMarkers(
+            response->candidates, valid_grasp_markers_pub_,
+            "valid_grasp_candidate_", true);
+          RCLCPP_WARN(
+            this->get_logger(),
+            "[GRASP PREPLAN] all %zu collision-safe endpoint candidates "
+            "failed full-path planning",
+            ranking_pool_candidate_count);
+          return;
+        }
+        const auto [minimum_path, maximum_path] = std::minmax_element(
+          feasible.begin(), feasible.end(),
+          [](const auto &left, const auto &right) {
+            return left.path_motion_cost < right.path_motion_cost;
+          });
+        const float path_span =
+          maximum_path->path_motion_cost - minimum_path->path_motion_cost;
+        for (auto &planned : feasible) {
+          const float normalized_path_cost = path_span > 1.0e-6F ?
+            (planned.path_motion_cost - minimum_path->path_motion_cost) /
+              path_span : 0.0F;
+          planned.candidate.ranking_score -= static_cast<float>(
+            grasp_path_length_weight_) * normalized_path_cost;
+        }
+        std::stable_sort(
+          feasible.begin(), feasible.end(),
+          [](const auto &left, const auto &right) {
+            return left.candidate.ranking_score >
+              right.candidate.ranking_score;
+          });
+        response->candidates.clear();
+        response->candidates.reserve(feasible.size());
+        for (auto &planned : feasible) {
+          response->candidates.push_back(std::move(planned.candidate));
+        }
+        const double total_preplanning_ms =
+          std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - preplanning_started).count();
+        RCLCPP_INFO(
+          this->get_logger(),
+          "[GRASP PREPLAN] tested=%zu reachable=%zu total=%.1fms "
+          "path_weight=%.2f selected=V%u",
+          ranking_pool_candidate_count, response->candidates.size(),
+          total_preplanning_ms, grasp_path_length_weight_,
+          response->candidates.front().id);
+      }
+      publishGraspMarkers(
+        response->candidates, valid_grasp_markers_pub_,
+        "valid_grasp_candidate_", true);
       if (pure_hggd) {
-        // Stage 2 ranks every valid orientation variant of the selected seed,
-        // but the public pipeline needs only its single best executable pose.
+        // Rank the valid variants from every evaluated HGGD spatial seed;
+        // the public execution path consumes only the single best pose.
         if (response->candidates.size() > 1) {
           response->candidates.resize(1);
         }
@@ -5569,6 +6837,18 @@ private:
       writeAnalyticalDebugLog(
         cloud_stamp, seed, analytical_diagnostics, valid_pool_for_log,
         response->candidates, candidate_origins);
+      const uint32_t selected_valid_pool_id = response->candidates.front().id;
+      if (pure_hggd) {
+        const auto selected_seed =
+          hggd_candidate_seed_indices.find(selected_valid_pool_id);
+        if (selected_seed != hggd_candidate_seed_indices.end() &&
+            selected_seed->second < proposals.size()) {
+          const auto &sample = proposals[selected_seed->second].sample;
+          response->corrected_seed_base.x = sample.x();
+          response->corrected_seed_base.y = sample.y();
+          response->corrected_seed_base.z = sample.z();
+        }
+      }
       for (size_t index = 0; index < response->candidates.size(); ++index) {
         response->candidates[index].id = static_cast<uint32_t>(index + 1);
       }
@@ -5583,12 +6863,12 @@ private:
         static_cast<float>(best.pregrasp_pose.pose.position.z));
       RCLCPP_INFO(
         this->get_logger(),
-        "[GRASP RANK] Selected #1 ranking=%.3f proposal-quality=%.3f opening=%.3fm "
+        "[GRASP RANK] Selected #1 from_valid_pool=V%u ranking=%.3f proposal-quality=%.3f opening=%.3fm "
         "pregrasp-retreat=%.3fm "
         "relative-width=%.2f pool-width=[%.3f,%.3f]m "
         "vertical-close=%.2f seed=%.2f approach=%.2f "
         "camera-approach=%.2f joint-travel=%.2f joint-margin=%.2f status=%s",
-        best.ranking_score, best.score, best.jaw_opening_m,
+        selected_valid_pool_id, best.ranking_score, best.score, best.jaw_opening_m,
         (best_pregrasp_position - best_grasp_position).norm(),
         best.score_components[2], minimum_opening_m,
         maximum_opening_m, best.score_components[3],
@@ -5648,7 +6928,7 @@ private:
     } else {
       std::ostringstream status;
       status << "NO_VALID_GEOMETRIC_GRASP"
-             << " backend=" << grasp_candidate_backend_ << " proposals=" << proposals.size()
+             << " backend=" << (force_layout_analytical ? "analytical" : grasp_candidate_backend_) << " proposals=" << proposals.size()
              << " score=" << rejected_score
              << " antipodal=" << rejected_antipodal
              << " width=" << rejected_width
@@ -5682,7 +6962,9 @@ private:
         "seed_prepare={tested:%d,aligned:%d,geometry_rejected:%d,time:%.1fms} "
         "skills={pinch:%d/%d,power:%d/%d} accepted=%zu rejected={width:%d,grasp_ik:%d,"
         "pregrasp_ik:%d,pregrasp_not_visible:%d,grasp_collision:%d,pregrasp_collision:%d} "
-        "network={anchor:%.1fms,local:%.1fms} validation=%.1fms total=%.1fms heatmap=%s",
+        "network={anchor:%.1fms,local:%.1fms} validation=%.1fms total=%.1fms "
+        "heatmap=%s axis_fallback_seeds=%d orbit_variants=%d "
+        "pregrasp_envelope_rejected=%d",
         hggd_diagnostics.target_pixels, hggd_diagnostics.heatmap_centers,
         hggd_diagnostics.valid_local_groups, hggd_diagnostics.network_grasps,
         hggd_aligned_centers, hggd_geometry_rejected,
@@ -5700,21 +6982,24 @@ private:
           computation_finished - proposal_finished).count(),
         std::chrono::duration<double, std::milli>(
           computation_finished - computation_started).count(),
-        hggd_heatmap_output.empty() ? "<not-written>" : hggd_heatmap_output.c_str());
+        hggd_heatmap_output.empty() ? "<not-written>" : hggd_heatmap_output.c_str(),
+        hggd_contact_axis_fallback_seeds, hggd_orbit_variants_generated,
+        rejected_pregrasp_envelope);
     }
 
     RCLCPP_INFO(this->get_logger(),
       "[GRASP VALIDATION] backend=%s generated=%zu tested=%d accepted=%zu "
       "rejected={quality:%d,width:%d,antipodal:%d,contacts:%d,sweep:%d,"
-      "grasp_ik:%d,pregrasp_ik:%d,pregrasp_not_visible:%d,"
+      "grasp_ik:%d,pregrasp_ik:%d,pregrasp_envelope:%d,pregrasp_not_visible:%d,"
       "grasp_collision:%d,pregrasp_collision:%d} "
-      "pregrasp={retreat_range:[0.100,0.200]m,preferred:%.3fm,"
+      "pregrasp={retreat_range:[0.050,0.150]m,preferred:%.3fm,"
       "orientation_tolerance:%.1fdeg} "
       "validation=%.1fms total=%.1fms",
       grasp_candidate_backend_.c_str(), proposals.size(), tested,
       response->candidates.size(), rejected_score, rejected_width,
       rejected_antipodal, rejected_contacts, rejected_finger_sweep,
-      rejected_ik, rejected_pregrasp_ik, rejected_pregrasp_visibility,
+      rejected_ik, rejected_pregrasp_ik, rejected_pregrasp_envelope,
+      rejected_pregrasp_visibility,
       rejected_grasp_collision,
       rejected_pregrasp_collision,
       pregrasp_offset_, pregrasp_orientation_tolerance_degrees_,
@@ -6272,6 +7557,7 @@ private:
       const std::vector<float> &live_seed,
       std::vector<float> &out_joints,
       Eigen::Matrix3f &out_rotation) {
+    ComponentTimer numeric_timer(PipelineComponent::NumericIK);
     if (live_seed.size() != 6 || !contact_centroid.allFinite() ||
         dominant_axis.squaredNorm() < 1.0e-8F) return false;
     Eigen::Vector3f desired_height = dominant_axis.normalized();
@@ -6308,8 +7594,10 @@ private:
     for (auto seed : seeds) {
       std::vector<float> joints(seed.begin(), seed.end());
       for (int iteration = 0; iteration < maximum_iterations; ++iteration) {
+        if (active_pipeline_metrics) ++active_pipeline_metrics->ik_iterations;
         std::array<float, 6> q{};
         std::copy_n(joints.begin(), 6, q.begin());
+        if (active_pipeline_metrics) ++active_pipeline_metrics->ik_fk_evaluations;
         const Eigen::Isometry3f current = Robot::eefk(q);
         const Eigen::Vector3f approach = current.linear().col(2).normalized();
         const Eigen::Vector3f height = current.linear().col(0).normalized();
@@ -6336,6 +7624,7 @@ private:
         Eigen::Matrix<float, 9, 6> jacobian;
         for (size_t column = 0; column < 6; ++column) {
           q[column] += finite_difference;
+          if (active_pipeline_metrics) ++active_pipeline_metrics->ik_fk_evaluations;
           const Eigen::Isometry3f perturbed = Robot::eefk(q);
           q[column] -= finite_difference;
           const Eigen::Vector3f perturbed_approach =
@@ -6376,15 +7665,20 @@ private:
                          PoseIkDiagnostics &diagnostics,
                          const float position_tolerance_m = 0.004F,
                          const float rotation_tolerance_rad = 0.20F,
-                         const int maximum_iterations = 800) {
+                         const int maximum_iterations = 800,
+                         bool bounded_stagnation = false) {
+    ComponentTimer numeric_timer(PipelineComponent::NumericIK);
     out_joints.assign(seed.begin(), seed.end());
     const float lower[6] = {-2.6179938f, 0.0f, -2.9670597f, -1.7453292f, -1.2217304f, -2.0943951f};
     const float upper[6] = { 2.6179938f, 3.1415926f, 0.0f, 1.7453292f,  1.2217304f,  2.0943951f};
     constexpr float delta = 0.001f;
     constexpr float orientation_weight = 0.12f;
+    IkStagnationGuard stagnation(bounded_stagnation ? 60 : 0);
     for (int iteration = 0; iteration < maximum_iterations; ++iteration) {
+      if (active_pipeline_metrics) ++active_pipeline_metrics->ik_iterations;
       std::array<float, 6> q{};
       for (size_t i = 0; i < 6; ++i) q[i] = out_joints[i];
+      if (active_pipeline_metrics) ++active_pipeline_metrics->ik_fk_evaluations;
       const Eigen::Isometry3f current = Robot::eefk(q);
       const Eigen::Vector3f position_error = desired.translation() - current.translation();
       const Eigen::AngleAxisf rotation_error(desired.linear() * current.linear().transpose());
@@ -6396,6 +7690,8 @@ private:
       updatePoseIkDiagnostics(desired, current, diagnostics);
       if (position_error.norm() <= position_tolerance_m &&
           rotation_angle <= rotation_tolerance_rad) return true;
+      if (bounded_stagnation && stagnation.stalled(position_error.squaredNorm() +
+          orientation_weight*orientation_weight*rotation_angle*rotation_angle)) return false;
       Eigen::Matrix<float, 6, 1> error;
       for (int axis = 0; axis < 3; ++axis) {
         error[axis] = position_error[axis];
@@ -6404,6 +7700,7 @@ private:
       Eigen::Matrix<float, 6, 6> jacobian;
       for (size_t column = 0; column < 6; ++column) {
         q[column] += delta;
+        if (active_pipeline_metrics) ++active_pipeline_metrics->ik_fk_evaluations;
         const Eigen::Isometry3f perturbed = Robot::eefk(q);
         q[column] -= delta;
         jacobian.block<3, 1>(0, column) = (perturbed.translation() - current.translation()) / delta;
@@ -6428,7 +7725,10 @@ private:
                         bool seed_only = false,
                         const float position_tolerance_m = 0.004F,
                         const float rotation_tolerance_rad = 0.20F,
-                        const int maximum_iterations = 800) {
+                        const int maximum_iterations = 800,
+                        const std::function<bool(const std::vector<float> &)> &valid_solution = {},
+                        bool first_valid_solution = false) {
+    if (active_pipeline_metrics) ++active_pipeline_metrics->pose_ik_calls;
     if (seed.size() != 6) return false;
     const float lower[6] = {-2.6179938f, 0.0f, -2.9670597f, -1.7453292f, -1.2217304f, -2.0943951f};
     const float upper[6] = { 2.6179938f, 3.1415926f, 0.0f, 1.7453292f,  1.2217304f,  2.0943951f};
@@ -6479,8 +7779,12 @@ private:
       PoseIkDiagnostics attempt_diagnostics;
       if (refinePiperPoseIK(desired, candidate_seed, candidate_joints,
                            attempt_diagnostics, position_tolerance_m,
-                           rotation_tolerance_rad, maximum_iterations)) {
+                           rotation_tolerance_rad, maximum_iterations, first_valid_solution)) {
         diagnostics.keepBest(attempt_diagnostics);
+        if (valid_solution && !valid_solution(candidate_joints)) {
+          ++diagnostics.collision_rejections;
+          continue;
+        }
         bool duplicate_solution = false;
         for (const auto &existing : unique_solutions) {
           float distance_sq = 0.0F;
@@ -6488,6 +7792,13 @@ private:
           if (distance_sq < 1.0e-6F) { duplicate_solution = true; break; }
         }
         if (duplicate_solution) continue;
+        if (first_valid_solution) {
+          out_joints = candidate_joints;
+          std::array<float, 6> cached{};
+          std::copy_n(out_joints.begin(), 6, cached.begin());
+          previous_valid_ik_ = cached;
+          return true;
+        }
         unique_solutions.push_back(candidate_joints);
         PiperJointArray candidate_solution{};
         PiperJointArray best_solution_array{};
@@ -6515,19 +7826,14 @@ private:
                               const std::vector<float> &seed_ik,
                               std::vector<float> &out_ik,
                               PoseIkDiagnostics &diagnostics,
-                              Eigen::Isometry3f &resolved_pregrasp,
-                              const float orientation_tolerance_override_degrees =
-                                -1.0F) {
+                              Eigen::Isometry3f &resolved_pregrasp) {
     // The pre-grasp position remains on the final grasp's approach line, but
     // orientation is a bounded soft constraint. The numerical IK therefore
     // adjusts all six joints continuously instead of testing a grid of fixed
-    // 5-degree tilt targets. The caller already tries standoffs from 10--20 cm.
-    const float orientation_tolerance_degrees =
-      orientation_tolerance_override_degrees >= 0.0F ?
-      orientation_tolerance_override_degrees :
-      static_cast<float>(pregrasp_orientation_tolerance_degrees_);
+    // tilt targets. The caller verifies the resolved 5--15 cm standoff.
     const float orientation_tolerance_rad =
-      orientation_tolerance_degrees * static_cast<float>(M_PI / 180.0);
+      static_cast<float>(pregrasp_orientation_tolerance_degrees_ *
+        M_PI / 180.0);
     constexpr int pregrasp_maximum_iterations = 700;
     if (!solvePiperPoseIK(
         exact_pregrasp, seed_ik, out_ik, diagnostics, false,
@@ -6645,6 +7951,7 @@ private:
                     const std::vector<float>& seed_joints, std::vector<float>& out_joints,
                     float tolerance_sq = 1e-4f, bool enforce_limits = true, bool ignore_convergence = false, bool lock_base = false)
   {
+    ComponentTimer numeric_timer(PipelineComponent::NumericIK);
     out_joints = seed_joints;
     
     float learning_rate = 1.0f;
@@ -6666,6 +7973,7 @@ private:
     int stagnation_count = 0;
     
     for (int iter = 0; iter < max_iters; ++iter) {
+      if (active_pipeline_metrics) ++active_pipeline_metrics->ik_iterations;
       for (size_t j = 0; j < 6; ++j) c_in[j][0] = q_curr[j];
       Robot::Spheres<1> out;
       Robot::template sphere_fk<1>(c_in, out);
@@ -6686,6 +7994,7 @@ private:
       // Base orientation error calculation
       std::array<float, 6> c_arr_base;
       for (size_t k = 0; k < 6; ++k) c_arr_base[k] = q_curr[k];
+      if (active_pipeline_metrics) ++active_pipeline_metrics->ik_fk_evaluations;
       Eigen::Isometry3f ee_pose_base = Robot::eefk(c_arr_base);
       Eigen::Vector3f ee_z_base = ee_pose_base.linear().col(2);
       
@@ -6731,7 +8040,8 @@ private:
         // Numerical gradient for angular error
         std::array<float, 6> c_arr_d;
         for (size_t k = 0; k < 6; ++k) c_arr_d[k] = q_curr[k];
-        Eigen::Isometry3f ee_pose_d = Robot::eefk(c_arr_d);
+        if (active_pipeline_metrics) ++active_pipeline_metrics->ik_fk_evaluations;
+      Eigen::Isometry3f ee_pose_d = Robot::eefk(c_arr_d);
         Eigen::Vector3f ee_z_d = ee_pose_d.linear().col(2);
         
         // We evaluate direction from the perturbed position to the fixed target
@@ -6857,6 +8167,8 @@ private:
     float allowed_contact_radius_m = 0.0F,
     const Eigen::Isometry3f *allowed_grasp_pose = nullptr)
   {
+
+    ComponentTimer collision_timer(PipelineComponent::Collision);
     static bool initialized_empty_env = false;
     static EnvironmentVector empty_env_v;
     if (!initialized_empty_env) {
@@ -7000,6 +8312,8 @@ private:
             isObstacleInIntendedJawContactPatch(
               obstacle, *allowed_grasp_pose, *contact_left, *contact_right,
               strict_surface_tolerance_m);
+          if ((target && near_contact && inner_pad) ||
+              strict_contact_patch) continue;
         }
         std::ostringstream description;
         description << "environment sphere=" << sphere
@@ -7358,7 +8672,10 @@ private:
           "[VAMP ENGINE LOG] Solving VAMP RRTC trajectory to Candidate %zu: [%.2f, %.2f, %.2f, %.2f, %.2f, %.2f]...",
           i+1, arr[0], arr[1], arr[2], arr[3], arr[4], arr[5]);
           
-        auto result = RRTC::solve(start_cfg, goals_vec, env_v, rrtc_settings, rng);
+        auto result = [&]() {
+          ComponentTimer rrtc_timer(PipelineComponent::RRTC);
+          return RRTC::solve(start_cfg, goals_vec, env_v, rrtc_settings, rng);
+        }();
         if (!result.path.empty()) {
             vamp::planning::SimplifySettings simplify_settings;
             auto simplify_res = vamp::planning::simplify<Robot, rake, Robot::resolution>(

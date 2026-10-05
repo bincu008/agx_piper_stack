@@ -1,0 +1,5 @@
+my_actions/GraspCandidate[] candidates
+---
+bool success
+string status
+my_actions/GraspCandidate candidate

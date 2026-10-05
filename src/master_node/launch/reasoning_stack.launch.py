@@ -2,6 +2,7 @@
 
 import os
 
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -9,9 +10,20 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
+import yaml
 
 
 def generate_launch_description():
+    profile_path = os.path.join(get_package_share_directory('master_node'),
+                                'config', 'inference', 'profiles.yaml')
+    with open(profile_path, encoding='utf-8') as stream:
+        profiles = yaml.safe_load(stream)
+    inference_profile = LaunchConfiguration('inference_profile')
+
+    def profile_default(key):
+        values = {name: str(value[key]) for name, value in profiles.items()}
+        return PythonExpression([repr(values), "['", inference_profile, "']"])
+
     self_filter_config = os.path.join(
         get_package_share_directory('vision_node'), 'config',
         'gripper_self_filter.yaml')
@@ -20,10 +32,15 @@ def generate_launch_description():
         'hand_eye_calibration.yaml')
     hand_eye_calibration_path = LaunchConfiguration(
         'hand_eye_calibration_path')
+    pipeline_profiling = LaunchConfiguration('pipeline_profiling')
     api_server_ip = LaunchConfiguration('api_server_ip')
     api_server_port = LaunchConfiguration('api_server_port')
+    api_server_url = LaunchConfiguration('api_server_url')
     model_name = LaunchConfiguration('model_name')
     request_timeout_sec = LaunchConfiguration('request_timeout_sec')
+    vlm_max_tokens = LaunchConfiguration('vlm_max_tokens')
+    vlm_temperature = LaunchConfiguration('vlm_temperature')
+    vlm_image_max_dimension = LaunchConfiguration('vlm_image_max_dimension')
     grasp_plan_cache_ttl_sec = LaunchConfiguration('grasp_plan_cache_ttl_sec')
     gpd_camera_frame = LaunchConfiguration('gpd_camera_frame')
     gpd_tcp_offset_m = LaunchConfiguration('gpd_tcp_offset_m')
@@ -33,6 +50,10 @@ def generate_launch_description():
         'maximum_ranking_pool_candidates')
     natural_wide_opening_weight = LaunchConfiguration(
         'natural_wide_opening_weight')
+    enable_grasp_path_preplanning = LaunchConfiguration(
+        'enable_grasp_path_preplanning')
+    grasp_path_length_weight = LaunchConfiguration(
+        'grasp_path_length_weight')
     require_gpd_full_antipodal = LaunchConfiguration(
         'require_gpd_full_antipodal')
     require_measured_antipodal_contacts = LaunchConfiguration(
@@ -44,6 +65,8 @@ def generate_launch_description():
     antipodal_min_normal_neighbors = LaunchConfiguration(
         'antipodal_min_normal_neighbors')
     grasp_contact_depth_m = LaunchConfiguration('grasp_contact_depth_m')
+    target_collision_clearance_m = LaunchConfiguration(
+        'target_collision_clearance_m')
     aligned_zero_pose_yaw_limit_degrees = LaunchConfiguration(
         'aligned_zero_pose_yaw_limit_degrees')
     aligned_zero_pose_pitch_limit_degrees = LaunchConfiguration(
@@ -81,6 +104,11 @@ def generate_launch_description():
     gpd_diversity_position_m = LaunchConfiguration('gpd_diversity_position_m')
     gpd_diversity_approach_degrees = LaunchConfiguration('gpd_diversity_approach_degrees')
     gpd_diversity_closing_degrees = LaunchConfiguration('gpd_diversity_closing_degrees')
+    hggd_diversity_position_m = LaunchConfiguration('hggd_diversity_position_m')
+    hggd_diversity_approach_degrees = LaunchConfiguration(
+        'hggd_diversity_approach_degrees')
+    hggd_diversity_closing_degrees = LaunchConfiguration(
+        'hggd_diversity_closing_degrees')
     analytical_maximum_proposals = LaunchConfiguration('analytical_maximum_proposals')
     analytical_voxel_size_m = LaunchConfiguration('analytical_voxel_size_m')
     analytical_roll_step_degrees = LaunchConfiguration('analytical_roll_step_degrees')
@@ -163,6 +191,19 @@ def generate_launch_description():
                 plugin='vamp_node::VampPlannerServer',
                 name='vamp_planner_server',
                 parameters=[{
+                    'placement_fast_ik': ParameterValue(
+                        LaunchConfiguration('placement_fast_ik'), value_type=bool),
+                    'placement_position_tolerance_m': ParameterValue(
+                        LaunchConfiguration('placement_position_tolerance_m'),
+                        value_type=float),
+                    'placement_descent_orientation_tolerance_rad': ParameterValue(
+                        LaunchConfiguration('placement_descent_orientation_tolerance_rad'), value_type=float),
+                    'placement_descent_step_m': ParameterValue(
+                        LaunchConfiguration('placement_descent_step_m'), value_type=float),
+                    'placement_descent_max_joint_step_rad': ParameterValue(
+                        LaunchConfiguration('placement_descent_max_joint_step_rad'), value_type=float),
+                    'placement_contact_distance_m': ParameterValue(
+                        LaunchConfiguration('placement_contact_distance_m'), value_type=float),
                     'gpd_camera_frame': gpd_camera_frame,
                     'gpd_tcp_offset_m': ParameterValue(
                         gpd_tcp_offset_m, value_type=float
@@ -173,6 +214,11 @@ def generate_launch_description():
                         maximum_ranking_pool_candidates, value_type=int),
                     'natural_wide_opening_weight': ParameterValue(
                         natural_wide_opening_weight, value_type=float),
+                    'pipeline_profiling': ParameterValue(pipeline_profiling, value_type=bool),
+                    'enable_grasp_path_preplanning': ParameterValue(
+                        enable_grasp_path_preplanning, value_type=bool),
+                    'grasp_path_length_weight': ParameterValue(
+                        grasp_path_length_weight, value_type=float),
                     'require_gpd_full_antipodal': ParameterValue(
                         require_gpd_full_antipodal, value_type=bool),
                     'require_measured_antipodal_contacts': ParameterValue(
@@ -185,6 +231,8 @@ def generate_launch_description():
                         antipodal_min_normal_neighbors, value_type=int),
                     'grasp_contact_depth_m': ParameterValue(
                         grasp_contact_depth_m, value_type=float),
+                    'target_collision_clearance_m': ParameterValue(
+                        target_collision_clearance_m, value_type=float),
                     'aligned_zero_pose_yaw_limit_degrees': ParameterValue(
                         aligned_zero_pose_yaw_limit_degrees,
                         value_type=float),
@@ -238,6 +286,12 @@ def generate_launch_description():
                         gpd_diversity_approach_degrees, value_type=float),
                     'gpd_diversity_closing_degrees': ParameterValue(
                         gpd_diversity_closing_degrees, value_type=float),
+                    'hggd_diversity_position_m': ParameterValue(
+                        hggd_diversity_position_m, value_type=float),
+                    'hggd_diversity_approach_degrees': ParameterValue(
+                        hggd_diversity_approach_degrees, value_type=float),
+                    'hggd_diversity_closing_degrees': ParameterValue(
+                        hggd_diversity_closing_degrees, value_type=float),
                     'analytical_maximum_proposals': ParameterValue(
                         analytical_maximum_proposals, value_type=int),
                     'analytical_voxel_size_m': ParameterValue(
@@ -281,33 +335,40 @@ def generate_launch_description():
                 }],
                 extra_arguments=[{'use_intra_process_comms': True}],
             ),
-            ComposableNode(
-                package='vlm_node',
-                plugin='VLMReasoningNode',
-                name='vlm_reasoning_node',
-                parameters=[{
-                    'api_server_ip': api_server_ip,
-                    'api_server_port': ParameterValue(
-                        api_server_port, value_type=int
-                    ),
-                    'model_name': model_name,
-                    'request_timeout_sec': ParameterValue(
-                        request_timeout_sec, value_type=int
-                    ),
-                    'grasp_plan_cache_ttl_sec': ParameterValue(
-                        grasp_plan_cache_ttl_sec, value_type=int
-                    ),
-                    'enable_task_dispatch': False,
-                    'verbose': True,
-                    'world_perception_backend': world_perception_backend,
-                    'grasp_target_mask_backend': grasp_target_mask_backend,
-                    'enable_view_repositioning': ParameterValue(
-                        enable_view_repositioning, value_type=bool),
-                }],
-                extra_arguments=[{'use_intra_process_comms': True}],
-            ),
         ],
         output='screen',
+    )
+
+    # Keep network waits in a separate executor from perception and VAMP.
+    vlm = Node(
+        package='vlm_node', executable='vlm_reasoning_node',
+        name='vlm_reasoning_node', output='screen',
+        parameters=[{
+            'api_server_ip': api_server_ip,
+            'api_server_port': ParameterValue(
+                api_server_port, value_type=int
+            ),
+            'api_server_url': api_server_url,
+            'model_name': model_name,
+            'request_timeout_sec': ParameterValue(
+                request_timeout_sec, value_type=int
+            ),
+            'max_tokens': ParameterValue(
+                vlm_max_tokens, value_type=int),
+            'temperature': ParameterValue(
+                vlm_temperature, value_type=float),
+            'image_max_dimension': ParameterValue(
+                vlm_image_max_dimension, value_type=int),
+            'grasp_plan_cache_ttl_sec': ParameterValue(
+                grasp_plan_cache_ttl_sec, value_type=int
+            ),
+            'enable_task_dispatch': False,
+            'verbose': True,
+            'world_perception_backend': world_perception_backend,
+            'grasp_target_mask_backend': grasp_target_mask_backend,
+            'enable_view_repositioning': ParameterValue(
+                enable_view_repositioning, value_type=bool),
+        }],
     )
 
     master = Node(
@@ -345,18 +406,24 @@ def generate_launch_description():
         }],
     )
 
-    anyplace = Node(
-        package='anyplace_ros',
-        executable='anyplace_node',
-        name='anyplace_cpu_node',
+    pipeline = Node(
+        package='task_pipeline', executable='pipeline_node',
+        name='pipeline_node', output='screen',
+    )
+    placement = Node(
+        package='placement_node',
+        executable='placement_node',
+        name='placement_node',
         output='screen',
         parameters=[{
             'hand_eye_calibration_path': hand_eye_calibration_path,
-            'api_server_url': ParameterValue(
-                ['http://', api_server_ip, ':', api_server_port],
-                value_type=str),
+            'api_server_url': api_server_url,
             'model_name': model_name,
+            'request_timeout_sec': ParameterValue(
+                request_timeout_sec, value_type=float),
             'placement_backend': LaunchConfiguration('placement_backend'),
+            'layout_candidate_count': ParameterValue(
+                LaunchConfiguration('layout_candidate_count'), value_type=int),
             'candidate_count': ParameterValue(
                 LaunchConfiguration('anyplace_candidate_count'),
                 value_type=int),
@@ -377,15 +444,35 @@ def generate_launch_description():
                 'and placement nodes.'
             ),
         ),
+        DeclareLaunchArgument('pipeline_profiling', default_value='false',
+                              description='Log per-request IK, collision and engine timings.'),
+        DeclareLaunchArgument('inference_profile', default_value='server',
+                              choices=list(profiles),
+                              description='Select server or lmstudio endpoint defaults.'),
         DeclareLaunchArgument(
-            'api_server_ip',
-            default_value='127.0.0.1',
-            description='LM Studio host reachable from the ROS machine.',
-        ),
-        DeclareLaunchArgument('api_server_port', default_value='1234'),
-        DeclareLaunchArgument('model_name', default_value='robobrain2.5-4b'),
-        DeclareLaunchArgument('request_timeout_sec', default_value='120'),
+            'api_server_ip', default_value=profile_default('api_server_ip'),
+            description='Inference host; overrides the selected profile.'),
+        DeclareLaunchArgument(
+            'api_server_port', default_value=profile_default('api_server_port')),
+        DeclareLaunchArgument(
+            'api_server_url',
+            default_value=[
+                'http://', api_server_ip, ':', api_server_port, '/v1'],
+            description='OpenAI-compatible RoboBrain API base URL.'),
+        DeclareLaunchArgument('model_name', default_value=profile_default('model_name')),
+        DeclareLaunchArgument(
+            'request_timeout_sec', default_value=profile_default('request_timeout_sec')),
+        DeclareLaunchArgument('vlm_max_tokens', default_value='256'),
+        DeclareLaunchArgument('vlm_temperature', default_value='0.0'),
+        DeclareLaunchArgument('vlm_image_max_dimension', default_value='1024'),
         DeclareLaunchArgument('anyplace_candidate_count', default_value='8'),
+        DeclareLaunchArgument('layout_candidate_count', default_value='64'),
+        DeclareLaunchArgument('placement_fast_ik', default_value='true'),
+        DeclareLaunchArgument('placement_position_tolerance_m', default_value='0.001'),
+        DeclareLaunchArgument('placement_descent_orientation_tolerance_rad', default_value='0.01'),
+        DeclareLaunchArgument('placement_descent_step_m', default_value='0.002'),
+        DeclareLaunchArgument('placement_descent_max_joint_step_rad', default_value='0.05'),
+        DeclareLaunchArgument('placement_contact_distance_m', default_value='0.006'),
         DeclareLaunchArgument('anyplace_refinement_steps', default_value='50'),
         DeclareLaunchArgument(
             'placement_backend',
@@ -566,6 +653,9 @@ def generate_launch_description():
         DeclareLaunchArgument('gpd_diversity_position_m', default_value='0.015'),
         DeclareLaunchArgument('gpd_diversity_approach_degrees', default_value='15.0'),
         DeclareLaunchArgument('gpd_diversity_closing_degrees', default_value='15.0'),
+        DeclareLaunchArgument('hggd_diversity_position_m', default_value='0.030'),
+        DeclareLaunchArgument('hggd_diversity_approach_degrees', default_value='20.0'),
+        DeclareLaunchArgument('hggd_diversity_closing_degrees', default_value='30.0'),
         DeclareLaunchArgument('analytical_maximum_proposals', default_value='300'),
         DeclareLaunchArgument('analytical_voxel_size_m', default_value='0.005'),
         DeclareLaunchArgument('analytical_roll_step_degrees', default_value='15.0'),
@@ -631,6 +721,19 @@ def generate_launch_description():
             description='Weight of the valid-pool-relative jaw-width penalty.',
         ),
         DeclareLaunchArgument(
+            'enable_grasp_path_preplanning',
+            default_value='true',
+            description=(
+                'Plan collision-free paths to all retained HGGD pre-grasps '
+                'before final ranking.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'grasp_path_length_weight',
+            default_value='0.5',
+            description='Penalty weight for normalized pre-grasp path length.',
+        ),
+        DeclareLaunchArgument(
             'require_gpd_full_antipodal',
             default_value='false',
             description=(
@@ -662,8 +765,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'grasp_contact_depth_m',
-            default_value='0.060',
+            default_value='0.070',
             description='Contact plane depth from the 70 mm finger base.',
+        ),
+        DeclareLaunchArgument(
+            'target_collision_clearance_m',
+            default_value='0.050',
+            description='Radius around measured contacts where inner jaw pads may touch the segmented target.',
         ),
         DeclareLaunchArgument(
             'aligned_zero_pose_yaw_limit_degrees',
@@ -707,10 +815,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'pregrasp_offset_m',
-            default_value='0.200',
+            default_value='0.120',
             description=(
                 'Preferred Cartesian standoff; planner falls back across '
-                'reachable, target-visible offsets from 0.10 to 0.20 m.'
+                'reachable, target-visible offsets from 0.05 to 0.15 m.'
             ),
         ),
         DeclareLaunchArgument(
@@ -760,6 +868,8 @@ def generate_launch_description():
             ),
         ),
         core_container,
+        vlm,
+        pipeline,
         master,
-        anyplace,
+        placement,
     ])

@@ -143,4 +143,4 @@ class WorldStateManager:
                 item['target'] = task['target']
             normalized.append(item)
         with self._lock:
-            self._state['task_queue'] = deepcopy(normalized)
+            self._state['task_queue'] = normalized

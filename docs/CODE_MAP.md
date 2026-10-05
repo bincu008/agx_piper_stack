@@ -1,127 +1,213 @@
-# Code map and operating guide
+# Launched stack: nodes, files and API ownership
 
-## Runtime topology
+This guide covers the ROS nodes used for arm control, recorded-scene replay and
+planning benchmarks. It does not inventory vendored libraries or every file.
+Start with the [README launch walkthrough](../README.md).
+
+## Runtime ownership
+
+```mermaid
+flowchart LR
+    Inputs[Real camera and arm feedback OR mock replay] --> Vision[ActiveVision: observation and obstacles]
+    Controller[Task controller / VLM prompt / benchmark] --> API[Public /pipeline APIs]
+    API --> Master[Master microstep queue and typed results]
+    Master --> VLM[RoboBrain + EdgeSAM]
+    Master --> VAMP[HGGD / known-cloud validation / IK / motion]
+    Master --> Packing[Height-map placement]
+    Vision --> VAMP
+    Vision --> Packing
+    Vision --> API
+    Master --> Execution[Guarded master execution]
+    Execution --> Driver[AGX arm driver]
+```
+
+`task_pipeline/registry.py` defines public names, ROS types and native endpoints.
+`pipeline_node` dispatches calls; `MasterStepRuntime` hosts the queue/results
+inside `PiperMasterControl`. Numerical engines still own their observations,
+geometry and numerical work. “Central state” does not mean replacing every
+engine's bounded frame buffer with a single global buffer.
+
+## What each launch starts
+
+| Launch | Processes/nodes | Purpose |
+|---|---|---|
+| `master_node/reasoning_stack.launch.py` | `robot_core_container` with `active_vision_server` and `vamp_planner_server`; standalone `vlm_reasoning_node`, `pipeline_node`, `piper_master_control`, `placement_node` | Official production/planning stack; no camera or CAN driver is started |
+| `mock_hardware_node/mock_hardware.launch.py` | `mock_hardware` | Replays recorded RGB-D and feedback on driver topic names |
+| `placement_node/box_benchmark.launch.py` | `box_benchmark` | Adds synthetic box clouds and calculates sequential edge/stack placements |
+| `vamp_node/grasp_debug_rviz.launch.py` | `grasp_debug_rviz` | Opens RViz with the installed grasp/placement configuration |
+| `orbbec_camera/gemini_330_series.launch.py` | Orbbec camera driver | Real RGB/depth/intrinsics input |
+| `agx_arm_ctrl/start_single_agx_arm.launch.py` | AGX arm controller | Real CAN commands and joint/TCP/gripper feedback |
+
+Run the mock instead of real drivers. The benchmark is an additional controller,
+not a replacement for the reasoning stack. RViz displays published results and
+does not trigger calculation. `MasterStepRuntime`, `ExecutionAPI` and
+`GraspStages` are classes in the master process, not separate launched nodes.
+
+## Focused file hierarchy
 
 ```text
-Orbbec camera driver                         AGX Piper driver
-  RGB + registered depth + camera info         joint/TCP/gripper feedback
-                  |                                      |
-                  +---------- ActiveVisionServer --------+
-                               | synchronized observation
-                               | obstacle world
-                               v
-RoboBrain ---> VLMReasoningNode + EdgeSAM ---> segmented target
-                               |                    |
-                               |                    v
-                               +------------> VampPlannerServer
-                                               HGGD proposals
-                                               local PCA refinement
-                                               IK + collision validation
-                                                      |
-Height-map / optional AnyPlace node ---> placement ----+
-                                                      |
-                                                      v
-                                              PiperMasterControl
-                                                      |
-                                              /control/joint_states
+src/
+├── master_node/
+│   ├── launch/reasoning_stack.launch.py       official launch and parameter wiring
+│   ├── config/inference/profiles.yaml        LM Studio / remote-server defaults
+│   ├── config/calibration/hand_eye_calibration.yaml
+│   └── master_node/
+│       ├── piper_master_control.py           master node, legacy tasks, feedback, execution
+│       ├── step_runtime.py                  master service/action host and engine dispatch
+│       ├── execution_api.py                 arm state, selection/cache, general execution APIs
+│       ├── grasp_stages.py                  ordered refinement/approach/gripper stages
+│       └── world_state.py                   tracked objects and legacy task state
+├── task_pipeline/
+│   ├── scripts/pipeline_node                dispatcher entrypoint
+│   ├── scripts/pipeline_task                calculation recipe CLI; waits for completion
+│   └── task_pipeline/
+│       ├── registry.py                      authoritative function/type/backend catalog
+│       ├── node.py                          /pipeline services, capture, catalog, metrics
+│       ├── context.py                       StepStore: typed results, bindings, revisions, queue
+│       ├── recipes.py                       declared cup-to-tray calculation steps
+│       ├── placement.py                     common batching and motion-failure retry policy
+│       ├── timing.py                        shared PipelineTiming publisher helper
+│       └── metrics.py                       function timing aggregation by mode/scope
+├── my_actions/
+│   ├── msg/PipelineStep.msg                 typed request envelope and dependency bindings
+│   ├── msg/StepBinding.msg                  predecessor/field references
+│   ├── msg/PipelineStepResult.msg           completion/status/timing/typed response
+│   ├── msg/PipelineTiming.msg               API/engine timing samples
+│   ├── msg/GraspCandidate.msg               validated grasp, contacts and joints
+│   ├── msg/PlacementCandidate.msg           object placement pose and score
+│   ├── action/RunPipelineSteps.action       queued completion, feedback, cancellation
+│   └── srv/                                shared service schemas; mappings below
+├── vision_node/
+│   └── src/active_vision_server.cpp         RGB-D/feedback association, manual FK, obstacles
+├── vlm_node/
+│   ├── src/vlm_reasoning_node.cpp           HTTP inference, image APIs, legacy prompt controller
+│   ├── src/edge_sam_onnx.cpp                segmentation encoder/decoder
+│   └── include/vlm_node/
+│       ├── grounding.hpp                   grounding prompt and strict box parsing
+│       └── layout_prompt.hpp               multi-object template parsing
+├── vamp_node/
+│   ├── src/vamp_planner_server.cpp          grasp/IK/collision/motion/placement service engine
+│   ├── src/hggd_mcu_adapter.cpp             HGGD AnchorNet/LocalNet proposals
+│   ├── src/local_grasp_refiner.cpp          close-up contact geometry refinement
+│   ├── src/analytical_grasp_generator.cpp   retained analytical candidate backend
+│   ├── src/gpd_grasp_adapter.cpp            retained optional GPD candidate backend
+│   ├── include/vamp_node/
+│   │   ├── deterministic_ik.hpp            current numerical IK and stagnation guard
+│   │   ├── grasp_proposal.hpp              internal proposal representation
+│   │   ├── payload_checked_robot.hpp       held-object collision adapter for VAMP
+│   │   ├── placement_geometry.hpp          attachment/support/collision helpers
+│   │   ├── placement_point_index.hpp       exact-point spatial collision lookup
+│   │   ├── placement_ranking.hpp           placement candidate ordering
+│   │   └── pipeline_timing.hpp             request-local numerical profiling
+│   ├── launch/grasp_debug_rviz.launch.py    RViz entrypoint
+│   └── rviz/grasp_debug.rviz                displays and topic configuration
+├── vamp_mvt/                               VAMP C++ library and generated Piper robot model
+├── placement_node/
+│   ├── scripts/placement_node              production placement entrypoint
+│   ├── scripts/box_benchmark               benchmark entrypoint
+│   ├── scripts/benchmark_grounding         optional standalone HTTP latency tool
+│   ├── launch/box_benchmark.launch.py       fixture/search/motion/output parameters
+│   └── placement_node/
+│       ├── node.py                         destination extraction, search/layout services, RViz
+│       ├── packing.py                      deterministic height-map edge/stack search
+│       ├── packing_api.py                  typed SearchPlacements transport adapters
+│       ├── perception.py                   cloud/mask/support extraction and box parsing
+│       ├── transforms.py                   manual-transform/attachment geometry helpers
+│       ├── inference.py                    candidate model and optional AnyPlace adapter
+│       ├── model.py                        optional AnyPlace network; inactive by default
+│       ├── box_benchmark.py                fixture controller, shared API calls, reports
+│       ├── box_fixture.py                  box surfaces, contact seeds and known floor patch
+│       └── grounding.py                    request builder for standalone grounding utility
+├── mock_hardware_node/
+│   ├── launch/mock_hardware.launch.py       snapshot/prefix/conflict options
+│   ├── mock_hardware_node/mock_hardware.py  replay node; fresh stamps, publisher conflicts
+│   ├── mock_hardware_node/capture_snapshot.py  capture utility for replacement fixtures
+│   ├── mock_hardware_node/snapshot_io.py    topic/type/file catalog and CDR I/O
+│   └── snapshots/current/                  seven CDR messages + manifest replay fixture
+├── agx_arm_ros/src/agx_arm_ctrl/            real arm-driver launch and CAN controller
+└── OrbbecSDK_ROS2/orbbec_camera/            real camera-driver launch and RGB-D publication
 ```
 
-Computational perception uses only the synchronized manual
-`FK(joints) * hand_eye_transform` result from `ActiveVisionServer`. TF is
-published only for visualization and must not be used as a computational
-fallback.
+Each package's `CMakeLists.txt` or `setup.py`/`package.xml` installs its entrypoints,
+launch/config/assets and declares dependencies. `test/` contains regression checks;
+these files are reusable source, not generated runtime output. `models/` assets
+stay with their owning engine. `build/`, `install/` and `log/` are generated.
 
-## Packages
+## Public function → schema → implementation
 
-| Package | Responsibility | Primary implementation |
+All names below have the prefix `/pipeline/`. The complete current catalog is
+returned by `list_functions` (`my_actions/srv/GetPipelineFunctions`). Backend
+names such as `/placement/*` are the numerical engine endpoints.
+
+| Public functions | ROS schema(s), under `my_actions` | Owner |
 |---|---|---|
-| `master_node` | Pipeline state, physical execution gates, pre-grasp/final approach | `master_node/piper_master_control.py` |
-| `vision_node` | RGB-D synchronization, gripper mask, obstacle world, observation cache | `src/active_vision_server.cpp` |
-| `vlm_node` | RoboBrain requests, grounding parsing, EdgeSAM segmentation, prompt dispatch | `src/vlm_reasoning_node.cpp` |
-| `vamp_node` | HGGD, PCA refinement, IK, collision, Cartesian approach and placement validation | `src/vamp_planner_server.cpp` |
-| `vamp` (`src/vamp_mvt`) | Generic VAMP planning/collision library and generated Piper sphere/FK model | `src/impl/vamp/` |
-| `gpd_vendor` | Pinned legacy GPD fallback library; linked into `vamp_node`, not launched | `CMakeLists.txt`, `config/`, `models/` |
-| `anyplace_ros` | Height-map placement proposals and optional AnyPlace CPU inference | `anyplace_ros/node.py`, `packing.py` |
-| `my_actions` | Cross-node messages, actions, and services | `msg/`, `srv/` |
-| `agx_arm_ctrl` | CAN hardware driver | `agx_arm_ctrl_single_node.py` |
-| `orbbec_camera` | Orbbec RGB-D driver | upstream driver with Gemini 330 launch defaults |
+| `run_step`, `submit_steps`, `store_step_result`, `get_step_context`, `clear_step_context`, action `run_steps` | `RunPipelineStep`, `SubmitPipelineSteps`, `StorePipelineResult`, `GetStepContext`, `ClearStepContext`, action `RunPipelineSteps` | `master_node/step_runtime.py` with `task_pipeline/context.py` |
+| `capture_observation` | `CaptureObservation` | `task_pipeline/node.py`, consuming ActiveVision image/cloud/manual-transform topics |
+| `verify_presence`, `ground_object`, `infer_vision`, `segment_object` | `VerifyPresence`, `GroundObject`, `VisionInference`, `SegmentGroundedImage` | `vlm_reasoning_node.cpp`; EdgeSAM implementation for segmentation |
+| `prepare_grasp_input`, `select_grasp`, `cache_grasp_plan`, `get_cached_grasp` | `PrepareGraspInput`, `SelectGrasp`, `CacheGraspPlan`, `GetCachedGrasp` | `master_node/execution_api.py` |
+| `calculate_grasps`, `calculate_cloud_grasps` | `FindGraspCandidates`, `FindCloudGrasps` | `vamp_planner_server.cpp`; HGGD RGB-D proposals or benchmark-provided known-cloud contacts |
+| `refine_grasp`, `plan_final_approach` | `RefineGrasp`, `PlanCartesianGraspApproach` | `vamp_planner_server.cpp` and `local_grasp_refiner.cpp` |
+| `cache_grasp_refinement`, `move_pregrasp`, `plan_grasp_approach`, `open_grasp_gripper`, `execute_grasp_approach`, `close_grasp_gripper`, `verify_grasp_contact` | `CacheGraspRefinement`, `GraspStage` | `master_node/grasp_stages.py`; validated state/order and guarded execution |
+| `find_placements`, `search_placements`, `plan_layout` | `FindPlacementCandidates`, `SearchPlacements`, `PlanObjectLayout` | `placement_node/node.py`; `packing.py` is the default engine |
+| `validate_placements`, `plan_placement` | `PlanPlacement` | shared policy in `task_pipeline/placement.py`, hosted by `step_runtime.py`; numerical backend in `vamp_planner_server.cpp` |
+| `solve_pose`, `plan_motion` | `LookAt`, `CheckAndReplan` | `vamp_planner_server.cpp` using the existing IK and VAMP engines |
+| `get_arm_state`, `move_to`, `execute_trajectory`, `set_gripper` | `GetArmState`, `MoveTo`, `ExecuteTrajectory`, `GripperCommand` | `master_node/execution_api.py` and existing master execution methods |
+| `update_object`, `resolve_object`, `get_world_state` | `UpdateObjectObservation`, `ResolveObject`, `GetWorldState` | `piper_master_control.py` and `world_state.py` |
+| `pin_grasp_observation`, `pin_placement_observation` | `PinLayoutObservation` | VAMP and placement engine frame caches respectively |
 
-Cricket and Foam are retained under `tools/robot_geometry/` only to regenerate
-the Piper sphere/FK model. Their unrelated demo robot datasets and generated
-build artifacts are intentionally excluded from the baseline.
+`get_metrics` uses `GetPipelineMetrics`. `/pipeline/timings` publishes
+`PipelineTiming`. The registry also exposes retained navigation/recovery and
+legacy task APIs. `execute_grasp`, `plan_layout` and `look_at_target` are
+compatibility facades, not atomic numerical operations. Queue-control calls
+cannot themselves be embedded recursively as executable microsteps.
 
-## Grasp flow
+## Which path a controller chooses
 
-1. `[FIND_GRASP]` grounds and segments the requested object or part.
-2. HGGD produces spatial seeds from the organized RGB-D observation.
-3. `vamp_node` aligns/refines the seeds, measures jaw width, runs IK and checks
-   grasp/pre-grasp collisions.
-4. The ranked accepted candidate is cached and published for RViz.
-5. `[PRE_GRASP]` moves only when the master execution gate and hardware are
-   available, settles the camera, captures a new observation, and refines the
-   local contact region.
-6. `[GRASP]` prevalidates the bounded Cartesian approach before any command is
-   published.
+| Controller/input | Shared calculations | What differs |
+|---|---|---|
+| `pipeline_task` on a cup | capture, grounding, segmentation, HGGD/IK/collision, selection/cache, destination search, placement validation | Declarative 14-step recipe; legacy pose-only placement; no physical commands |
+| VLM `/vlm_reasoning_node/chat_prompt` | same registered engine APIs and master cache | Parses templates, refreshes object state, builds the task sequence; retains existing command interfaces |
+| `box_benchmark` | capture, tray grounding/segmentation, cloud-grasp validation, placement search/validation and full-motion planning | Known synthetic object geometry skips object RGB/HGGD; controller builds virtual scenes and commits accepted clouds |
+| Physical grasp stages | validated cache, refinement, Cartesian approach, gripper command/contact verification | Require the physical gate and measured state; mock replay does not validate hardware execution |
 
-## Placement flow
+Grasp/placement proposals are not physical execution. `PlanPlacement` with
+`plan_pick_place_motion=true` requires valid lift/transfer/descent paths; false
+retains legacy pose-only behavior. General execution APIs reject held-object
+motion/release pending a validated placement execution implementation.
 
-1. `[PLAN]` or `[PLAN_UPRIGHT]` grounds the destination.
-2. `anyplace_ros` extracts the destination cloud and runs the default
-   deterministic height-map packing search.
-3. `vamp_node` derives the required end-effector pose from the cached grasp
-   attachment and tests reachable orientation variants.
-4. The accepted placed-object cloud and end-effector marker are published.
+## Topics to inspect
 
-## Launch commands
-
-Terminal 1 — camera:
-
-```bash
-source install/setup.bash
-ros2 launch orbbec_camera gemini_330_series.launch.py
-```
-
-Terminal 2 — Piper hardware driver:
-
-```bash
-source install/setup.bash
-ros2 launch agx_arm_ctrl start_single_agx_arm.launch.py \
-  can_port:=can0 arm_type:=piper effector_type:=agx_gripper \
-  auto_enable:=true control_enabled:=true speed_percent:=20 pub_rate:=50
-```
-
-Terminal 3 — safe planning stack:
-
-```bash
-source install/setup.bash
-ros2 launch master_node reasoning_stack.launch.py \
-  api_server_ip:=10.211.55.2 api_server_port:=1234 \
-  model_name:=robobrain2.5-4b \
-  grasp_candidate_backend:=hggd placement_backend:=heightmap \
-  enable_grasp_collision_check:=true \
-  allow_pregrasp_collision_override:=false \
-  allow_physical_grasp_execution:=false
-```
-
-Terminal 4 — RViz:
-
-```bash
-source install/setup.bash
-ros2 launch vamp_node grasp_debug_rviz.launch.py
-```
-
-Set `allow_physical_grasp_execution:=true` only for an explicitly reviewed
-physical run. This flag permits motion but does not bypass IK or collision
-validation.
-
-## Debug entry points
-
-| Symptom | Start here |
+| Purpose | Topic(s) |
 |---|---|
-| No synchronized scan | `/active_vision/observation_cloud`, camera and joint timestamps |
-| Bad gripper masking | `/active_vision/gripper_self_mask`, `gripper_self_filter.yaml` |
-| Incorrect target | EdgeSAM mask and `/vamp_planner/segmented_target_cloud` |
-| HGGD has no proposals | `/vamp_planner/hggd_heatmap`, HGGD summary log |
-| Refined grasp rejected | per-seed HGGD validation log and accepted candidate marker |
-| Placement rejected | destination cloud, support surface and placement validation log |
-| Motion unavailable | master execution gate and AGX feedback topics |
+| Driver/mock inputs | `/camera/color/image_raw`, `/camera/depth_registered/points`, `/camera/color/camera_info`, `/feedback/joint_states`, `/feedback/tcp_pose`, `/feedback/gripper_status`, `/feedback/arm_status` |
+| Frozen manual observation | `/active_vision/observation_image`, `/active_vision/observation_cloud`, `/active_vision/observation_camera_transform` |
+| Environment | `/active_vision/global_map`; used for collision context |
+| Grasp result/debug | `/vamp_planner/segmented_target_cloud`, `/vamp_planner/grasp_candidates_markers`, `/vamp_planner/hggd_heatmap`, `/vamp_planner/refined_grasp_debug` |
+| Ordinary placement | `/placement/destination_cloud`, `/placement/placement_candidates`, `/vamp_planner/refined_placed_object_cloud`, `/vamp_planner/placement_plan_markers` |
+| Benchmark | `/box_benchmark/tray_cloud`, `/box_benchmark/boxes_cloud`, `/box_benchmark/placements`, `/box_benchmark/status` |
+| Metrics | `/pipeline/timings` |
+| Physical commands | `/control/joint_states`; published only by guarded master execution paths |
+
+Benchmark visualization can show boxes only while collision calculation retains
+surrounding obstacles. Its fused scene is available on `/box_benchmark/fused_cloud`.
+An empty ordinary destination display does not imply benchmark tray grounding
+failed: the two workflows publish different destination topics.
+
+## Transform and execution rules
+
+Perception and grasp computation use ActiveVision's manual
+`FK(joints) * hand_eye_transform`, associated with the source observation.
+Do not introduce computational TF fallbacks. Visualization-only TF is permitted.
+The current acquisition implementation handles differing device clock domains
+with local arrival association and a bounded RGB receipt-age fallback; this
+is acquisition behavior to review on real hardware, not proof of strict original
+header-time synchronization.
+
+Physical grasp keeps measured pre-grasp validation, fixed-orientation 1–2 mm
+Cartesian waypoints, joint continuity and detailed swept-volume collision tests.
+The opening is `min(0.10, refined_width + 0.01)`; final approach uses 5% speed,
+closing uses 0 m / 1 N only after the final waypoint, and speed is restored to
+20%. Contact is verified from feedback, not inferred from a command.
+Emergency stop and drivers retain direct control paths. See [AGENTS.md](../AGENTS.md)
+for contributor invariants and [the API guide](STANDARD_PIPELINE_API.md) for
+failure, timeout, result-store and cancellation semantics.

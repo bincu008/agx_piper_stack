@@ -1,0 +1,11 @@
+# Immutable RGB input; grounding preserves its original dimensions.
+sensor_msgs/Image image
+string system_prompt
+string user_prompt
+int32 max_tokens
+# Optional existing debug capture path; empty disables capture.
+string sent_image_path
+---
+bool success
+string status
+string text

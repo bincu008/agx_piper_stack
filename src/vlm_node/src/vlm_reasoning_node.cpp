@@ -1,3 +1,10 @@
+#include <my_actions/srv/verify_presence.hpp>
+#include <my_actions/srv/cache_grasp_plan.hpp>
+#include <my_actions/srv/get_cached_grasp.hpp>
+#include <my_actions/srv/ground_object.hpp>
+#include <my_actions/srv/vision_inference.hpp>
+#include <my_actions/srv/capture_observation.hpp>
+#include "vlm_node/layout_prompt.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
@@ -10,17 +17,21 @@
 #include <my_actions/srv/find_grasp_candidates.hpp>
 #include <my_actions/srv/find_placement_candidates.hpp>
 #include <my_actions/srv/plan_placement.hpp>
+#include <my_actions/srv/plan_object_layout.hpp>
+#include <my_actions/srv/pin_layout_observation.hpp>
 #include <my_actions/srv/get3_d_coordinate.hpp>
 #include <my_actions/srv/update_object_observation.hpp>
 #include <my_actions/srv/resolve_object.hpp>
 #include <my_actions/srv/look_at.hpp>
 #include <my_actions/srv/execute_grasp.hpp>
+#include <my_actions/srv/segment_grounded_image.hpp>
 #include <my_actions/srv/get_world_state.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <Eigen/Dense>
 #include "vlm_node/json.hpp"
 #include "vlm_node/httplib.h"
 #include "vlm_node/edge_sam_onnx.hpp"
+#include "vlm_node/grounding.hpp"
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -33,6 +44,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <system_error>
 #include <sstream>
 #include <unordered_map>
 
@@ -85,14 +98,17 @@ public:
     explicit VLMReasoningNode(
         const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
         : Node("vlm_reasoning_node", options) {
-        this->declare_parameter<std::string>("api_server_ip", "127.0.0.1");
-        this->declare_parameter<int>("api_server_port", 1234);
+        this->declare_parameter<std::string>("api_server_ip", "10.10.10.2");
+        this->declare_parameter<int>("api_server_port", 18091);
+        this->declare_parameter<std::string>(
+            "api_server_url", "");
         this->declare_parameter<std::string>("model_name", "robobrain2.5-4b");
         this->declare_parameter<int>("request_timeout_sec", 120);
         this->declare_parameter<bool>("enable_task_dispatch", false);
         this->declare_parameter<bool>("verbose", true);
-        this->declare_parameter<double>("temperature", 0.1);
-        this->declare_parameter<int>("max_tokens", 768);
+        this->declare_parameter<double>("temperature", 0.0);
+        this->declare_parameter<int>("max_tokens", 256);
+        this->declare_parameter<int>("image_max_dimension", 1024);
         this->declare_parameter<std::vector<std::string>>(
             "tracked_objects", {"brown cup", "red juice box"});
         this->declare_parameter<std::string>(
@@ -110,12 +126,18 @@ public:
         
         api_ip_ = this->get_parameter("api_server_ip").as_string();
         api_port_ = this->get_parameter("api_server_port").as_int();
+        api_server_url_ = this->get_parameter("api_server_url").as_string();
+        configureApiEndpoint();
         model_name_ = this->get_parameter("model_name").as_string();
-        request_timeout_sec_ = this->get_parameter("request_timeout_sec").as_int();
+        request_timeout_sec_ = std::max<int64_t>(
+            1, this->get_parameter("request_timeout_sec").as_int());
         enable_task_dispatch_ = this->get_parameter("enable_task_dispatch").as_bool();
         verbose_ = this->get_parameter("verbose").as_bool();
         temperature_ = this->get_parameter("temperature").as_double();
-        max_tokens_ = this->get_parameter("max_tokens").as_int();
+        max_tokens_ = std::max<int64_t>(
+            1, this->get_parameter("max_tokens").as_int());
+        image_max_dimension_ = std::max<int64_t>(
+            64, this->get_parameter("image_max_dimension").as_int());
         tracked_objects_ = this->get_parameter("tracked_objects").as_string_array();
         world_perception_backend_ =
             this->get_parameter("world_perception_backend").as_string();
@@ -167,8 +189,10 @@ public:
             this->get_parameter("grasp_plan_cache_ttl_sec").as_int(), 1, 60));
         RCLCPP_INFO(
             this->get_logger(),
-            "LM Studio endpoint: http://%s:%d (model=%s, task dispatch=%s, verbose=%s)",
-            api_ip_.c_str(), api_port_, model_name_.c_str(),
+            "RoboBrain endpoint: %s (model=%s, timeout=%ds, grounding uses original image; other image_limit=%dpx, "
+            "task dispatch=%s, verbose=%s)",
+            api_server_url_.c_str(), model_name_.c_str(), request_timeout_sec_,
+            image_max_dimension_,
             enable_task_dispatch_ ? "enabled" : "disabled",
             verbose_ ? "enabled" : "disabled");
 
@@ -176,12 +200,91 @@ public:
         cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
 
         image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-            "/camera/color/image_raw", 10,
+            "/camera/color/image_raw", 1,
             std::bind(&VLMReasoningNode::imageCallback, this, std::placeholders::_1));
         observation_image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
             "/active_vision/observation_image",
             rclcpp::QoS(1).transient_local().reliable(),
             std::bind(&VLMReasoningNode::observationImageCallback, this, std::placeholders::_1));
+
+        cache_grasp_client_ = this->create_client<my_actions::srv::CacheGraspPlan>(
+            "/pipeline/cache_grasp_plan", rclcpp::ServicesQoS(), cb_group_);
+        get_cached_grasp_client_ = this->create_client<my_actions::srv::GetCachedGrasp>(
+            "/pipeline/get_cached_grasp", rclcpp::ServicesQoS(), cb_group_);
+        verify_presence_srv_ = this->create_service<my_actions::srv::VerifyPresence>(
+            "~/verify_presence",
+            [this](const std::shared_ptr<my_actions::srv::VerifyPresence::Request> request,
+                   std::shared_ptr<my_actions::srv::VerifyPresence::Response> response) {
+                try {
+                    const auto image = cv_bridge::toCvCopy(request->image, "bgr8")->image;
+                    response->text = callVLMBackend("", prepareGroundingPresencePrompt(request->target),
+                                                   16, image);
+                    response->present = presenceResponseIsAffirmative(response->text);
+                    response->success = response->present;
+                    response->status = response->present ? "PRESENT" : "NOT_CONFIRMED_PRESENT";
+                } catch (const std::exception &error) { response->status = error.what(); }
+            }, rclcpp::ServicesQoS(), cb_group_);
+        ground_object_client_ = this->create_client<my_actions::srv::GroundObject>(
+            "/pipeline/ground_object", rclcpp::ServicesQoS(), cb_group_);
+        ground_object_srv_ = this->create_service<my_actions::srv::GroundObject>(
+            "~/ground_object",
+            [this](const std::shared_ptr<my_actions::srv::GroundObject::Request> request,
+                   std::shared_ptr<my_actions::srv::GroundObject::Response> response) {
+                try {
+                    const auto image = cv_bridge::toCvCopy(request->image, "bgr8")->image;
+                    if (request->verify_presence) {
+                        // Legacy native callers retain their original optional
+                        // check. The shared master flattens this into separately
+                        // measured verify_presence and ground_object operations.
+                        const auto presence = callVLMBackend("", prepareGroundingPresencePrompt(request->target),
+                                                            16, image);
+                        if (!presenceResponseIsAffirmative(presence)) {
+                            response->status = "NOT_FOUND_OR_PRESENCE_FAILED: " + presence;
+                            return;
+                        }
+                    }
+                    response->text = callVLMBackend("", prepareOfficialPrompt("GROUNDING", request->target),
+                        48, image, request->sent_image_path);
+                    std::smatch match;
+                    if (!vlm_node::parseGroundingBox(response->text, match)) {
+                        response->status = "GROUNDING_PARSE_FAILED: " + response->text;
+                        return;
+                    }
+                    for (size_t i = 0; i < 4; ++i) {
+                        response->normalized_box[i] = std::stoi(match[i+1]);
+                        response->pixel_box[i] = normalizedToPixel(
+                            response->normalized_box[i], i % 2 == 0 ? image.cols : image.rows);
+                    }
+                    response->success = true;
+                    response->status = "GROUNDING_READY";
+                } catch (const std::exception &error) {
+                    response->status = error.what();
+                }
+            }, rclcpp::ServicesQoS(), cb_group_);
+        vision_inference_client_ = this->create_client<my_actions::srv::VisionInference>(
+            "/pipeline/infer_vision", rclcpp::ServicesQoS(), cb_group_);
+        capture_observation_client_ = this->create_client<my_actions::srv::CaptureObservation>(
+            "/pipeline/capture_observation", rclcpp::ServicesQoS(), cb_group_);
+        segment_object_client_ = this->create_client<my_actions::srv::SegmentGroundedImage>(
+            "/pipeline/segment_object", rclcpp::ServicesQoS(), cb_group_);
+        vision_inference_srv_ = this->create_service<my_actions::srv::VisionInference>(
+            "~/infer_vision",
+            [this](const std::shared_ptr<my_actions::srv::VisionInference::Request> request,
+                   std::shared_ptr<my_actions::srv::VisionInference::Response> response) {
+                try {
+                    cv::Mat image;
+                    if (request->image.width > 0) {
+                        image = cv_bridge::toCvCopy(request->image, "bgr8")->image;
+                    }
+                    response->text = callVLMBackend(request->system_prompt, request->user_prompt,
+                        request->max_tokens, image, request->sent_image_path);
+                    response->success = !response->text.empty();
+                    response->status = response->success ? "OK" : "VLM_REQUEST_FAILED";
+                } catch (const std::exception &error) {
+                    response->success = false;
+                    response->status = error.what();
+                }
+            }, rclcpp::ServicesQoS(), cb_group_);
 
         chat_srv_ = this->create_service<my_actions::srv::Chat>(
             "~/chat_prompt",
@@ -189,6 +292,37 @@ public:
             rclcpp::ServicesQoS(),
             cb_group_);
             
+        segment_srv_ = this->create_service<my_actions::srv::SegmentGroundedImage>(
+            "~/segment_grounded_image",
+            [this](const std::shared_ptr<my_actions::srv::SegmentGroundedImage::Request> request,
+                   std::shared_ptr<my_actions::srv::SegmentGroundedImage::Response> response) {
+                try {
+                    if (!edgesam_) throw std::runtime_error("EDGESAM_UNAVAILABLE");
+                    const auto image = cv_bridge::toCvCopy(request->image, "bgr8")->image;
+                    const auto &b = request->bbox;
+                    if (b[0] < 0 || b[1] < 0 || b[2] > image.cols || b[3] > image.rows ||
+                        b[0] >= b[2] || b[1] >= b[3]) {
+                        throw std::runtime_error("INVALID_SEGMENTATION_BOX");
+                    }
+                    const auto result = edgesam_->segment(
+                        image, cv::Rect(b[0], b[1], b[2]-b[0], b[3]-b[1]));
+                    if (result.mask_pixels < edgesam_min_mask_pixels_) {
+                        throw std::runtime_error("INSUFFICIENT_SEGMENTATION_PIXELS");
+                    }
+                    response->mask = *cv_bridge::CvImage(
+                        request->image.header, "mono8", result.mask).toImageMsg();
+                    response->score = result.score;
+                    response->mask_pixels = result.mask_pixels;
+                    response->encoder_ms = result.encoder_ms;
+                    response->decoder_ms = result.decoder_ms;
+                    response->success = true;
+                    response->status = "OK";
+                } catch (const std::exception &error) {
+                    response->success = false;
+                    response->status = error.what();
+                }
+            }, rclcpp::ServicesQoS(), cb_group_);
+
         check_api_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "~/check_api",
             std::bind(&VLMReasoningNode::handleCheckApi, this, std::placeholders::_1, std::placeholders::_2),
@@ -196,42 +330,54 @@ public:
             cb_group_);
 
         get_yolo_client_ = this->create_client<my_actions::srv::GetYoloInference>(
-            "/active_vision/get_yolo_inference",
+            "/pipeline/infer_yolo",
             rclcpp::ServicesQoS(),
             cb_group_);
         trigger_scan_client_ = this->create_client<std_srvs::srv::Trigger>(
-            "/active_vision/trigger_scan", rclcpp::ServicesQoS(), cb_group_);
+            "/pipeline/request_scan", rclcpp::ServicesQoS(), cb_group_);
         grasp_candidates_client_ = this->create_client<my_actions::srv::FindGraspCandidates>(
-            "/vamp_planner/find_grasp_candidates", rclcpp::ServicesQoS(), cb_group_);
+            "/pipeline/calculate_grasps", rclcpp::ServicesQoS(), cb_group_);
         placement_candidates_client_ =
             this->create_client<my_actions::srv::FindPlacementCandidates>(
-                "/anyplace/find_placement_candidates",
+                "/pipeline/find_placements",
                 rclcpp::ServicesQoS(), cb_group_);
         plan_placement_client_ =
             this->create_client<my_actions::srv::PlanPlacement>(
-                "/vamp_planner/plan_placement",
+                "/pipeline/plan_placement",
+                rclcpp::ServicesQoS(), cb_group_);
+        plan_object_layout_client_ =
+            this->create_client<my_actions::srv::PlanObjectLayout>(
+                "/pipeline/plan_layout",
+                rclcpp::ServicesQoS(), cb_group_);
+        pin_layout_observation_client_ =
+            this->create_client<my_actions::srv::PinLayoutObservation>(
+                "/pipeline/pin_placement_observation",
+                rclcpp::ServicesQoS(), cb_group_);
+        pin_vamp_layout_observation_client_ =
+            this->create_client<my_actions::srv::PinLayoutObservation>(
+                "/pipeline/pin_grasp_observation",
                 rclcpp::ServicesQoS(), cb_group_);
         get_3d_coordinate_client_ = this->create_client<my_actions::srv::Get3DCoordinate>(
-            "/active_vision/get_3d_coordinate", rclcpp::ServicesQoS(), cb_group_);
+            "/pipeline/get_3d_coordinate", rclcpp::ServicesQoS(), cb_group_);
         update_object_client_ = this->create_client<my_actions::srv::UpdateObjectObservation>(
-            "/master/update_object_observation", rclcpp::ServicesQoS(), cb_group_);
+            "/pipeline/update_object", rclcpp::ServicesQoS(), cb_group_);
         resolve_object_client_ = this->create_client<my_actions::srv::ResolveObject>(
-            "/master/resolve_object", rclcpp::ServicesQoS(), cb_group_);
+            "/pipeline/resolve_object", rclcpp::ServicesQoS(), cb_group_);
         look_at_client_ = this->create_client<my_actions::srv::LookAt>(
-            "/master/look_at_target", rclcpp::ServicesQoS(), cb_group_);
+            "/pipeline/look_at_target", rclcpp::ServicesQoS(), cb_group_);
         execute_grasp_client_ = this->create_client<my_actions::srv::ExecuteGrasp>(
-            "/master/execute_grasp", rclcpp::ServicesQoS(), cb_group_);
+            "/pipeline/execute_grasp", rclcpp::ServicesQoS(), cb_group_);
         get_world_state_client_ = this->create_client<my_actions::srv::GetWorldState>(
-            "/master/get_world_state", rclcpp::ServicesQoS(), cb_group_);
+            "/pipeline/get_world_state", rclcpp::ServicesQoS(), cb_group_);
 
         append_task_client_ = this->create_client<my_actions::srv::AppendTask>(
-            "/master/append_task",
+            "/pipeline/append_task",
             rclcpp::ServicesQoS(),
             cb_group_);
             
             
         execute_pipeline_client_ = this->create_client<my_actions::srv::ExecutePipeline>(
-            "/master/execute_pipeline",
+            "/pipeline/execute_pipeline",
             rclcpp::ServicesQoS(),
             cb_group_);
 
@@ -244,14 +390,25 @@ public:
 private:
     std::string api_ip_;
     int api_port_;
+    std::string api_server_url_;
+    std::string api_base_path_ = "/v1";
     std::string model_name_;
     int request_timeout_sec_;
     bool enable_task_dispatch_;
     bool verbose_;
     double temperature_;
     int max_tokens_;
+    int image_max_dimension_ = 1024;
+    rclcpp::Client<my_actions::srv::GroundObject>::SharedPtr ground_object_client_;
+    rclcpp::Service<my_actions::srv::GroundObject>::SharedPtr ground_object_srv_;
+    rclcpp::Client<my_actions::srv::VisionInference>::SharedPtr vision_inference_client_;
+    rclcpp::Client<my_actions::srv::CaptureObservation>::SharedPtr capture_observation_client_;
+    rclcpp::Client<my_actions::srv::SegmentGroundedImage>::SharedPtr segment_object_client_;
+    rclcpp::Service<my_actions::srv::VisionInference>::SharedPtr vision_inference_srv_;
+    std::mutex inference_mutex_;
     std::vector<std::string> tracked_objects_;
     std::string world_perception_backend_;
+    rclcpp::Service<my_actions::srv::SegmentGroundedImage>::SharedPtr segment_srv_;
     std::string grasp_target_mask_backend_;
     std::unique_ptr<vlm_node::EdgeSamOnnx> edgesam_;
     std::string edgesam_initialization_error_;
@@ -266,8 +423,9 @@ private:
         std::vector<my_actions::msg::GraspCandidate> candidates;
         std::chrono::steady_clock::time_point created_at;
     };
-    std::mutex grasp_plan_cache_mutex_;
-    std::unordered_map<std::string, CachedGraspPlan> cached_grasp_plans_;
+    rclcpp::Client<my_actions::srv::CacheGraspPlan>::SharedPtr cache_grasp_client_;
+    rclcpp::Client<my_actions::srv::GetCachedGrasp>::SharedPtr get_cached_grasp_client_;
+    rclcpp::Service<my_actions::srv::VerifyPresence>::SharedPtr verify_presence_srv_;
     
 
     rclcpp::CallbackGroup::SharedPtr cb_group_;
@@ -284,6 +442,12 @@ private:
         placement_candidates_client_;
     rclcpp::Client<my_actions::srv::PlanPlacement>::SharedPtr
         plan_placement_client_;
+    rclcpp::Client<my_actions::srv::PlanObjectLayout>::SharedPtr
+        plan_object_layout_client_;
+    rclcpp::Client<my_actions::srv::PinLayoutObservation>::SharedPtr
+        pin_layout_observation_client_;
+    rclcpp::Client<my_actions::srv::PinLayoutObservation>::SharedPtr
+        pin_vamp_layout_observation_client_;
     rclcpp::Client<my_actions::srv::Get3DCoordinate>::SharedPtr get_3d_coordinate_client_;
     rclcpp::Client<my_actions::srv::UpdateObjectObservation>::SharedPtr update_object_client_;
     rclcpp::Client<my_actions::srv::ResolveObject>::SharedPtr resolve_object_client_;
@@ -306,41 +470,24 @@ private:
     bool has_cached_yolo_result_ = false;
 
     bool captureFreshObservation(SynchronizedObservation& observation, std::string& status) {
-        if (!trigger_scan_client_->wait_for_service(std::chrono::seconds(3))) {
-            status = "VISION_UNAVAILABLE: /active_vision/trigger_scan";
+        if (!capture_observation_client_->wait_for_service(std::chrono::seconds(3))) {
+            status = "PIPELINE_CAPTURE_UNAVAILABLE";
             return false;
         }
-        int64_t previous_stamp_ns = 0;
-        {
-            std::lock_guard<std::mutex> lock(observation_image_mutex_);
-            if (!latest_observation_.image.empty()) {
-                previous_stamp_ns = rclcpp::Time(latest_observation_.header.stamp).nanoseconds();
-            }
-        }
-        auto trigger = trigger_scan_client_->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
-        if (trigger.wait_for(std::chrono::seconds(3)) != std::future_status::ready || !trigger.get()->success) {
-            status = "FRESH_SCAN_TRIGGER_FAILED";
+        auto request = std::make_shared<my_actions::srv::CaptureObservation::Request>();
+        auto future = capture_observation_client_->async_send_request(request);
+        if (future.wait_for(std::chrono::seconds(35)) != std::future_status::ready) {
+            status = "PIPELINE_CAPTURE_TIMEOUT";
             return false;
         }
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        while (std::chrono::steady_clock::now() < deadline) {
-            {
-                std::lock_guard<std::mutex> lock(observation_image_mutex_);
-                const int64_t stamp_ns = latest_observation_.image.empty() ? 0 :
-                    rclcpp::Time(latest_observation_.header.stamp).nanoseconds();
-                if (stamp_ns > previous_stamp_ns) {
-                    observation.image = latest_observation_.image.clone();
-                    observation.header = latest_observation_.header;
-                    RCLCPP_INFO(this->get_logger(),
-                                "[GRASP] Using fresh synchronized raw RGB-D observation at %ld.",
-                                stamp_ns);
-                    return true;
-                }
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const auto result = future.get();
+        if (!result->success) {
+            status = result->status;
+            return false;
         }
-        status = "FRESH_OBSERVATION_TIMEOUT: scan triggered but no newer synchronized RGB image arrived";
-        return false;
+        observation.image = cv_bridge::toCvCopy(result->image, "bgr8")->image;
+        observation.header = result->image.header;
+        return true;
     }
 
     void imageCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
@@ -363,6 +510,37 @@ private:
         }
     }
 
+    void configureApiEndpoint() {
+        if (api_server_url_.empty()) {
+            api_server_url_ = "http://" + api_ip_ + ":" +
+                std::to_string(api_port_) + "/v1";
+        }
+        const std::regex pattern(
+            R"(^http://([^/:]+)(?::([0-9]+))?(/.*)?$)");
+        std::smatch match;
+        if (!std::regex_match(api_server_url_, match, pattern)) {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "Invalid api_server_url '%s'; falling back to http://%s:%d/v1.",
+                api_server_url_.c_str(), api_ip_.c_str(), api_port_);
+            api_base_path_ = "/v1";
+            api_server_url_ = "http://" + api_ip_ + ":" +
+                std::to_string(api_port_) + api_base_path_;
+            return;
+        }
+        api_ip_ = match[1].str();
+        api_port_ = match[2].matched ? std::stoi(match[2].str()) : 80;
+        api_base_path_ = match[3].matched ? match[3].str() : "/v1";
+        while (api_base_path_.size() > 1 && api_base_path_.back() == '/') {
+            api_base_path_.pop_back();
+        }
+        if (api_base_path_.empty() || api_base_path_ == "/") {
+            api_base_path_ = "/v1";
+        }
+        api_server_url_ = "http://" + api_ip_ + ":" +
+            std::to_string(api_port_) + api_base_path_;
+    }
+
     void handleCheckApi(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                         std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
         (void)request;
@@ -370,38 +548,22 @@ private:
         client.set_connection_timeout(5);
         client.set_read_timeout(10);
 
-        auto result = client.Get("/v1/models");
+        auto result = client.Get("/health");
         if (!result) {
             response->success = false;
-            response->message = "Cannot connect to LM Studio at http://" + api_ip_ + ":" +
-                std::to_string(api_port_);
+            response->message = "Cannot connect to RoboBrain at http://" + api_ip_ + ":" +
+                std::to_string(api_port_) + "/health";
             return;
         }
         if (result->status != 200) {
             response->success = false;
-            response->message = "LM Studio returned HTTP " + std::to_string(result->status);
+            response->message = "RoboBrain health returned HTTP " +
+                std::to_string(result->status);
             return;
         }
-
-        try {
-            const auto body = json::parse(result->body);
-            bool model_found = false;
-            if (body.contains("data") && body["data"].is_array()) {
-                for (const auto& model : body["data"]) {
-                    if (model.contains("id") && model["id"] == model_name_) {
-                        model_found = true;
-                        break;
-                    }
-                }
-            }
-            response->success = model_found;
-            response->message = model_found
-                ? "LM Studio is reachable and model '" + model_name_ + "' is available."
-                : "LM Studio is reachable, but model '" + model_name_ + "' is not available.";
-        } catch (const json::exception& error) {
-            response->success = false;
-            response->message = "Invalid /v1/models response: " + std::string(error.what());
-        }
+        response->success = true;
+        response->message = "RoboBrain health endpoint is ready at http://" +
+            api_ip_ + ":" + std::to_string(api_port_) + "/health.";
     }
 
     static std::string trim(const std::string& value) {
@@ -411,6 +573,29 @@ private:
         }
         const auto last = value.find_last_not_of(" \t\r\n");
         return value.substr(first, last - first + 1);
+    }
+
+    static std::string extractGraspTarget(const std::string& instruction) {
+        std::string target = trim(instruction);
+        const std::array<std::string, 10> command_prefixes{
+            "find grasping pose on ",
+            "find a grasping pose on ",
+            "find grasp pose on ",
+            "find a grasp pose on ",
+            "find grasp on ",
+            "grasping pose on ",
+            "grasp pose on ",
+            "pick up ",
+            "grasp ",
+            "grab "};
+        const std::string lower = lowercase(target);
+        for (const auto& prefix : command_prefixes) {
+            if (lower.rfind(prefix, 0) == 0) {
+                target = trim(target.substr(prefix.size()));
+                break;
+            }
+        }
+        return target;
     }
 
     PromptRequest parsePromptRequest(const std::string& input) {
@@ -430,7 +615,8 @@ private:
                     "GENERAL", "POINTING", "GROUNDING", "TRAJECTORY",
                     "ACTION", "YOLO", "GRASP", "FIND_GRASP", "GRAB",
                     "PRE_GRASP", "REFINE_GRASP", "PLACE_UPRIGHT",
-                    "PLACE_FREE", "PLACE", "PLAN_UPRIGHT", "PLAN"
+                    "PLACE_FREE", "PLACE", "PLAN_UPRIGHT", "PLAN",
+                    "PLAN_LAYOUT_UPRIGHT", "PLAN_LAYOUT"
                 };
                 if (modes.count(flag) > 0) {
                     parsed.mode = flag;
@@ -451,6 +637,14 @@ private:
         }
 
         parsed.prompt = remaining;
+        // The action template selects sequential layout whenever it names
+        // more than one object; retain explicit layout aliases.
+        if ((parsed.mode == "PLAN" || parsed.mode == "PLAN_UPRIGHT") &&
+            vlm_node::parseLayoutPrompt(parsed.prompt).valid) {
+            parsed.mode = parsed.mode == "PLAN_UPRIGHT" ?
+                "PLAN_LAYOUT_UPRIGHT" : "PLAN_LAYOUT";
+        }
+
         std::string normalized_prompt = parsed.prompt;
         std::transform(normalized_prompt.begin(), normalized_prompt.end(), normalized_prompt.begin(),
                        [](unsigned char character) { return std::tolower(character); });
@@ -484,8 +678,7 @@ private:
                 "the x and y coordinates and the depth of the point.";
         }
         if (mode == "GROUNDING") {
-            return "Please provide the bounding box coordinate of the region "
-                "this sentence describes: " + prompt + ".";
+            return vlm_node::groundingPrompt(prompt);
         }
         return prompt;
     }
@@ -576,32 +769,18 @@ private:
         }
     }
 
-    bool saveOutputImage(
-        const std::string& filename, const cv::Mat& image,
-        const std::string& description) {
-        (void)filename;
-        (void)description;
-        return !image.empty();
-    }
-
-    void saveGroundingStatusImage(
-        const cv::Mat& source_image, const std::string& status) {
-        if (source_image.empty()) {
-            return;
-        }
-        cv::Mat annotated = source_image.clone();
-        cv::putText(
-            annotated, status, cv::Point(20, 45),
-            cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 255), 3);
-        saveOutputImage(
-            "robobrain_grounding.png", annotated,
-            "grounding status annotation");
-    }
-
     static int normalizedToPixel(double coordinate, int dimension) {
-        const int pixel = static_cast<int>(
-            std::lround(coordinate * static_cast<double>(dimension) / 1000.0));
-        return std::clamp(pixel, 0, dimension - 1);
+        return vlm_node::groundingPixel(coordinate, dimension);
+    }
+
+    static void expandGroundingBox(
+        int& x1, int& y1, int& x2, int& y2,
+        int image_width, int image_height) {
+        constexpr int padding_pixels = 5;
+        x1 = std::max(0, x1 - padding_pixels);
+        y1 = std::max(0, y1 - padding_pixels);
+        x2 = std::min(image_width - 1, x2 + padding_pixels);
+        y2 = std::min(image_height - 1, y2 + padding_pixels);
     }
 
     bool parseNormalizedPoint(
@@ -689,7 +868,7 @@ private:
                   "visible physical surface, using normalized image coordinates "
                   "from 0 to 1000, or null when that object is absent or uncertain. "
                   "Include every listed key. Do not add explanation.";
-        const std::string reply = callVLM("", prompt.str(), 128, observation.image);
+        const std::string reply = callVLM("", prompt.str(), 128, observation.image, {}, observation.header);
         json locations;
         try {
             const auto begin = reply.find('{');
@@ -761,43 +940,31 @@ private:
     bool takeFreshSafeCachedPlan(
         const std::string& object_name, CachedGraspPlan& plan,
         std::string& status) {
-        std::lock_guard<std::mutex> lock(grasp_plan_cache_mutex_);
-        const auto entry = cached_grasp_plans_.find(object_name);
-        if (entry == cached_grasp_plans_.end()) {
-            status = "NO_CACHED_GRASP: run [FIND_GRASP] first";
+        if (!get_cached_grasp_client_->wait_for_service(std::chrono::seconds(3))) {
+            status = "MASTER_GRASP_CACHE_UNAVAILABLE";
             return false;
         }
-        const auto age = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::steady_clock::now() - entry->second.created_at).count();
-        if (age > grasp_plan_cache_ttl_sec_) {
-            cached_grasp_plans_.erase(entry);
-            status = "CACHED_GRASP_EXPIRED: run [FIND_GRASP] again";
+        auto request = std::make_shared<my_actions::srv::GetCachedGrasp::Request>();
+        request->object_name = object_name;
+        auto future = get_cached_grasp_client_->async_send_request(request);
+        if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+            status = "MASTER_GRASP_CACHE_TIMEOUT";
             return false;
         }
-        if (!candidateIsSafeToExecute(entry->second.candidate)) {
-            status = "CACHED_GRASP_UNSAFE: run [FIND_GRASP] again";
-            return false;
-        }
-        plan = entry->second;
-        status = "SAFE_CACHED_GRASP age=" + std::to_string(age) + "s";
+        const auto result = future.get();
+        status = result->status;
+        if (!result->success || result->candidates.empty() ||
+                !candidateIsSafeToExecute(result->candidates.front())) return false;
+        plan = {result->object_name, result->observation_header, result->candidates.front(),
+                result->candidates, std::chrono::steady_clock::now()};
         return true;
     }
 
     std::optional<std::string> singleCachedGraspObject() {
-        std::lock_guard<std::mutex> lock(grasp_plan_cache_mutex_);
-        std::optional<std::string> object_name;
-        const auto now = std::chrono::steady_clock::now();
-        for (const auto& entry : cached_grasp_plans_) {
-            const auto age = std::chrono::duration_cast<std::chrono::seconds>(
-                now - entry.second.created_at).count();
-            if (age > grasp_plan_cache_ttl_sec_ ||
-                !candidateIsSafeToExecute(entry.second.candidate)) {
-                continue;
-            }
-            if (object_name) return std::nullopt;
-            object_name = entry.first;
-        }
-        return object_name;
+        CachedGraspPlan plan;
+        std::string status;
+        if (!takeFreshSafeCachedPlan("", plan, status)) return std::nullopt;
+        return plan.object_name;
     }
 
     void cacheSafeGraspPlans(
@@ -814,16 +981,21 @@ private:
                 "[GRASP] No candidate was cached because none meets the execution safety gate.");
             return;
         }
-        std::lock_guard<std::mutex> lock(grasp_plan_cache_mutex_);
-        cached_grasp_plans_[object_name] = {
-            object_name, observation_header, safe_candidates.front(),
-            safe_candidates,
-            std::chrono::steady_clock::now()};
-        RCLCPP_INFO(
-            this->get_logger(),
-            "[GRASP] Cached %zu safe candidate(s) for '%s' for %d seconds.",
-            safe_candidates.size(), object_name.c_str(),
-            grasp_plan_cache_ttl_sec_);
+        if (!cache_grasp_client_->wait_for_service(std::chrono::seconds(3))) {
+            RCLCPP_ERROR(this->get_logger(), "MASTER_GRASP_CACHE_UNAVAILABLE");
+            return;
+        }
+        auto request = std::make_shared<my_actions::srv::CacheGraspPlan::Request>();
+        request->object_name = object_name;
+        request->observation_header = observation_header;
+        request->candidates = safe_candidates;
+        request->ttl_seconds = grasp_plan_cache_ttl_sec_;
+        auto future = cache_grasp_client_->async_send_request(request);
+        if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+            RCLCPP_ERROR(this->get_logger(), "MASTER_GRASP_CACHE_TIMEOUT");
+            return;
+        }
+        RCLCPP_INFO(this->get_logger(), "[GRASP CACHE] %s", future.get()->status.c_str());
     }
 
     std::string targetWorldName(const std::string& instruction) const {
@@ -998,7 +1170,7 @@ private:
         }
         const std::string presence = callVLM(
             "", prepareGraspPresencePrompt(instruction), 16,
-            observation.image);
+            observation.image, {}, observation.header);
         status = trim(presence);
         return presenceResponseIsAffirmative(presence);
     }
@@ -1010,7 +1182,7 @@ private:
             return false;
         }
         if (!resolve_object_client_->wait_for_service(std::chrono::seconds(3))) {
-            status = "WORLD_STATE_UNAVAILABLE: /master/resolve_object";
+            status = "WORLD_STATE_UNAVAILABLE: /pipeline/resolve_object";
             return false;
         }
         auto resolve_request =
@@ -1052,116 +1224,44 @@ private:
         return true;
     }
 
-    void annotateOfficialResponse(
-        const std::string& mode, const std::string& response,
-        const cv::Mat& source_image) {
-        if (source_image.empty() || mode == "GENERAL") {
-            return;
-        }
+    static std::filesystem::path graspCaptureDirectory() {
+        const char* home = std::getenv("HOME");
+        if (home == nullptr || *home == '\0') return {};
+        return std::filesystem::path(home) / "robobrain_inference";
+    }
 
-        cv::Mat annotated = source_image.clone();
-        bool drew_result = false;
-
-        if (mode == "GROUNDING") {
-            const std::regex box_pattern(
-                "\\[\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,\\s*"
-                "([0-9]+)\\s*,\\s*([0-9]+)\\s*\\]");
-            for (auto match = std::sregex_iterator(
-                     response.begin(), response.end(), box_pattern);
-                 match != std::sregex_iterator(); ++match) {
-                const cv::Point top_left(
-                    normalizedToPixel(std::stod((*match)[1]), annotated.cols),
-                    normalizedToPixel(std::stod((*match)[2]), annotated.rows));
-                const cv::Point bottom_right(
-                    normalizedToPixel(std::stod((*match)[3]), annotated.cols),
-                    normalizedToPixel(std::stod((*match)[4]), annotated.rows));
-                cv::rectangle(
-                    annotated, top_left, bottom_right,
-                    cv::Scalar(0, 255, 0), 3);
-                cv::putText(
-                    annotated, "grounding", top_left + cv::Point(0, -8),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.7,
-                    cv::Scalar(0, 255, 0), 2);
-                drew_result = true;
+    void saveCaptureImage(const std::filesystem::path& path,
+                          const cv::Mat& image) {
+        if (path.empty() || image.empty()) return;
+        try {
+            std::filesystem::create_directories(path.parent_path());
+            if (!cv::imwrite(path.string(), image)) {
+                RCLCPP_WARN(this->get_logger(), "Could not save image: %s", path.c_str());
             }
-            if (drew_result) {
-                saveOutputImage(
-                    "robobrain_grounding.png", annotated,
-                    "grounding annotation");
-            }
-            return;
-        }
-
-        if (mode == "POINTING") {
-            const std::regex point_pattern(
-                "\\(\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*\\)");
-            for (auto match = std::sregex_iterator(
-                     response.begin(), response.end(), point_pattern);
-                 match != std::sregex_iterator(); ++match) {
-                const cv::Point point(
-                    normalizedToPixel(std::stod((*match)[1]), annotated.cols),
-                    normalizedToPixel(std::stod((*match)[2]), annotated.rows));
-                cv::drawMarker(
-                    annotated, point, cv::Scalar(0, 0, 255),
-                    cv::MARKER_CROSS, 30, 3);
-                cv::circle(
-                    annotated, point, 10, cv::Scalar(0, 0, 255), 3);
-                drew_result = true;
-            }
-            if (drew_result) {
-                saveOutputImage(
-                    "robobrain_pointing.png", annotated,
-                    "pointing annotation");
-            }
-            return;
-        }
-
-        if (mode == "TRAJECTORY") {
-            const std::regex trajectory_pattern(
-                "\\(\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,\\s*"
-                "([+-]?[0-9]*\\.?[0-9]+)\\s*\\)");
-            std::vector<cv::Point> points;
-            std::vector<std::string> depths;
-            for (auto match = std::sregex_iterator(
-                     response.begin(), response.end(), trajectory_pattern);
-                 match != std::sregex_iterator(); ++match) {
-                points.emplace_back(
-                    normalizedToPixel(std::stod((*match)[1]), annotated.cols),
-                    normalizedToPixel(std::stod((*match)[2]), annotated.rows));
-                depths.push_back((*match)[3]);
-            }
-            for (size_t index = 0; index < points.size(); ++index) {
-                if (index > 0) {
-                    cv::line(
-                        annotated, points[index - 1], points[index],
-                        cv::Scalar(255, 0, 0), 3);
-                }
-                cv::circle(
-                    annotated, points[index], 7,
-                    index + 1 == points.size()
-                        ? cv::Scalar(0, 0, 255)
-                        : cv::Scalar(0, 255, 0),
-                    -1);
-                cv::putText(
-                    annotated,
-                    std::to_string(index + 1) + ":d=" + depths[index],
-                    points[index] + cv::Point(8, -8),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5,
-                    cv::Scalar(255, 0, 0), 2);
-            }
-            if (!points.empty()) {
-                saveOutputImage(
-                    "robobrain_trajectory.png", annotated,
-                    "trajectory annotation");
-            }
+        } catch (const std::exception& error) {
+            RCLCPP_WARN(this->get_logger(), "Could not save %s: %s",
+                        path.c_str(), error.what());
         }
     }
 
-
-
-    std::string encodeImageToBase64(const cv::Mat& img) {
+    std::string encodeImageToBase64(
+        const cv::Mat& img, const std::filesystem::path& sent_image_path = {}) {
         std::vector<uchar> buf;
-        cv::imencode(".jpg", img, buf);
+        if (img.empty() || !cv::imencode(".jpg", img, buf) || buf.empty()) {
+            throw std::runtime_error("failed to JPEG-encode RoboBrain image");
+        }
+        if (!sent_image_path.empty()) {
+            try {
+                std::filesystem::create_directories(sent_image_path.parent_path());
+                std::ofstream output(sent_image_path, std::ios::binary);
+                output.write(reinterpret_cast<const char*>(buf.data()),
+                             static_cast<std::streamsize>(buf.size()));
+                if (!output) throw std::runtime_error("write failed");
+            } catch (const std::exception& error) {
+                RCLCPP_WARN(this->get_logger(), "Could not save %s: %s",
+                            sent_image_path.c_str(), error.what());
+            }
+        }
         
         static const std::string base64_chars = 
              "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -1169,6 +1269,7 @@ private:
              "0123456789+/";
         
         std::string ret;
+        ret.reserve(((buf.size() + 2) / 3) * 4);
         int i = 0, j = 0;
         unsigned char char_array_3[3], char_array_4[4];
 
@@ -1195,38 +1296,119 @@ private:
         return ret;
     }
 
-    std::string callVLM(const std::string& system_prompt, const std::string& user_prompt, int max_tokens, cv::Mat current_image) {
+    std::string callVLM(const std::string& system_prompt, const std::string& user_prompt,
+                        int max_tokens, cv::Mat image,
+                        const std::filesystem::path& sent_image_path = {},
+                        const std_msgs::msg::Header &header = std_msgs::msg::Header()) {
+        if (!vision_inference_client_->wait_for_service(std::chrono::seconds(3))) {
+            RCLCPP_ERROR(this->get_logger(), "PIPELINE_INFERENCE_UNAVAILABLE");
+            return "";
+        }
+        auto request = std::make_shared<my_actions::srv::VisionInference::Request>();
+        request->system_prompt = system_prompt;
+        request->user_prompt = user_prompt;
+        request->max_tokens = max_tokens;
+        request->sent_image_path = sent_image_path.string();
+        if (!image.empty()) {
+            request->image = *cv_bridge::CvImage(header, "bgr8", image).toImageMsg();
+        }
+        auto future = vision_inference_client_->async_send_request(request);
+        if (future.wait_for(std::chrono::seconds(request_timeout_sec_ + 30)) !=
+                std::future_status::ready) {
+            RCLCPP_ERROR(this->get_logger(), "PIPELINE_INFERENCE_TIMEOUT");
+            return "";
+        }
+        const auto response = future.get();
+        if (!response->success) {
+            RCLCPP_ERROR(this->get_logger(), "%s", response->status.c_str());
+            return "";
+        }
+        return response->text;
+    }
+
+    std::string groundObject(const cv::Mat &image, const std::string &target,
+                             const std_msgs::msg::Header &header,
+                             const std::filesystem::path &path = {}) {
+        if (!ground_object_client_->wait_for_service(std::chrono::seconds(3))) {
+            RCLCPP_ERROR(this->get_logger(), "PIPELINE_GROUNDING_UNAVAILABLE");
+            return "";
+        }
+        auto request = std::make_shared<my_actions::srv::GroundObject::Request>();
+        request->image = *cv_bridge::CvImage(header, "bgr8", image).toImageMsg();
+        request->target = target;
+        request->sent_image_path = path.string();
+        auto future = ground_object_client_->async_send_request(request);
+        if (future.wait_for(std::chrono::seconds(request_timeout_sec_ + 45)) !=
+                std::future_status::ready) return "";
+        const auto response = future.get();
+        return response->success ? response->text : "";
+    }
+
+    vlm_node::EdgeSamResult segmentObject(const cv::Mat &image, const cv::Rect &box,
+                                         const std_msgs::msg::Header &header) {
+        if (!segment_object_client_->wait_for_service(std::chrono::seconds(3))) {
+            throw std::runtime_error("PIPELINE_SEGMENTATION_UNAVAILABLE");
+        }
+        auto request = std::make_shared<my_actions::srv::SegmentGroundedImage::Request>();
+        request->image = *cv_bridge::CvImage(header, "bgr8", image).toImageMsg();
+        request->bbox = {box.x, box.y, std::min(image.cols, box.x + box.width),
+                         std::min(image.rows, box.y + box.height)};
+        auto future = segment_object_client_->async_send_request(request);
+        if (future.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
+            throw std::runtime_error("PIPELINE_SEGMENTATION_TIMEOUT");
+        }
+        const auto response = future.get();
+        if (!response->success) throw std::runtime_error(response->status);
+        vlm_node::EdgeSamResult result;
+        result.mask = cv_bridge::toCvCopy(response->mask, "mono8")->image;
+        result.score = response->score;
+        result.mask_pixels = response->mask_pixels;
+        result.encoder_ms = response->encoder_ms;
+        result.decoder_ms = response->decoder_ms;
+        return result;
+    }
+
+    std::string callVLMBackend(const std::string& system_prompt, const std::string& user_prompt,
+                        int max_tokens, cv::Mat current_image,
+                        const std::filesystem::path& sent_image_path = {}) {
+        std::unique_lock<std::mutex> inference_lock(
+            inference_mutex_, std::try_to_lock);
+        if (!inference_lock.owns_lock()) {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "RoboBrain is busy; rejecting the new request instead of "
+                "queueing a stale or duplicate inference.");
+            return "";
+        }
+        const auto request_started = std::chrono::steady_clock::now();
         httplib::Client cli(api_ip_, api_port_);
         cli.set_connection_timeout(5);
         cli.set_read_timeout(request_timeout_sec_);
+        cli.set_write_timeout(30);
 
         json payload = {
             {"model", model_name_},
             {"temperature", temperature_},
-            {"max_tokens", max_tokens}
+            {"max_tokens", std::max(1, max_tokens)},
+            {"stream", false},
+            {"chat_template_kwargs", {{"enable_thinking", false}}}
         };
 
-        json content_array = json::array();
-        content_array.push_back({
-            {"type", "text"},
-            {"text", user_prompt}
-        });
+        const bool grounding_request = user_prompt.rfind(
+            "Please provide the bounding box coordinate of the region this sentence describes: ", 0) == 0;
+        if (grounding_request) vlm_node::configureGroundingRequest(payload);
 
-        if (!current_image.empty()) {
-            cv::Mat resized_img;
-            float max_dim = 640.0f;
-            float scale = std::min(max_dim / current_image.cols, max_dim / current_image.rows);
-            if (scale < 1.0f) {
-                cv::resize(current_image, resized_img, cv::Size(), scale, scale, cv::INTER_AREA);
-            } else {
-                resized_img = current_image;
+        cv::Mat sent_image = current_image;
+        if (!grounding_request && !current_image.empty()) {
+            const float max_dim = static_cast<float>(image_max_dimension_);
+            const float scale = std::min(max_dim / current_image.cols, max_dim / current_image.rows);
+            if (scale < 1.0F) {
+                cv::resize(current_image, sent_image, cv::Size(), scale, scale, cv::INTER_AREA);
             }
-            std::string base64_image = encodeImageToBase64(resized_img);
-            content_array.push_back({
-                {"type", "image_url"},
-                {"image_url", {{"url", "data:image/jpeg;base64," + base64_image}}}
-            });
         }
+        const std::string image_url = sent_image.empty() ? "" :
+            "data:image/jpeg;base64," + encodeImageToBase64(sent_image, sent_image_path);
+        json content_array = vlm_node::imageFirstContent(image_url, user_prompt);
 
         json user_message = {
             {"role", "user"},
@@ -1250,22 +1432,35 @@ private:
                     "x" + std::to_string(current_image.rows);
             RCLCPP_INFO(
                 this->get_logger(),
-                "[ROBOBRAIN TX] http://%s:%d model=%s image=%s "
+                "[ROBOBRAIN TX] %s model=%s image=%s "
                 "temperature=%.2f max_tokens=%d\nsystem: %s\nuser: %s",
-                api_ip_.c_str(), api_port_, model_name_.c_str(),
+                api_server_url_.c_str(), model_name_.c_str(),
                 image_description.c_str(),
-                temperature_, max_tokens,
+                payload["temperature"].get<double>(), payload["max_tokens"].get<int>(),
                 system_prompt.empty() ? "<none>" : system_prompt.c_str(),
                 user_prompt.c_str());
         }
 
-        auto res = cli.Post("/v1/chat/completions", payload.dump(), "application/json");
+        const std::string endpoint = api_base_path_ + "/chat/completions";
+        auto res = cli.Post(endpoint, payload.dump(), "application/json");
+        RCLCPP_INFO(this->get_logger(),
+            "[VLM TIMING] request_seconds=%.6f http_status=%d model=%s",
+            std::chrono::duration<double>(std::chrono::steady_clock::now()-request_started).count(),
+            res ? res->status : 0, model_name_.c_str());
         
         if (!res || res->status != 200) {
-            std::string err = res ? "HTTP " + std::to_string(res->status) : "Connection Failed";
-            RCLCPP_ERROR(this->get_logger(), "API Error: %s", err.c_str());
-            if (res && !res->body.empty()) {
-                RCLCPP_ERROR(this->get_logger(), "LM Studio response: %s", res->body.c_str());
+            const std::string err = res
+                ? "HTTP " + std::to_string(res->status)
+                : "connection failed or timed out";
+            RCLCPP_ERROR(
+                this->get_logger(), "RoboBrain request to %s failed: %s",
+                endpoint.c_str(), err.c_str());
+            if (res && !res->body.empty() &&
+                res->body.find("data:image") == std::string::npos) {
+                const std::string detail = res->body.substr(0, 512);
+                RCLCPP_ERROR(
+                    this->get_logger(), "RoboBrain response: %s",
+                    detail.c_str());
             }
             return "";
         }
@@ -1278,7 +1473,7 @@ private:
             }
             const auto& content = res_json["choices"][0]["message"]["content"];
             if (!content.is_string()) {
-                RCLCPP_ERROR(this->get_logger(), "LM Studio returned non-text message content.");
+                RCLCPP_ERROR(this->get_logger(), "RoboBrain returned non-text message content.");
                 return "";
             }
             const std::string reply = content.get<std::string>();
@@ -1290,7 +1485,9 @@ private:
             }
             return reply;
         } catch (const json::exception& e) {
-            RCLCPP_WARN(this->get_logger(), "Error reading response: %s", e.what());
+            RCLCPP_ERROR(
+                this->get_logger(), "Invalid RoboBrain response JSON: %s",
+                e.what());
             return "";
         }
     }
@@ -1305,7 +1502,8 @@ private:
                 "Prompt is empty. Use [GENERAL], [POINTING], [GROUNDING], "
                 "[TRAJECTORY], [ACTION], [YOLO], [FIND_GRASP], "
                 "[PRE_GRASP], [REFINE_GRASP], [PLACE_UPRIGHT], "
-                "[PLACE], [PLACE_FREE], [PLAN_UPRIGHT], [PLAN], or [GRAB].";
+                "[PLACE], [PLACE_FREE], [PLAN_UPRIGHT], [PLAN], "
+                "[PLAN_LAYOUT_UPRIGHT], [PLAN_LAYOUT], or [GRAB].";
             return;
         }
 
@@ -1316,7 +1514,7 @@ private:
             if (!get_world_state_client_->wait_for_service(
                     std::chrono::seconds(2))) {
                 response->response =
-                    "WORLD_STATE_UNAVAILABLE: /master/get_world_state";
+                    "WORLD_STATE_UNAVAILABLE: /pipeline/get_world_state";
                 return;
             }
             auto state_request =
@@ -1329,6 +1527,218 @@ private:
                 return;
             }
             response->response = state_future.get()->state_json;
+            return;
+        }
+
+        if (parsed.mode == "PLAN_LAYOUT_UPRIGHT" ||
+            parsed.mode == "PLAN_LAYOUT") {
+            const bool upright_policy =
+                parsed.mode == "PLAN_LAYOUT_UPRIGHT";
+            const auto layout = vlm_node::parseLayoutPrompt(parsed.prompt);
+            if (!layout.valid) {
+                response->response =
+                    "LAYOUT_PROMPT_INVALID: use 'place <object>, <object>, ... onto <destination>'";
+                return;
+            }
+            const auto &object_names = layout.objects;
+            const auto &destination_name = layout.destination;
+
+            SynchronizedObservation observation;
+            std::string observation_status;
+            if (!captureFreshObservation(observation, observation_status)) {
+                response->response = observation_status;
+                return;
+            }
+            if (!pin_layout_observation_client_->wait_for_service(
+                    std::chrono::seconds(3))) {
+                response->response =
+                    "LAYOUT_PIN_SERVICE_UNAVAILABLE: /pipeline/pin_placement_observation";
+                return;
+            }
+            if (!pin_vamp_layout_observation_client_->wait_for_service(
+                    std::chrono::seconds(3))) {
+                response->response = "LAYOUT_VAMP_PIN_SERVICE_UNAVAILABLE";
+                return;
+            }
+            bool observation_pinned = false;
+            for (int attempt = 0; attempt < 30 && !observation_pinned; ++attempt) {
+                auto pin_request = std::make_shared<
+                    my_actions::srv::PinLayoutObservation::Request>();
+                pin_request->observation_header = observation.header;
+                auto pin_future = pin_layout_observation_client_->async_send_request(
+                    pin_request);
+                if (pin_future.wait_for(std::chrono::seconds(1)) ==
+                    std::future_status::ready) {
+                    observation_pinned = pin_future.get()->success;
+                    if (observation_pinned) {
+                        auto vamp_pin = pin_vamp_layout_observation_client_->async_send_request(
+                            pin_request);
+                        observation_pinned =
+                            vamp_pin.wait_for(std::chrono::seconds(1)) ==
+                            std::future_status::ready && vamp_pin.get()->success;
+                    }
+                }
+                if (!observation_pinned) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+            }
+            if (!observation_pinned) {
+                response->response =
+                    "LAYOUT_OBSERVATION_PIN_FAILED: matching point cloud did not arrive";
+                return;
+            }
+            if (!edgesam_) {
+                response->response =
+                    "EDGESAM_UNAVAILABLE: " + edgesam_initialization_error_;
+                return;
+            }
+            const auto capture_dir = graspCaptureDirectory();
+            if (!capture_dir.empty()) {
+                for (const char *name : {"destination_bounding_box.png",
+                                         "destination_mask.png",
+                                         "destination_segmented.png"}) {
+                    std::error_code error;
+                    std::filesystem::remove(capture_dir / name, error);
+                    if (error) {
+                        RCLCPP_WARN(this->get_logger(),
+                                    "Could not clear previous %s: %s",
+                                    name, error.message().c_str());
+                    }
+                }
+            }
+            auto segment_named_region = [this, &observation, &capture_dir](
+                const std::string &name, bool destination,
+                sensor_msgs::msg::Image &mask_message,
+                std::string &error) {
+                const std::string target = destination ?
+                    "the complete visible placement surface of the " + name +
+                    ". Return one tight bounding box around the entire named destination" :
+                    "the complete visible object " + name +
+                    ". Return one tight bounding box around only that object";
+                const std::string reply = groundObject(
+                    observation.image, target, observation.header);
+                std::smatch match;
+                if (!vlm_node::parseGroundingBox(reply, match)) {
+                    error = "grounding parse failed for " + name + ": " + reply;
+                    return false;
+                }
+                int x1 = normalizedToPixel(
+                    std::stod(match[1]), observation.image.cols);
+                int y1 = normalizedToPixel(
+                    std::stod(match[2]), observation.image.rows);
+                int x2 = normalizedToPixel(
+                    std::stod(match[3]), observation.image.cols);
+                int y2 = normalizedToPixel(
+                    std::stod(match[4]), observation.image.rows);
+                if (x1 > x2) std::swap(x1, x2);
+                if (y1 > y2) std::swap(y1, y2);
+                expandGroundingBox(
+                    x1, y1, x2, y2, observation.image.cols,
+                    observation.image.rows);
+                if (destination && !capture_dir.empty()) {
+                    cv::Mat boxed_image = observation.image.clone();
+                    cv::rectangle(boxed_image, cv::Point(x1, y1),
+                                  cv::Point(x2, y2), cv::Scalar(0, 255, 0), 2);
+                    saveCaptureImage(
+                        capture_dir / "destination_bounding_box.png",
+                        boxed_image);
+                }
+                try {
+                    const auto result = segmentObject(
+                        observation.image,
+                        cv::Rect(x1, y1, std::max(1, x2 - x1 + 1),
+                                 std::max(1, y2 - y1 + 1)), observation.header);
+                    if (result.mask_pixels < edgesam_min_mask_pixels_) {
+                        error = "mask too small for " + name + ": " +
+                            std::to_string(result.mask_pixels);
+                        return false;
+                    }
+                    if (destination && !capture_dir.empty()) {
+                        saveCaptureImage(capture_dir / "destination_mask.png",
+                                         result.mask);
+                        cv::Mat segmented_image = cv::Mat::zeros(
+                            observation.image.size(), observation.image.type());
+                        observation.image.copyTo(segmented_image, result.mask);
+                        saveCaptureImage(
+                            capture_dir / "destination_segmented.png",
+                            segmented_image);
+                        RCLCPP_INFO(
+                            this->get_logger(),
+                            "[LAYOUT DESTINATION IMAGE] %s",
+                            (capture_dir / "destination_segmented.png").c_str());
+                    }
+                    mask_message = *cv_bridge::CvImage(
+                        observation.header, "mono8", result.mask).toImageMsg();
+                    return true;
+                } catch (const std::exception &exception) {
+                    error = "EdgeSAM failed for " + name + ": " + exception.what();
+                    return false;
+                }
+            };
+
+            sensor_msgs::msg::Image destination_mask;
+            std::string segmentation_error;
+            if (!segment_named_region(
+                    destination_name, true, destination_mask,
+                    segmentation_error)) {
+                response->response = "LAYOUT_SEGMENTATION_FAILED: " +
+                    segmentation_error;
+                return;
+            }
+            std::vector<sensor_msgs::msg::Image> object_masks;
+            object_masks.reserve(object_names.size());
+            std::vector<std::string> segmented_names;
+            std::vector<std::string> segmentation_failures;
+            for (const auto &name : object_names) {
+                sensor_msgs::msg::Image mask;
+                if (!segment_named_region(
+                        name, false, mask, segmentation_error)) {
+                    segmentation_failures.push_back(name + ": " + segmentation_error);
+                    RCLCPP_WARN(this->get_logger(), "[LAYOUT SKIPPED] %s: %s",
+                        name.c_str(), segmentation_error.c_str());
+                    continue;
+                }
+                segmented_names.push_back(name);
+                object_masks.push_back(std::move(mask));
+            }
+            if (segmented_names.empty()) {
+                response->response = "LAYOUT_FAILED: no objects could be segmented";
+                for (const auto &failure : segmentation_failures) {
+                    response->response += "\nSKIPPED: " + failure;
+                }
+                return;
+            }
+            if (!plan_object_layout_client_->wait_for_service(
+                    std::chrono::seconds(5))) {
+                response->response =
+                    "LAYOUT_BACKEND_UNAVAILABLE: /pipeline/plan_layout";
+                return;
+            }
+            auto layout_request =
+                std::make_shared<my_actions::srv::PlanObjectLayout::Request>();
+            layout_request->observation_header = observation.header;
+            layout_request->destination_mask = std::move(destination_mask);
+            layout_request->object_masks = std::move(object_masks);
+            layout_request->object_names = segmented_names;
+            layout_request->destination_name = destination_name;
+            layout_request->orientation_policy =
+                upright_policy ? "upright" : "free";
+            auto layout_future = plan_object_layout_client_->async_send_request(
+                layout_request);
+            if (layout_future.wait_for(std::chrono::seconds(
+                    request_timeout_sec_ * static_cast<int>(object_names.size()))) != std::future_status::ready) {
+                response->response = "LAYOUT_BACKEND_TIMEOUT";
+                return;
+            }
+            const auto layout_result = layout_future.get();
+            response->response = (layout_result->success ||
+                layout_result->status.rfind("LAYOUT_PARTIAL", 0) == 0) ?
+                layout_result->status : "LAYOUT_PLAN_FAILED: " +
+                layout_result->status;
+            for (const auto &failure : segmentation_failures) {
+                response->response += "\nSKIPPED: " + failure;
+            }
+            RCLCPP_INFO(this->get_logger(), "[LAYOUT SUMMARY] %s", response->response.c_str());
             return;
         }
 
@@ -1398,20 +1808,36 @@ private:
                 return;
             }
             const cv::Mat image = observation.image;
+            const auto capture_dir = graspCaptureDirectory();
+            if (!capture_dir.empty()) {
+                for (const char* name : {"placement_robobrain_input.jpg",
+                                         "placement_bounding_box.png",
+                                         "placement_target_mask.png",
+                                         "placement_segmented.png",
+                                         "destination_bounding_box.png",
+                                         "destination_mask.png",
+                                         "destination_segmented.png"}) {
+                    std::error_code error;
+                    std::filesystem::remove(capture_dir / name, error);
+                    if (error) {
+                        RCLCPP_WARN(this->get_logger(),
+                                    "Could not clear previous %s: %s",
+                                    name, error.message().c_str());
+                    }
+                }
+                saveCaptureImage(capture_dir / "placement_raw.png", image);
+            }
             const std::string grounding_target =
                 "the complete visible placement surface of the " +
                 destination_name +
                 ". Use one tight bounding box enclosing the entire named "
                 "destination surface";
-            const std::string grounding_reply = callVLM(
-                "", prepareOfficialPrompt("GROUNDING", grounding_target),
-                64, image);
-            const std::regex box_pattern(
-                "\\[\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,\\s*"
-                "([0-9]+)\\s*,\\s*([0-9]+)\\s*\\]");
+            const std::string grounding_reply = groundObject(
+                image, grounding_target, observation.header,
+                capture_dir.empty() ? std::filesystem::path{} :
+                    capture_dir / "placement_robobrain_input.jpg");
             std::smatch box_match;
-            if (!std::regex_search(
-                    grounding_reply, box_match, box_pattern)) {
+            if (!vlm_node::parseGroundingBox(grounding_reply, box_match)) {
                 response->response =
                     "PLACEMENT_GROUNDING_PARSE_FAILED: " + grounding_reply;
                 return;
@@ -1422,16 +1848,40 @@ private:
             int y2 = normalizedToPixel(std::stod(box_match[4]), image.rows);
             if (x1 > x2) std::swap(x1, x2);
             if (y1 > y2) std::swap(y1, y2);
+            expandGroundingBox(x1, y1, x2, y2, image.cols, image.rows);
+            if (!capture_dir.empty()) {
+                cv::Mat boxed_image = image.clone();
+                cv::rectangle(boxed_image, cv::Point(x1, y1), cv::Point(x2, y2),
+                              cv::Scalar(0, 255, 0), 2);
+                saveCaptureImage(capture_dir / "placement_bounding_box.png",
+                                 boxed_image);
+                saveCaptureImage(capture_dir / "destination_bounding_box.png",
+                                 boxed_image);
+            }
             vlm_node::EdgeSamResult segmentation;
             try {
-                segmentation = edgesam_->segment(
+                segmentation = segmentObject(
                     image, cv::Rect(
                         x1, y1, std::max(1, x2 - x1 + 1),
-                        std::max(1, y2 - y1 + 1)));
+                        std::max(1, y2 - y1 + 1)), observation.header);
             } catch (const std::exception &error) {
                 response->response =
                     std::string("PLACEMENT_EDGESAM_FAILED: ") + error.what();
                 return;
+            }
+            if (!capture_dir.empty()) {
+                saveCaptureImage(capture_dir / "placement_target_mask.png",
+                                 segmentation.mask);
+                saveCaptureImage(capture_dir / "destination_mask.png",
+                                 segmentation.mask);
+                cv::Mat segmented_image = cv::Mat::zeros(image.size(), image.type());
+                image.copyTo(segmented_image, segmentation.mask);
+                saveCaptureImage(capture_dir / "placement_segmented.png",
+                                 segmented_image);
+                saveCaptureImage(capture_dir / "destination_segmented.png",
+                                 segmented_image);
+                RCLCPP_INFO(this->get_logger(), "[PLACE IMAGES] %s",
+                            capture_dir.c_str());
             }
             if (segmentation.mask_pixels < edgesam_min_mask_pixels_) {
                 response->response =
@@ -1439,26 +1889,18 @@ private:
                     std::to_string(segmentation.mask_pixels);
                 return;
             }
-            cv::Mat segmented = cv::Mat::zeros(image.size(), image.type());
-            image.copyTo(segmented, segmentation.mask);
-            saveOutputImage(
-                "placement_destination_rgb.png", segmented,
-                "segmented placement destination RGB image");
-            saveOutputImage(
-                "placement_destination_mask.png", segmentation.mask,
-                "segmented placement destination mask");
             RCLCPP_INFO(
                 this->get_logger(),
-                "[PLACE] destination=%s mask=%d px score=%.3f policy=%s",
+                "[PLACE] destination=%s mask=%d px score=%.3f policy=%s encoder_ms=%.3f decoder_ms=%.3f",
                 destination_name.c_str(), segmentation.mask_pixels,
                 segmentation.score,
-                upright_policy ? "upright" : "free");
+                upright_policy ? "upright" : "free", segmentation.encoder_ms, segmentation.decoder_ms);
 
             if (!placement_candidates_client_->wait_for_service(
                     std::chrono::seconds(5))) {
                 response->response =
                     "PLACEMENT_BACKEND_UNAVAILABLE: "
-                    "/anyplace/find_placement_candidates";
+                    "/pipeline/find_placements";
                 return;
             }
             auto placement_request = std::make_shared<
@@ -1505,7 +1947,7 @@ private:
             if (!plan_placement_client_->wait_for_service(
                     std::chrono::seconds(5))) {
                 response->response =
-                    "PLACEMENT_PLANNER_UNAVAILABLE: /vamp_planner/plan_placement";
+                    "PLACEMENT_PLANNER_UNAVAILABLE: /pipeline/plan_placement";
                 return;
             }
             auto plan_request =
@@ -1517,6 +1959,8 @@ private:
             plan_request->destination_name = destination_name;
             plan_request->orientation_policy =
                 upright_policy ? "upright" : "free";
+            plan_request->validation_batch_size = 8;
+            plan_request->retry_motion_failures = true;
             auto plan_future = plan_placement_client_->async_send_request(
                 plan_request);
             if (plan_future.wait_for(std::chrono::seconds(30)) !=
@@ -1547,10 +1991,12 @@ private:
                     "AMBIGUOUS_CACHED_GRASP: include the object name";
                 return;
             }
+            const std::string requested_object = implicit_object ?
+                *implicit_object : extractGraspTarget(parsed.prompt);
             const std::string world_name = implicit_object ?
-                *implicit_object : targetWorldName(parsed.prompt);
+                *implicit_object : targetWorldName(requested_object);
             const std::string object_name =
-                world_name.empty() ? parsed.prompt : world_name;
+                world_name.empty() ? requested_object : world_name;
             // GRASP (with GRAB retained as an alias) is intentionally a
             // two-step operation: it executes only
             // the #1 plan produced by a recent FIND_GRASP.  It never silently
@@ -1566,7 +2012,7 @@ private:
                 if (!execute_grasp_client_->wait_for_service(
                         std::chrono::seconds(3))) {
                     response->response =
-                        "MASTER_UNAVAILABLE: /master/execute_grasp; no motion was started";
+                        "MASTER_UNAVAILABLE: /pipeline/execute_grasp; no motion was started";
                     return;
                 }
                 if (refine_requested) {
@@ -1656,7 +2102,6 @@ private:
                 return;
             }
             cv::Mat image = observation.image;
-            saveOutputImage("robobrain_raw.png", image, "raw synchronized grasp image");
             std::string presence_status;
             if (!targetVisible(
                     observation, parsed.prompt, world_name,
@@ -1676,9 +2121,6 @@ private:
                     return;
                 }
                 image = observation.image;
-                saveOutputImage(
-                    "robobrain_raw.png", image,
-                    "raw synchronized post-NBV grasp image");
                 if (!targetVisible(
                         observation, parsed.prompt, world_name,
                         presence_status)) {
@@ -1700,25 +2142,56 @@ private:
             } else if (lower_prompt.find("rim") != std::string::npos ||
                        lower_prompt.find("lip") != std::string::npos ||
                        lower_prompt.find("edge") != std::string::npos) {
+                std::string whole_object = object_name;
+                for (const std::string phrase : {
+                         " of the ", " of an ", " of a "}) {
+                    const auto position = lower_prompt.rfind(phrase);
+                    if (position != std::string::npos) {
+                        whole_object = trim(parsed.prompt.substr(
+                            position + phrase.size()));
+                        break;
+                    }
+                }
                 grounding_target =
-                    "the complete visible rim of " + object_name;
+                    "Locate the whole " + whole_object +
+                    ", including its body, handle, and rim. Return only "
+                    "its bounding box [x1,y1,x2,y2] in normalized "
+                    "coordinates 0 to 1000.";
             } else if (lower_prompt.find("body") != std::string::npos ||
                        lower_prompt.find("side") != std::string::npos) {
                 grounding_target =
                     "the complete visible body of " + object_name;
             }
-            grounding_target +=
-                ". Use one tight bounding box enclosing the entire named "
-                "target, not a smaller grasp or contact patch";
-            const std::string grounding_reply = callVLM(
-                "", prepareOfficialPrompt(
-                    "GROUNDING", grounding_target),
-                64, image);
-            const std::regex box_pattern(
-                "\\[\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,\\s*"
-                "([0-9]+)\\s*,\\s*([0-9]+)\\s*\\]");
+            const bool whole_object_for_rim =
+                lower_prompt.find("rim") != std::string::npos ||
+                lower_prompt.find("lip") != std::string::npos ||
+                lower_prompt.find("edge") != std::string::npos;
+            if (!whole_object_for_rim) {
+                grounding_target +=
+                    ". Use one tight bounding box enclosing the entire named "
+                    "target, not a smaller grasp or contact patch";
+            }
+            const auto capture_dir = graspCaptureDirectory();
+            if (!capture_dir.empty()) {
+                for (const char* name : {"robobrain_input.jpg", "bounding_box.png",
+                                         "target_mask.png", "segmented.png",
+                                         "hggd_heatmap.png"}) {
+                    std::error_code error;
+                    std::filesystem::remove(capture_dir / name, error);
+                    if (error) {
+                        RCLCPP_WARN(this->get_logger(),
+                                    "Could not clear previous %s: %s",
+                                    name, error.message().c_str());
+                    }
+                }
+                saveCaptureImage(capture_dir / "raw.png", image);
+            }
+            const std::string grounding_reply = groundObject(
+                image, grounding_target, observation.header,
+                capture_dir.empty() ? std::filesystem::path{} :
+                    capture_dir / "robobrain_input.jpg");
             std::smatch box_match;
-            if (!std::regex_search(grounding_reply, box_match, box_pattern)) {
+            if (!vlm_node::parseGroundingBox(grounding_reply, box_match)) {
                 response->response =
                     "VLM_GROUNDING_PARSE_FAILED: expected normalized [x1, y1, x2, y2], got: " +
                     grounding_reply;
@@ -1730,6 +2203,13 @@ private:
             int y2 = normalizedToPixel(std::stod(box_match[4]), image.rows);
             if (x1 > x2) std::swap(x1, x2);
             if (y1 > y2) std::swap(y1, y2);
+            expandGroundingBox(x1, y1, x2, y2, image.cols, image.rows);
+            cv::Mat boxed_image = image.clone();
+            cv::rectangle(boxed_image, cv::Point(x1, y1), cv::Point(x2, y2),
+                          cv::Scalar(0, 255, 0), 2);
+            if (!capture_dir.empty()) {
+                saveCaptureImage(capture_dir / "bounding_box.png", boxed_image);
+            }
             // HGGD supplies the spatial grasp seeds. Keep only a mechanical
             // ROI anchor for the existing service contract; the planner uses
             // depth continuity to select foreground and never treats this
@@ -1752,7 +2232,7 @@ private:
                         x1, y1, std::max(1, x2 - x1 + 1),
                         std::max(1, y2 - y1 + 1));
                     const auto segmentation =
-                        edgesam_->segment(image, grounding_roi);
+                        segmentObject(image, grounding_roi, observation.header);
                     if (segmentation.mask_pixels < edgesam_min_mask_pixels_) {
                         response->response =
                             "EDGESAM_MASK_TOO_SMALL: pixels=" +
@@ -1794,31 +2274,22 @@ private:
                                 yolo_status.c_str());
                 }
             }
-            cv::Mat segmented_rgb = cv::Mat::zeros(image.size(), image.type());
-            image.copyTo(segmented_rgb, target_mask);
-            saveOutputImage(
-                "segmented_target_rgb.png", segmented_rgb,
-                "segmented target RGB image");
-            saveOutputImage(
-                "segmented_target_mask.png", target_mask,
-                "segmented target binary mask");
-            cv::Mat annotated = image.clone();
-            cv::Mat target_overlay(image.size(), image.type(), cv::Scalar(0, 255, 255));
-            cv::Mat blended;
-            cv::addWeighted(annotated, 0.55, target_overlay, 0.45, 0.0, blended);
-            blended.copyTo(annotated, target_mask);
-            cv::rectangle(annotated, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 255, 0), 3);
-            saveOutputImage(
-                "robobrain_grasp_roi.png", annotated,
-                "grounded and segmented grasp target annotation");
             RCLCPP_INFO(
                 this->get_logger(),
                 "[GRASP] Grounded ROI=[%d,%d]-[%d,%d] mask=%s; "
                 "HGGD will provide spatial seeds.",
                 x1, y1, x2, y2, target_mask_source.c_str());
+            if (!capture_dir.empty()) {
+                saveCaptureImage(capture_dir / "target_mask.png", target_mask);
+                cv::Mat segmented_image = cv::Mat::zeros(image.size(), image.type());
+                image.copyTo(segmented_image, target_mask);
+                saveCaptureImage(capture_dir / "segmented.png", segmented_image);
+                RCLCPP_INFO(this->get_logger(), "[GRASP IMAGES] %s",
+                            capture_dir.c_str());
+            }
 
             if (!grasp_candidates_client_->wait_for_service(std::chrono::seconds(3))) {
-                response->response = "VAMP_UNAVAILABLE: /vamp_planner/find_grasp_candidates";
+                response->response = "VAMP_UNAVAILABLE: /pipeline/calculate_grasps";
                 return;
             }
             auto grasp_request = std::make_shared<my_actions::srv::FindGraspCandidates::Request>();
@@ -1956,7 +2427,7 @@ private:
                     summary <<
                         "\nMASTER: grasp request timed out; execution state is "
                         "unknown. Do not send another motion command until "
-                        "the arm and /master/execute_grasp are checked.";
+                        "the arm and /pipeline/execute_grasp are checked.";
                 }
             } else if (execute_requested) {
                 summary << "\nGRAB_FAILED: master execution service is unavailable; no motion was started";
@@ -1984,7 +2455,7 @@ private:
             } else {
                 std::lock_guard<std::mutex> lock(image_mutex_);
                 if (!latest_image_.empty()) {
-                    current_image = latest_image_.clone();
+                    current_image = latest_image_;
                 }
             }
 
@@ -1997,9 +2468,6 @@ private:
                     this->get_logger(), "%s", response->response.c_str());
                 return;
             }
-            saveOutputImage(
-                "robobrain_raw.png", current_image,
-                "raw RoboBrain input image");
 
             RCLCPP_INFO(
                 this->get_logger(),
@@ -2021,8 +2489,6 @@ private:
                     response->response =
                         "GROUNDING_ABORTED: object-presence check failed to "
                         "return a response.";
-                    saveGroundingStatusImage(
-                        current_image, "GROUNDING ABORTED");
                     RCLCPP_ERROR(
                         this->get_logger(), "[ROBOBRAIN GROUNDING] %s",
                         response->response.c_str());
@@ -2033,7 +2499,6 @@ private:
                         "NOT_FOUND: grounding was not attempted because the "
                         "object-presence check returned: " +
                         trim(presence_reply);
-                    saveGroundingStatusImage(current_image, "NOT FOUND");
                     RCLCPP_WARN(
                         this->get_logger(), "[ROBOBRAIN GROUNDING] %s",
                         response->response.c_str());
@@ -2048,15 +2513,22 @@ private:
             const std::string prepared_prompt = prepareOfficialPrompt(
                 parsed.mode, parsed.prompt);
 
-            const std::string reply = callVLM(
-                "", prepared_prompt, max_tokens_, current_image);
+            const std::string reply = parsed.mode == "GROUNDING" ?
+                groundObject(current_image, parsed.prompt, std_msgs::msg::Header{}) :
+                callVLM("", prepared_prompt, max_tokens_, current_image);
             if (reply.empty()) {
                 response->response = "RoboBrain failed to return a response.";
                 return;
             }
+            if (parsed.mode == "GROUNDING") {
+                std::smatch box;
+                if (!vlm_node::parseGroundingBox(reply, box)) {
+                    response->response = "GROUNDING_PARSE_FAILED: " + reply;
+                    return;
+                }
+            }
             response->response = reply;
             parseAndLogOfficialResponse(parsed.mode, reply);
-            annotateOfficialResponse(parsed.mode, reply, current_image);
             return;
         }
 
@@ -2082,9 +2554,6 @@ private:
                 response->response = "No image available.";
                 return;
             }
-            saveOutputImage(
-                "robobrain_raw.png", current_image,
-                "raw RoboBrain input image");
 
             if (!get_yolo_client_->wait_for_service(std::chrono::seconds(3))) {
                 response->response = "Failed to connect to /active_vision/get_yolo_inference service.";
@@ -2191,7 +2660,7 @@ private:
             {
                 std::lock_guard<std::mutex> lock(image_mutex_);
                 if (!latest_image_.empty()) {
-                    action_image = latest_image_.clone();
+                    action_image = latest_image_;
                 }
             }
             if (action_image.empty()) {
@@ -2199,9 +2668,6 @@ private:
                     "ACTION requires an image from /camera/color/image_raw.";
                 return;
             }
-            saveOutputImage(
-                "robobrain_raw.png", action_image,
-                "raw RoboBrain input image");
             std::string sys_instruction = "You are a robotic task planner. Choose the next action based on the spatial memory provided.";
             std::string reply = callVLM(
                 sys_instruction, sys_prompt, 200, action_image);
@@ -2283,13 +2749,13 @@ private:
                                 execute_pipeline_client_->async_send_request(req_exec);
                                 response->response = "Executed Action: Appended LOOK_AT for " + best_name + " and triggered Pipeline execution.";
                             } else {
-                                response->response = "Appended LOOK_AT task, but failed to connect to /master/execute_pipeline.";
+                                response->response = "Appended LOOK_AT task, but failed to connect to /pipeline/execute_pipeline.";
                             }
                         } else {
                             response->response = "Failed to append task. Service timed out.";
                         }
                     } else {
-                        response->response = "Failed to connect to /master/append_task service. Simulated Action: " + action_str;
+                        response->response = "Failed to connect to /pipeline/append_task service. Simulated Action: " + action_str;
                     }
                 } else {
                     response->response = action_str;

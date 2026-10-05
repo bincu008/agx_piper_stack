@@ -1,0 +1,11 @@
+std_msgs/Header observation_header
+sensor_msgs/Image destination_mask
+sensor_msgs/Image[] object_masks
+string[] object_names
+string destination_name
+string orientation_policy
+---
+bool success
+string status
+string[] object_names
+my_actions/PlacementCandidate[] placements

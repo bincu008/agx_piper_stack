@@ -1,0 +1,6 @@
+string object_name
+# CDR-serialized RefineGrasp.Response, preserves its complete measured geometry.
+uint8[] refinement_cdr
+---
+bool success
+string status

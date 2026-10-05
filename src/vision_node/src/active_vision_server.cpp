@@ -225,14 +225,12 @@ public:
       this->create_client<my_actions::srv::UpdateObjectObservation>(
       "/master/update_object_observation");
 
-    // Subscribers (using message_filters)
+    // The Orbbec and arm drivers can stamp messages from different clock
+    // domains, so header-based ApproximateTime cannot pair them reliably.
+    // Both subscribers retain their independent callbacks; each cloud is
+    // paired below with the latest 50 Hz joint sample by local arrival order.
     pc_sub_.subscribe(this, "/camera/depth_registered/points", rmw_qos_profile_sensor_data);
     pose_sub_.subscribe(this, "/feedback/joint_states");
-
-    sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-      SyncPolicy(100), pc_sub_, pose_sub_);
-    
-    sync_->registerCallback(std::bind(&ActiveVisionServer::syncCallback, this, std::placeholders::_1, std::placeholders::_2));
 
     pc_sub_.registerCallback(std::bind(&ActiveVisionServer::camCountCallback, this, std::placeholders::_1));
     pose_sub_.registerCallback(std::bind(&ActiveVisionServer::poseCountCallback, this, std::placeholders::_1));
@@ -274,7 +272,10 @@ private:
       try {
           latest_color_image_ = cv_bridge::toCvCopy(msg, "bgr8")->image;
           latest_color_header_ = msg->header;
-          recent_color_frames_.push_back({latest_color_header_, latest_color_image_.clone()});
+          // The decoded frame is immutable; cv::Mat retains its pixels while
+          // a matching RGB-D observation still references this history entry.
+          recent_color_frames_.push_back({
+            latest_color_header_, latest_color_image_, this->now()});
           constexpr size_t max_color_history = 90;
           while (recent_color_frames_.size() > max_color_history) recent_color_frames_.pop_front();
       } catch (cv_bridge::Exception& e) {
@@ -444,7 +445,7 @@ private:
                         const cv::Mat & gripper_self_mask,
                         std::shared_ptr<my_actions::srv::GetYoloInference::Response> response)
   {
-      cv::Mat img = captured_image.clone();
+      const cv::Mat &img = captured_image;
       if (img.empty()) { response->success = false; return; }
 
       if (!session_) {
@@ -1126,12 +1127,6 @@ private:
     last_proc_time_ = now;
 
     rclcpp::Time t_cloud = cloud_msg->header.stamp;
-    rclcpp::Time t_pose = pose_msg->header.stamp;
-    double diff = std::abs((t_cloud - t_pose).seconds());
-                         
-    if (diff > 0.1) {
-      return;
-    }
 
     // Successfully matched a tight frame! Consume the trigger.
     scan_next_frame_ = false;
@@ -1160,12 +1155,13 @@ private:
     cv::Mat gripper_self_mask = buildGripperSelfMask(
       static_cast<int>(cloud_msg->width), static_cast<int>(cloud_msg->height),
       gripper_width_m);
-    observation_self_mask_ = gripper_self_mask.clone();
+    observation_self_mask_ = gripper_self_mask;
     // The RGB image, cloud, and joint state below form one immutable observation.
     // YOLO receives this exact RGB copy asynchronously; it never reads a later frame.
     cv::Mat captured_rgb;
     std_msgs::msg::Header captured_rgb_header;
     double rgb_depth_offset_s = std::numeric_limits<double>::infinity();
+    double rgb_receipt_age_s = std::numeric_limits<double>::infinity();
     {
       std::lock_guard<std::mutex> color_lock(color_mutex_);
       for (const auto &frame : recent_color_frames_) {
@@ -1176,7 +1172,27 @@ private:
           captured_rgb_header = frame.header;
         }
       }
-      if (rgb_depth_offset_s > rgb_depth_sync_tolerance_s_) captured_rgb.release();
+      if (rgb_depth_offset_s > rgb_depth_sync_tolerance_s_) {
+        // Some Orbbec firmware/ROS combinations publish color and registered
+        // cloud headers from different device-clock domains. Preserve strict
+        // header matching when it works; otherwise accept only the newest RGB
+        // frame received immediately before this cloud callback. The bounded
+        // receipt age prevents a pre-motion/stale frame from being paired
+        // with a later depth observation.
+        constexpr double maximum_receipt_age_s = 0.50;
+        const rclcpp::Time cloud_receipt_time = this->now();
+        captured_rgb.release();
+        for (auto frame = recent_color_frames_.rbegin();
+             frame != recent_color_frames_.rend(); ++frame) {
+          const double age =
+            (cloud_receipt_time - frame->receipt_time).seconds();
+          if (age < 0.0 || age > maximum_receipt_age_s) continue;
+          captured_rgb = frame->image;
+          captured_rgb_header = frame->header;
+          rgb_receipt_age_s = age;
+          break;
+        }
+      }
     }
     std_msgs::msg::Header self_mask_header = cloud_msg->header;
     if (!captured_rgb.empty()) {
@@ -1197,8 +1213,9 @@ private:
     } else {
       RCLCPP_DEBUG(
         this->get_logger(),
-        "[OBSERVATION] Captured RGB-D observation: RGB/depth timestamp offset=%.3f s.",
-        rgb_depth_offset_s);
+        "[OBSERVATION] Captured RGB-D observation: RGB/depth timestamp "
+        "offset=%.3f s receipt_age=%.3f s.",
+        rgb_depth_offset_s, rgb_receipt_age_s);
       // The response's observation stamp identifies the depth frame whose
       // organized pixels the mask indexes.  Preserve the RGB optical frame ID
       // while replacing its nearby device timestamp with the exact cloud stamp.
@@ -1211,7 +1228,7 @@ private:
             this, image = std::move(captured_rgb),
             header = captured_rgb_header, cloud = cloud_msg,
             transform = final_transform,
-            self_mask = gripper_self_mask.clone()]() mutable {
+            self_mask = gripper_self_mask]() mutable {
             auto yolo_response = std::make_shared<my_actions::srv::GetYoloInference::Response>();
             runYoloInference(
               image, header, cloud, transform, self_mask, yolo_response);
@@ -1419,6 +1436,15 @@ private:
         }
     }
     cam_count_++;
+
+    sensor_msgs::msg::JointState::ConstSharedPtr latest_pose;
+    {
+      std::lock_guard<std::mutex> lock(pose_mutex_);
+      latest_pose = latest_raw_pose_;
+    }
+    if (latest_pose) {
+      syncCallback(msg, latest_pose);
+    }
   }
 
   void poseCountCallback(const sensor_msgs::msg::JointState::ConstSharedPtr& msg) {
@@ -1492,7 +1518,11 @@ private:
   std::vector<int64_t> gripper_right_open_xy_;
   cv::Mat latest_color_image_;
   std_msgs::msg::Header latest_color_header_;
-  struct ColorFrame { std_msgs::msg::Header header; cv::Mat image; };
+  struct ColorFrame {
+    std_msgs::msg::Header header;
+    cv::Mat image;
+    rclcpp::Time receipt_time;
+  };
   std::deque<ColorFrame> recent_color_frames_;
   double rgb_depth_sync_tolerance_s_ = 0.15;
   std::mutex color_mutex_;

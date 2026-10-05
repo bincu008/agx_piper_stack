@@ -20,6 +20,31 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
+CTestTestfile.cmake
+DartConfiguration.tcl
+Testing/
+*.o
+*.gcda
+*.gcno
+
+# Test/coverage output
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Local run output; keep source, models and the bundled CDR replay fixture.
+/benchmark_results/
+/debug_output/
+/runtime_artifacts/
+/rosbag2_*/
+src/mock_hardware_node/snapshots/*/rgb_preview.png
+
+# Temporary editor/backup files
+*.bak
+*.swp
+*.swo
+*~
 
 # Editors and operating systems
 .DS_Store

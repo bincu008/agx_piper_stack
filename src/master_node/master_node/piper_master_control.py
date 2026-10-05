@@ -5,6 +5,7 @@ import os
 import time
 import json
 import threading
+import uuid
 import xml.etree.ElementTree as ET
 
 # Third-Party
@@ -37,9 +38,16 @@ from my_actions.srv import (
     PlanCartesianGraspApproach, RefineGrasp, ToggleContinuousNavigation,
     UpdateObjectObservation,
 )
+from task_pipeline.registry import endpoint
+from rclpy.serialization import deserialize_message, serialize_message
+
 from agx_arm_msgs.msg import AgxArmStatus, GripperStatus
 from master_node.task_manager import Task, TaskManager, canonical_task_type
 from master_node.world_state import WorldStateManager
+from my_actions.srv import CaptureObservation, CacheGraspRefinement, GraspStage
+
+from master_node.step_runtime import MasterStepRuntime
+from master_node.execution_api import ExecutionAPI
 
 class BaseTask(Task):
     def __init__(self, node_ref, task_type, target_name, coordinates):
@@ -329,31 +337,31 @@ class PiperMasterControl(Node):
             SetParameters, '/agx_arm_ctrl_single_node/set_parameters', callback_group=self.cbg_clients)
         
         # Action Clients
-        self.check_replan_client = self.create_client(CheckAndReplan, '/vamp_planner/check_and_replan', callback_group=self.cbg_clients)
-        self.toggle_nav_client = self.create_client(ToggleContinuousNavigation, '/vamp_planner/toggle_continuous_navigation', callback_group=self.cbg_clients)
-        self.get_obstacle_client = self.create_client(GetObstacleLocation, '/active_vision/get_obstacle_location', callback_group=self.cbg_clients)
-        self.calc_fallback_client = self.create_client(CalculateFallbackPose, '/vamp_planner/calculate_fallback_pose', callback_group=self.cbg_clients)
-        self.plan_apf_client = self.create_client(PlanAPF, '/vamp_planner/plan_apf', callback_group=self.cbg_clients)
+        self.check_replan_client = self.create_client(CheckAndReplan, endpoint('plan_motion'), callback_group=self.cbg_clients)
+        self.toggle_nav_client = self.create_client(ToggleContinuousNavigation, endpoint('toggle_continuous_navigation'), callback_group=self.cbg_clients)
+        self.get_obstacle_client = self.create_client(GetObstacleLocation, endpoint('get_obstacle_location'), callback_group=self.cbg_clients)
+        self.calc_fallback_client = self.create_client(CalculateFallbackPose, endpoint('calculate_fallback_pose'), callback_group=self.cbg_clients)
+        self.plan_apf_client = self.create_client(PlanAPF, endpoint('plan_apf'), callback_group=self.cbg_clients)
         
         self.collision_monitor_pub = self.create_publisher(Bool, '/active_vision/enable_collision_monitor', 10)
         self.collision_alert_sub = self.create_subscription(Bool, '/active_vision/collision_alert', self.collision_alert_callback, 10, callback_group=self.cbg_subs)
         if not self.enable_camera_collision_monitor:
             self.collision_monitor_pub.publish(Bool(data=False))
         
-        self.trigger_scan_client = self.create_client(Trigger, '/active_vision/trigger_scan', callback_group=self.cbg_clients)
+        self.trigger_scan_client = self.create_client(Trigger, endpoint('request_scan'), callback_group=self.cbg_clients)
         self.reload_client = self.create_client(Trigger, '/active_vision/reload_calibration', callback_group=self.cbg_clients)
         self.estop_client = self.create_client(Empty, '/emergency_stop', callback_group=self.cbg_clients)
-        self.look_at_ik_client = self.create_client(LookAt, '/vamp_planner/look_at_ik', callback_group=self.cbg_clients)
-        self.get_nbv_client = self.create_client(GetNBVPose, '/active_vision/get_nbv_candidates', callback_group=self.cbg_clients)
+        self.look_at_ik_client = self.create_client(LookAt, endpoint('solve_pose'), callback_group=self.cbg_clients)
+        self.get_nbv_client = self.create_client(GetNBVPose, endpoint('get_nbv_candidates'), callback_group=self.cbg_clients)
         self.get_3d_coordinate_client = self.create_client(
-            Get3DCoordinate, '/active_vision/get_3d_coordinate',
+            Get3DCoordinate, endpoint('get_3d_coordinate'),
             callback_group=self.cbg_clients)
         self.refine_grasp_client = self.create_client(
-            RefineGrasp, '/vamp_planner/refine_grasp',
+            RefineGrasp, endpoint('refine_grasp'),
             callback_group=self.cbg_clients)
         self.plan_cartesian_grasp_client = self.create_client(
             PlanCartesianGraspApproach,
-            '/vamp_planner/plan_cartesian_grasp_approach',
+            endpoint('plan_final_approach'),
             callback_group=self.cbg_clients)
 
         # Services
@@ -395,6 +403,9 @@ class PiperMasterControl(Node):
             LookAt, '/master/look_at_target', self.look_at_target_callback, callback_group=self.cbg_services)
         self.srv_move_relative = self.create_service(
             MoveRelative, '/master/move_relative', self.move_relative_callback, callback_group=self.cbg_services)
+
+        self.step_runtime = MasterStepRuntime(self)
+        self.execution_api = ExecutionAPI(self)
 
         self.calibration_poses = [
             [-0.08, 0.0, 0.0, 0.0, 0.04, 0.0],
@@ -910,6 +921,8 @@ class PiperMasterControl(Node):
             for object_id, plan in self.cached_grasp_plans.items()
         ]
         snapshot['object_count'] = len(snapshot['objects'])
+        if hasattr(self, 'step_runtime'):
+            snapshot['api_pipeline'] = json.loads(self.step_runtime.store.snapshot()[0])
         response.state_json = json.dumps(snapshot, indent=2, sort_keys=True)
         return response
 
@@ -1448,235 +1461,74 @@ class PiperMasterControl(Node):
                 response.status = pregrasp_status
                 return response
 
-        # Final execution remains behind the physical gate and all cached
-        # pre-grasp/refinement validation, so planning failures cannot move
-        # the arm or gripper.
-        contact_center = type(request.candidate.contact_left)()
-        contact_center.x = 0.5 * (
-            request.candidate.contact_left.x +
-            request.candidate.contact_right.x)
-        contact_center.y = 0.5 * (
-            request.candidate.contact_left.y +
-            request.candidate.contact_right.y)
-        contact_center.z = 0.5 * (
-            request.candidate.contact_left.z +
-            request.candidate.contact_right.z)
-        self.get_logger().info(
-            f'[GRASP] Executing highest ranked candidate #{request.candidate.id}: '
-            f'ranking={request.candidate.ranking_score:.3f}, '
-            f'GPD={request.candidate.score:.3f}, '
-            f'opening={request.candidate.jaw_opening_m:.3f}m, '
-            f'validation={request.candidate.validation_status}')
-        pregrasp_contact_center = None
-        pregrasp_contact_radius = 0.0
-        if self.pregrasp_target_exclusion_radius_m > 0.0:
-            # Candidate validation removes the segmented target from the
-            # obstacle map.  Apply the same *bounded* target-only exclusion
-            # while moving to the standoff pose; the arm model, table, and
-            # every obstacle outside this volume remain collision checked.
-            pregrasp_contact_center = contact_center
-            pregrasp_contact_radius = self.pregrasp_target_exclusion_radius_m
-            self.get_logger().warn(
-                '[GRASP] Pre-grasp target-only exclusion is enabled: '
-                f'radius={pregrasp_contact_radius:.3f}m. This is not a '
-                'robot-sphere reduction.')
-        elif request.candidate.pregrasp_collision_overridden:
-            self.get_logger().warn(
-                '[GRASP] VAMP found collision at the pre-grasp pose. '
-                'Enforcing only the configured local target-contact '
-                'allowance; table, arm, self, and path collisions remain '
-                'blocking.')
-            pregrasp_contact_center = contact_center
-            pregrasp_contact_radius = self.grasp_allowed_contact_radius_m
-        if request.refine_only:
-            if not self._run_grasp_joint_target(
-                    request.candidate.pregrasp_joints,
-                    pregrasp_contact_center, pregrasp_contact_radius):
-                response.success = False
-                response.status = 'PREGRASP_MOTION_FAILED'
-                return response
+        context_id = 'grasp_' + uuid.uuid4().hex
 
-        if request.refine_only:
-            # Phase 1 stops at pre-grasp. Request a scan only after the arm
-            # has settled so VAMP reconstructs from the wrist camera's new,
-            # synchronized RGB-D observation.
-            time.sleep(0.1)
-            if not self.refine_grasp_client.wait_for_service(timeout_sec=3.0):
-                response.success = False
+        def call_step(name, query):
+            _, _, result = self.step_runtime.store.run_one(
+                context_id, uuid.uuid4().hex, name, serialize_message(query))
+            if not result.success:
+                raise RuntimeError(result.status)
+            from task_pipeline.registry import FUNCTIONS
+            return deserialize_message(bytes(result.response_cdr), FUNCTIONS[name].service_type.Response)
+
+        stage_request = GraspStage.Request(object_name=cache_key)
+        try:
+            if request.refine_only:
+                call_step('move_pregrasp', stage_request)
                 response.motion_completed = True
-                response.status = (
-                    'GRASP_REFINEMENT_UNAVAILABLE: arm remains at pre-grasp')
-                return response
-            refined = None
-            transient_prefixes = (
-                'SYNCHRONIZED_PREGRASP_RGBD_UNAVAILABLE',
-                'NO_NEW_PREGRASP_OBSERVATION',
-            )
-            for attempt in range(1, 4):
-                if not self.trigger_single_scan(
-                        wait_for_result=True, timeout_sec=3.0):
-                    self.get_logger().warn(
-                        f'[GRASP REFINE] Scan trigger attempt {attempt}/3 '
-                        'was not acknowledged.')
-                    continue
-                # The trigger acknowledgement only arms capture of the next
-                # synchronized frame. Allow DDS to deliver its RGB, organized
-                # cloud, and manual-X pose before querying VAMP.
-                time.sleep(self.camera_sync_delay)
-                refine_request = RefineGrasp.Request()
-                refine_request.previous_observation_header = (
-                    request.observation_header)
-                refine_request.candidate = request.candidate
-                refine_future = self.refine_grasp_client.call_async(
-                    refine_request)
-                deadline = time.monotonic() + 15.0
-                while (rclpy.ok() and not refine_future.done() and
-                       time.monotonic() < deadline):
-                    time.sleep(0.05)
-                if not refine_future.done():
+                time.sleep(0.1)
+                refined = None
+                for attempt in range(3):
+                    call_step('capture_observation', CaptureObservation.Request())
+                    refine_query = RefineGrasp.Request(
+                        previous_observation_header=request.observation_header,
+                        candidate=request.candidate)
+                    # Transient missing-frame replies are valid typed failures,
+                    # not permission to move the arm or replace the grasp seed.
+                    _, _, item = self.step_runtime.store.run_one(
+                        context_id, uuid.uuid4().hex, 'refine_grasp', serialize_message(refine_query))
+                    refined = deserialize_message(bytes(item.response_cdr), RefineGrasp.Response)
+                    if refined.valid or not refined.failure_reason.startswith((
+                            'SYNCHRONIZED_PREGRASP_RGBD_UNAVAILABLE',
+                            'NO_NEW_PREGRASP_OBSERVATION')):
+                        break
+                if refined is None or not refined.valid:
+                    raise RuntimeError('GRASP_REFINEMENT_REJECTED: ' + (
+                        'no response' if refined is None else refined.failure_reason))
+                call_step('cache_grasp_refinement', CacheGraspRefinement.Request(
+                    object_name=cache_key, refinement_cdr=serialize_message(refined)))
+                response.success = True
+                response.status = json.dumps({
+                    'status': 'REFINED_GRASP_READY', 'candidate_id': refined.candidate_id,
+                    'failure_reason': refined.failure_reason,
+                    'seed_pixel': [refined.seed_u, refined.seed_v],
+                    'grasp_line_pixels': [[refined.left_u, refined.left_v],
+                                          [refined.right_u, refined.right_v]],
+                    'seed_3d_base': [refined.corrected_seed_base.x,
+                                     refined.corrected_seed_base.y,
+                                     refined.corrected_seed_base.z],
+                    'closing_angle_rad': refined.closing_angle_rad,
+                    'grasp_width_m': refined.grasp_width_m,
+                    'usable_grasp_depth_m': refined.usable_grasp_depth_m,
+                    'debug_topic': '/vamp_planner/refined_grasp_debug',
+                    'context_id': context_id})
+            else:
+                for name in ('plan_grasp_approach', 'open_grasp_gripper',
+                             'execute_grasp_approach', 'close_grasp_gripper',
+                             'verify_grasp_contact'):
+                    stage = call_step(name, stage_request)
+                    response.motion_completed = response.motion_completed or stage.motion_completed
+                    response.gripper_contact = response.gripper_contact or stage.gripper_contact
+                response.success = True
+                response.status = 'FINAL_APPROACH_COMPLETE_CONTACT_CONFIRMED'
+        except Exception as error:
+            response.success = False
+            response.status = str(error)
+        finally:
+            if not request.refine_only:
+                if not self.set_arm_speed(20):
                     response.success = False
-                    response.motion_completed = True
-                    response.status = (
-                        'GRASP_REFINEMENT_TIMEOUT: arm remains at pre-grasp')
-                    return response
-                refined = refine_future.result()
-                if refined is None or refined.valid:
-                    break
-                if not refined.failure_reason.startswith(transient_prefixes):
-                    break
-                self.get_logger().warn(
-                    f'[GRASP REFINE] Observation attempt {attempt}/3: '
-                    f'{refined.failure_reason}; retrying without arm motion.')
-            if refined is None:
-                response.success = False
-                response.motion_completed = True
-                response.status = (
-                    'GRASP_REFINEMENT_CALL_FAILED: arm remains at pre-grasp')
-                return response
-            if refined.valid:
-                self.refined_grasp_plans[cache_key] = {
-                    'candidate_id': int(refined.candidate_id),
-                    'observation_header': refined.observation_header,
-                    'grasp_pose': refined.grasp_pose,
-                    'grasp_joints': list(refined.grasp_joints),
-                    'pregrasp_pose': request.candidate.pregrasp_pose,
-                    'pregrasp_joints': list(
-                        request.candidate.pregrasp_joints),
-                    'seed_base': [
-                        refined.corrected_seed_base.x,
-                        refined.corrected_seed_base.y,
-                        refined.corrected_seed_base.z,
-                    ],
-                    'closing_axis': [
-                        refined.closing_axis_base.x,
-                        refined.closing_axis_base.y,
-                        refined.closing_axis_base.z,
-                    ],
-                    'approach_axis': [
-                        refined.approach_axis_base.x,
-                        refined.approach_axis_base.y,
-                        refined.approach_axis_base.z,
-                    ],
-                    'width': float(refined.grasp_width_m),
-                }
-            response.success = refined.valid
-            response.motion_completed = True
-            response.gripper_contact = False
-            response.status = json.dumps({
-                'status': ('REFINED_GRASP_READY' if refined.valid else
-                           'GRASP_REFINEMENT_REJECTED'),
-                'candidate_id': int(refined.candidate_id),
-                'failure_reason': refined.failure_reason,
-                'seed_pixel': [int(refined.seed_u), int(refined.seed_v)],
-                'grasp_line_pixels': [
-                    [int(refined.left_u), int(refined.left_v)],
-                    [int(refined.right_u), int(refined.right_v)],
-                ],
-                'seed_3d_base': [
-                    refined.corrected_seed_base.x,
-                    refined.corrected_seed_base.y,
-                    refined.corrected_seed_base.z,
-                ],
-                'closing_angle_rad': refined.closing_angle_rad,
-                'grasp_width_m': refined.grasp_width_m,
-                'usable_grasp_depth_m': refined.usable_grasp_depth_m,
-                'debug_topic': '/vamp_planner/refined_grasp_debug',
-            })
-            self.get_logger().info(f'[GRASP REFINE] {response.status}')
-            return response
-
-        if self.state != 'IDLE':
-            response.success = False
-            response.status = 'FINAL_APPROACH_REJECTED: master node is busy'
-            return response
-        if not self.plan_cartesian_grasp_client.wait_for_service(timeout_sec=3.0):
-            response.success = False
-            response.status = (
-                'FINAL_APPROACH_PLANNING_UNAVAILABLE: no actuator command '
-                'was published')
-            self.get_logger().warn(f'[GRASP] {response.status}')
-            return response
-
-        plan_request = PlanCartesianGraspApproach.Request()
-        plan_request.current_pregrasp_pose = self.current_tcp_pose
-        plan_request.current_joints = list(
-            self.current_joint_states.position[:6])
-        plan_request.refined_grasp_pose = refined_plan['grasp_pose']
-        plan_request.refined_contact_center.x = refined_plan['seed_base'][0]
-        plan_request.refined_contact_center.y = refined_plan['seed_base'][1]
-        plan_request.refined_contact_center.z = refined_plan['seed_base'][2]
-        plan_request.closing_axis.x = refined_plan['closing_axis'][0]
-        plan_request.closing_axis.y = refined_plan['closing_axis'][1]
-        plan_request.closing_axis.z = refined_plan['closing_axis'][2]
-        plan_request.grasp_width_m = refined_plan['width']
-        plan_request.target_observation_header = self.cached_grasp_plans[
-            cache_key]['header']
-        plan_future = self.plan_cartesian_grasp_client.call_async(plan_request)
-        plan_deadline = time.monotonic() + 30.0
-        while (rclpy.ok() and not plan_future.done() and
-               time.monotonic() < plan_deadline):
-            time.sleep(0.05)
-        if not plan_future.done():
-            response.success = False
-            response.status = (
-                'FINAL_APPROACH_PLANNING_TIMEOUT: no arm or gripper command '
-                'was published')
-            self.get_logger().warn(f'[GRASP] {response.status}')
-            return response
-        plan_result = plan_future.result()
-        waypoint_count = (0 if plan_result is None else
-                          int(plan_result.waypoint_count))
-        path_flat = [] if plan_result is None else list(plan_result.path_flat)
-        valid_path_shape = (
-            waypoint_count > 0 and len(path_flat) == waypoint_count * 6 and
-            all(np.isfinite(float(value)) for value in path_flat))
-        if (plan_result is None or not plan_result.success or
-                not valid_path_shape):
-            reason = (
-                'no response' if plan_result is None else
-                getattr(plan_result, 'failure_reason', 'invalid path'))
-            response.success = False
-            response.status = f'FINAL_APPROACH_PLAN_REJECTED: {reason}'
-            self.get_logger().warn(f'[GRASP] {response.status}')
-            return response
-        path = [
-            path_flat[index:index + 6]
-            for index in range(0, len(path_flat), 6)]
-        still_at_pregrasp, pregrasp_status = self._verify_refined_pregrasp(
-            refined_plan)
-        if not still_at_pregrasp:
-            response.success = False
-            response.status = (
-                f'FINAL_APPROACH_ABORTED_BEFORE_COMMAND: {pregrasp_status}')
-            self.get_logger().warn(f'[GRASP] {response.status}')
-            return response
-        (response.success, response.motion_completed,
-         response.gripper_contact, response.status) = (
-            self._execute_refined_final_approach(path, refined_plan['width']))
-        if not response.success:
-            self.get_logger().warn(f'[GRASP] {response.status}')
-        else:
-            self.get_logger().info(f'[GRASP] {response.status}')
+                    response.status += '; ARM_SPEED_RESTORE_20_PERCENT_FAILED'
         return response
 
     def move_to_joints_callback(self, request, response):
@@ -2484,7 +2336,7 @@ class PiperMasterControl(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = PiperMasterControl()
-    executor = MultiThreadedExecutor()
+    executor = MultiThreadedExecutor(num_threads=16)
     executor.add_node(node)
 
     try:

@@ -1,0 +1,7 @@
+float64 width_m
+float64 force_n
+bool wait_for_opening
+---
+bool success
+bool feedback_confirmed
+string status

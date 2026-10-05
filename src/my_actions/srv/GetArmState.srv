@@ -1,0 +1,6 @@
+---
+bool success
+string status
+sensor_msgs/JointState joints
+geometry_msgs/PoseStamped tcp_pose
+float64 gripper_width_m

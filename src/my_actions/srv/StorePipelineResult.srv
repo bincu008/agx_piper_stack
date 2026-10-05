@@ -1,0 +1,10 @@
+string context_id
+uint64 expected_revision
+string step_id
+string function_name
+uint8[] response_cdr
+---
+bool success
+string status
+string context_id
+uint64 revision

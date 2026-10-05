@@ -1,0 +1,6 @@
+float64[] path_flat
+float64[6] expected_start_joints
+---
+bool success
+bool motion_completed
+string status

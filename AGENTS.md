@@ -5,10 +5,12 @@
 This is a ROS 2/colcon workspace. Production packages live under `src/`:
 
 - `master_node`: Python orchestration and hardware execution.
+- `task_pipeline`: shared public API catalog, dispatcher, typed step/result storage and recipes. `MasterStepRuntime` hosts the queue/result store inside `master_node`.
 - `vision_node`, `vamp_node`, and `vlm_node`: C++ active perception, VAMP motion planning, and VLM integration.
 - `vamp_mvt`: separate VAMP C++ planning/collision library with the generated Piper model.
-- `anyplace_ros`: deterministic height-map placement and the optional AnyPlace backend; it is launched by the reasoning stack.
+- `placement_node`: deterministic height-map placement and the optional AnyPlace backend; it is launched by the reasoning stack.
 - `my_actions`: shared ROS services/actions; update these before changing cross-node APIs.
+- `mock_hardware_node`: recorded RGB-D and arm-feedback replay for calculation-only development. It does not emulate physics or execute arm commands.
 - `agx_arm_ros/src/agx_arm_ctrl` and `agx_arm_msgs`: Piper CAN control and arm messages.
 - `OrbbecSDK_ROS2/orbbec_camera` and `orbbec_camera_msgs`: RGB-D driver and interfaces.
 
@@ -22,20 +24,69 @@ From the workspace root:
 export ONNXRUNTIME_ROOT="$HOME/.local/onnxruntime-1.15.1"
 colcon build --symlink-install
 source install/setup.bash
-colcon test --packages-select anyplace_ros master_node vamp_node agx_arm_ctrl
+colcon test --packages-select task_pipeline placement_node master_node vamp_node vlm_node mock_hardware_node agx_arm_ctrl
 colcon test-result --verbose
 ```
 
-The official application launch is `master_node/reasoning_stack.launch.py`. It starts the composed perception/VLM/VAMP container, `PiperMasterControl`, and the placement node. Camera and AGX hardware drivers are started separately.
+The official application launch is `master_node/reasoning_stack.launch.py`. It starts composed ActiveVision/VAMP, the standalone multithreaded VLM node, `pipeline_node`, `PiperMasterControl`, and `placement_node`. The master owns the microstep runtime; it is not another process. Camera and AGX hardware drivers are started separately. The placement package and Python module are named `placement_node`, with `/placement/*` backend endpoints and deterministic height-map packing by default.
 
 Safe planning launch, with physical grasp execution disabled:
 
 ```bash
 ros2 launch master_node reasoning_stack.launch.py \
-  api_server_ip:=10.211.55.2 api_server_port:=1234 \
-  model_name:=robobrain2.5-4b grasp_candidate_backend:=hggd \
+  inference_profile:=lmstudio grasp_candidate_backend:=hggd \
   placement_backend:=heightmap allow_physical_grasp_execution:=false
 ```
+
+`inference_profile:=server` selects the optimized remote server. Profile defaults live in `master_node/config/inference/profiles.yaml`; explicit endpoint/model/timeout launch arguments override them.
+
+Multi-object templates use `[PLAN_UPRIGHT]` or `[PLAN]` with two or more ordered object descriptions (commas, `then` or `and`); the parser routes to layout calculation. Explicit `[PLAN_LAYOUT_UPRIGHT]` / `[PLAN_LAYOUT]` aliases remain. Document only tags implemented by the VLM parser.
+
+## Shared API and Microstep Rules
+
+- `task_pipeline/task_pipeline/registry.py` is the authoritative function-name/type/backend catalog. Production controllers and benchmarks must use it rather than introduce private engine-call sequences or duplicate endpoints.
+- Public services use `/pipeline/<function>`; list them with `/pipeline/list_functions` (`my_actions/srv/GetPipelineFunctions`). Declare message/service/action schemas in `my_actions` and rebuild consumers after changing them.
+- The master-owned `StepStore` executes typed `PipelineStep` requests, resolves predecessor result bindings, records per-step status/timing and depletes attempted tasks. `@response_cdr` binds a complete serialized response. Never use eval or an arbitrary endpoint supplied by a caller.
+- Use `submit_steps` plus `/pipeline/run_steps` (`my_actions/action/RunPipelineSteps`) when callers need final completion and feedback. `run_step` executes one operation. The legacy `execute_pipeline` service only acknowledges queue start.
+- Retain stop/continue policies, source observation association, revision checks, bounded storage, and idempotent context/step IDs. Explicit contexts must be cleared by their owner; the box benchmark clears its previous run's contexts before rerunning.
+- Cancellation occurs between steps; it cannot stop an in-flight ROS service. A timeout with `STATE_UNKNOWN` must never trigger automatic actuator retries. Emergency stop and drivers retain their direct paths.
+- Publish shared function timing on `/pipeline/timings`. API, backend and engine scopes overlap: do not add them as disjoint stages. Compare deployed RGB-D/HGGD and synthetic known-cloud modes separately.
+- General motion APIs are currently limited to empty-hand execution. Gripper closing requires the ordered validated grasp stages; held-object placement/release execution has not been implemented by the calculation API.
+
+## Mock and Benchmark Workflow
+
+Source ROS and `install/setup.bash` in every terminal. Keep real camera/arm drivers stopped and physical execution false during replay. Start each command in its own terminal:
+
+```bash
+ros2 launch mock_hardware_node mock_hardware.launch.py
+ros2 launch master_node reasoning_stack.launch.py \
+  inference_profile:=lmstudio grasp_candidate_backend:=hggd \
+  placement_backend:=heightmap pipeline_profiling:=true \
+  allow_physical_grasp_execution:=false
+ros2 launch placement_node box_benchmark.launch.py \
+  box_count:=10 optimize_pipeline:=true plan_pick_place_motion:=true
+ros2 launch vamp_node grasp_debug_rviz.launch.py
+```
+
+Trigger the benchmark with `ros2 service call /box_benchmark/run std_srvs/srv/Trigger '{}'`. It returns after worker exit, prints a final per-box summary, and saves artifacts outside the repository (default `~/box_benchmark`). `/box_benchmark/cancel` requests cancellation; `/box_benchmark/reset` clears placement markers. Keep the completed benchmark node alive for its latched RViz outputs.
+
+The benchmark grounds/segments the tray using the configured real VLM server, creates known 8 cm box clouds, then calls the public cloud-grasp/search/validation APIs sequentially. It tries edge placement before named-support stacking. Failed objects are skipped and remain collision obstacles. Full-motion mode validates lift, transfer and descent; it never executes these paths. This is planning simulation, not physics or hardware verification.
+
+For the deployed image-based path on the mock cup:
+
+```bash
+ros2 run task_pipeline pipeline_task --object 'brown cup' --destination tray
+```
+
+The recipe waits for its 14-step result and returns a nonzero exit code on failure. It calculates only; placement IK failure must not be described as a successful placement.
+
+See [README.md](README.md) for onboarding commands, [docs/CODE_MAP.md](docs/CODE_MAP.md) for the launched file hierarchy and API ownership, and [docs/STANDARD_PIPELINE_API.md](docs/STANDARD_PIPELINE_API.md) for schemas and completion rules.
+
+## Repository Output Hygiene
+
+Keep the bundled seven CDR messages and `manifest.json` under `mock_hardware_node/snapshots/current`: they are replay inputs installed by the package, not build artifacts. `rgb_preview.png` is a derived local inspection image and is ignored. Keep reusable benchmark/RViz entrypoints and regression tests as source. Write run reports, captured debug images, CDR request/response dumps, rosbag recordings and custom snapshots outside the source tree or in an explicitly ignored output directory. Do not ignore all images/CDR/model files or remove assets required by a fresh clone.
+
+The change inventory and review boundaries are in [docs/GIT_CHANGE_AUDIT.md](docs/GIT_CHANGE_AUDIT.md). Do not discard accumulated feature changes to reduce file counts.
 
 Hardware drivers and RViz:
 

@@ -1,0 +1,7 @@
+string object_name
+std_msgs/Header observation_header
+my_actions/GraspCandidate[] candidates
+uint32 ttl_seconds
+---
+bool success
+string status

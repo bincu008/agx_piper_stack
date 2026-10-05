@@ -1,0 +1,7 @@
+sensor_msgs/Image image
+string target
+---
+bool success
+bool present
+string status
+string text

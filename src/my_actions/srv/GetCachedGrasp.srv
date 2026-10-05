@@ -1,0 +1,8 @@
+# Empty name requires exactly one unexpired cached object.
+string object_name
+---
+bool success
+string status
+string object_name
+std_msgs/Header observation_header
+my_actions/GraspCandidate[] candidates

@@ -1,0 +1,13 @@
+std_msgs/Header observation_header
+sensor_msgs/Image image
+sensor_msgs/Image mask
+int32[4] pixel_box
+string target_description
+---
+bool success
+string status
+int32 seed_u
+int32 seed_v
+uint32 image_width
+uint32 image_height
+string affordance_type

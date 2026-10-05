@@ -1,0 +1,13 @@
+# Known point-cloud objects, tied to an ActiveVision manual FK*X observation.
+std_msgs/Header observation_header
+sensor_msgs/PointCloud2 object_cloud
+sensor_msgs/PointCloud2 scene_cloud
+string object_name
+# Optional known-fixture contacts; every seed still receives full validation.
+geometry_msgs/Point[] contact_left
+geometry_msgs/Point[] contact_right
+geometry_msgs/Vector3[] approaches
+---
+bool success
+string status
+my_actions/GraspCandidate[] candidates

@@ -1,0 +1,10 @@
+sensor_msgs/Image image
+string target
+bool verify_presence
+string sent_image_path
+---
+bool success
+string status
+string text
+int32[4] normalized_box
+int32[4] pixel_box

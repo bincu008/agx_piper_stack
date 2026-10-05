@@ -1,0 +1,7 @@
+string context_id
+bool include_results
+---
+bool success
+string status
+string state_json
+my_actions/PipelineStepResult[] results

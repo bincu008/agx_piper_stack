@@ -1,0 +1,14 @@
+string context_id
+---
+bool success
+string status
+string context_id
+float64 wall_seconds
+my_actions/PipelineStepResult[] results
+---
+string context_id
+string step_id
+string function_name
+string status
+uint32 completed_steps
+uint32 remaining_steps

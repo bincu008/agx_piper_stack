@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Submit calculation-only microsteps to the master and wait for completion."""
+
+import argparse
+import json
+from pathlib import Path
+
+from my_actions.action import RunPipelineSteps
+from my_actions.srv import SubmitPipelineSteps
+
+import rclpy
+from rclpy.action import ActionClient
+
+from task_pipeline.recipes import cup_to_tray
+
+
+def main():
+    """Run a declarative cup grasp/placement calculation without hardware commands."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--object', default='brown cup')
+    parser.add_argument('--destination', default='tray')
+    parser.add_argument('--grasp-only', action='store_true')
+    parser.add_argument('--output', type=Path)
+    args = parser.parse_args()
+    rclpy.init()
+    node = rclpy.create_node('pipeline_task_client')
+    try:
+        client = node.create_client(SubmitPipelineSteps, '/pipeline/submit_steps')
+        if not client.wait_for_service(timeout_sec=15):
+            raise RuntimeError('Shared pipeline API unavailable')
+        future = client.call_async(SubmitPipelineSteps.Request(steps=cup_to_tray(
+            args.object, args.destination, not args.grasp_only)))
+        rclpy.spin_until_future_complete(node, future, timeout_sec=30)
+        if not future.done() or not future.result().success:
+            raise RuntimeError('Submit failed' if not future.done() else future.result().status)
+        context_id = future.result().context_id
+        print('Master context:', context_id, flush=True)
+        action = ActionClient(node, RunPipelineSteps, '/pipeline/run_steps')
+        if not action.wait_for_server(timeout_sec=10):
+            raise RuntimeError('Run action unavailable')
+        goal = action.send_goal_async(
+            RunPipelineSteps.Goal(context_id=context_id),
+            feedback_callback=lambda feedback: print(
+                feedback.feedback.step_id, feedback.feedback.status, flush=True))
+        rclpy.spin_until_future_complete(node, goal, timeout_sec=15)
+        handle = goal.result()
+        if not handle.accepted:
+            raise RuntimeError('Run rejected')
+        completed = handle.get_result_async()
+        rclpy.spin_until_future_complete(node, completed, timeout_sec=900)
+        if not completed.done():
+            handle.cancel_goal_async()
+            raise TimeoutError('Pipeline completion timeout; backend state may be unknown')
+        result = completed.result().result
+        data = {'context_id': context_id, 'success': result.success, 'status': result.status,
+                'seconds': result.wall_seconds,
+                'steps': [{'id': item.step_id, 'function': item.function_name,
+                           'success': item.success, 'status': item.status,
+                           'seconds': item.wall_seconds} for item in result.results]}
+        print(json.dumps(data, indent=2), flush=True)
+        if args.output:
+            args.output.write_text(json.dumps(data, indent=2) + '\n')
+        return 0 if result.success else 1
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

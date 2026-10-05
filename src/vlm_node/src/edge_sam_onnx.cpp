@@ -170,7 +170,7 @@ EdgeSamResult EdgeSamOnnx::segment(
   }
 
   EdgeSamResult result;
-  result.mask = original_mask.clone();
+  result.mask = original_mask;
   result.score = scores[best];
   result.mask_pixels = cv::countNonZero(result.mask);
   result.encoder_ms = std::chrono::duration<double, std::milli>(

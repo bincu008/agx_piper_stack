@@ -152,3 +152,16 @@ TEST(GpdDiversity, SymmetricClosingAxesAndDifferentApproaches) {
 }
 
 }  // namespace
+
+
+TEST(DeterministicIk, StationarySeedCanStopWithoutStoppingContinuedProgress)
+{
+  vamp_node::IkStagnationGuard stationary(60);
+  EXPECT_FALSE(stationary.stalled(1.0F));
+  for (int i = 0; i < 59; ++i) EXPECT_FALSE(stationary.stalled(1.0F));
+  EXPECT_TRUE(stationary.stalled(1.0F));
+  vamp_node::IkStagnationGuard improving(60);
+  for (int i = 0; i < 1000; ++i) EXPECT_FALSE(improving.stalled(1.0F-i*1e-7F));
+  vamp_node::IkStagnationGuard disabled(0);
+  for (int i = 0; i < 1000; ++i) EXPECT_FALSE(disabled.stalled(1.0F));
+}

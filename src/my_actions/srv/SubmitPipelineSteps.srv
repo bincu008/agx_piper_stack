@@ -1,0 +1,8 @@
+string context_id
+uint64 expected_revision
+my_actions/PipelineStep[] steps
+---
+bool success
+string status
+string context_id
+uint64 revision

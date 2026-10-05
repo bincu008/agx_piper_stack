@@ -48,6 +48,14 @@ struct GraspProposal {
   // measured opposing wall contacts and proceed directly to full-pose IK;
   // they must not be collapsed back into the side-contact-axis solver.
   bool top_surface_grasp = false;
+  // A broad grasp across opposing object walls.  This tag is used only for
+  // topology-aware ranking; it does not bypass IK or collision validation.
+  bool side_surface_grasp = false;
+  // True when local geometry identified an upper-rim cross-section. Rim
+  // contacts are legitimate endpoints of the visible material and must not
+  // be rejected by the handle junction/endpoint guard merely because the
+  // user requested the whole object instead of explicitly naming its rim.
+  bool rim_grasp = false;
   bool half_antipodal = false;
   bool full_antipodal = false;
   bool has_local_dominant_axis = false;

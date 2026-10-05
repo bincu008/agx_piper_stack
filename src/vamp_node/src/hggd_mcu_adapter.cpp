@@ -306,7 +306,16 @@ std::vector<GraspProposal> HggdMcuAdapter::detect(
     center.width_pixels = 50.0F * std::exp(std::clamp(width_data[attribute_index], -1.0F, 1.0F));
     Eigen::Vector3f measured = Eigen::Vector3f::Constant(std::numeric_limits<float>::quiet_NaN());
     int selected_u = center.image_u, selected_v = center.image_v;
-    for (int radius = 0; radius <= 5 && !measured.allFinite(); ++radius) for (int dv = -radius; dv <= radius && !measured.allFinite(); ++dv) for (int du = -radius; du <= radius; ++du) {
+    // Reflective/concave objects commonly have a depth hole exactly where
+    // AnchorNet places its RGB heatmap maximum (for example, inside a metal
+    // bowl). Search farther for measured geometry, but remain strictly inside
+    // the EdgeSAM target mask so the snap cannot land on the tray/table.
+    constexpr int maximum_masked_depth_snap_pixels = 32;
+    for (int radius = 0;
+         radius <= maximum_masked_depth_snap_pixels && !measured.allFinite();
+         ++radius) for (int dv = -radius;
+         dv <= radius && !measured.allFinite(); ++dv)
+      for (int du = -radius; du <= radius; ++du) {
       if (std::max(std::abs(du), std::abs(dv)) != radius) continue;
       const int u = center.image_u + du, v = center.image_v + dv;
       if (u < 0 || v < 0 || u >= image_width || v >= image_height || source_mask.at<unsigned char>(v, u) == 0) continue;
@@ -440,14 +449,19 @@ std::vector<GraspProposal> HggdMcuAdapter::detect(
   std::vector<GraspProposal> proposals;
   for (std::size_t group = 0; group < group_count; ++group) {
     std::array<int, kOrientationCount> indices{}; std::iota(indices.begin(), indices.end(), 0);
-    std::partial_sort(indices.begin(), indices.begin() + 10, indices.end(), [&](int a, int b) { return logits[group * kOrientationCount + a] > logits[group * kOrientationCount + b]; });
+    std::stable_sort(indices.begin(), indices.end(), [&](int a, int b) {
+      return logits[group * kOrientationCount + a] >
+        logits[group * kOrientationCount + b];
+    });
     const auto &center = grouped_centers[group];
     const Eigen::Vector3f initial_approach = Eigen::Vector3f::UnitZ();
     Eigen::Vector3f initial_closing(-std::cos(center.theta) * scale_u / intrinsics.fx, std::sin(center.theta) * scale_v / intrinsics.fy, 0.0F);
     if (!finiteVector(initial_closing)) continue;
     initial_closing.normalize();
     Eigen::Matrix3f image_rotation; image_rotation.col(0) = initial_approach; image_rotation.col(1) = initial_closing; image_rotation.col(2) = initial_approach.cross(initial_closing).normalized();
-    for (int rank = 0; rank < 10; ++rank) {
+    int retained_orientations = 0;
+    for (int rank = 0;
+         rank < kOrientationCount && retained_orientations < 10; ++rank) {
       const int orientation = indices[rank];
       const float gamma = kGammaAnchors[orientation % 7] * kPi * 0.5F, beta = kBetaAnchors[orientation / 7] * kPi * 0.5F;
       if (std::abs(gamma) >= kPi / 3.0F) continue;
@@ -465,7 +479,10 @@ std::vector<GraspProposal> HggdMcuAdapter::detect(
       // spatial center without changing which hypotheses reach validation.
       proposal.family_index = group;
       proposal.variant_index = static_cast<std::size_t>(rank);
-      if (proposal.sample.allFinite() && proposal.hand_base.allFinite() && finiteVector(proposal.approach) && finiteVector(proposal.closing) && finiteVector(proposal.height_axis) && std::isfinite(proposal.opening_m)) proposals.push_back(proposal);
+      if (proposal.sample.allFinite() && proposal.hand_base.allFinite() && finiteVector(proposal.approach) && finiteVector(proposal.closing) && finiteVector(proposal.height_axis) && std::isfinite(proposal.opening_m)) {
+        proposals.push_back(proposal);
+        ++retained_orientations;
+      }
     }
   }
   diagnostics.network_grasps = proposals.size();

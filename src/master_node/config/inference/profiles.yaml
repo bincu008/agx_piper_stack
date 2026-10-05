@@ -1,0 +1,11 @@
+# Defaults only: explicit ROS launch arguments still override these values.
+server:
+  api_server_ip: '10.10.10.2'
+  api_server_port: '18091'
+  model_name: 'robobrain2.5-4b'
+  request_timeout_sec: '120'
+lmstudio:
+  api_server_ip: '10.211.55.2'
+  api_server_port: '1234'
+  model_name: 'robobrain2.5-4b'
+  request_timeout_sec: '120'

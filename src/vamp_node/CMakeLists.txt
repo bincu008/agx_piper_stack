@@ -96,6 +96,17 @@ install(DIRECTORY launch rviz models
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_payload_checked_robot test/test_payload_checked_robot.cpp)
+  target_include_directories(test_payload_checked_robot PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_payload_checked_robot vamp::vamp)
+  ament_add_gtest(test_pipeline_timing test/test_pipeline_timing.cpp)
+  target_include_directories(test_pipeline_timing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_add_gtest(test_placement_geometry test/test_placement_geometry.cpp)
+  target_include_directories(test_placement_geometry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_placement_geometry Eigen3::Eigen)
+  ament_add_gtest(test_placement_ranking test/test_placement_ranking.cpp)
+  target_include_directories(test_placement_ranking PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
   ament_add_gtest(test_analytical_grasp_generator
     test/test_analytical_grasp_generator.cpp)
   target_link_libraries(test_analytical_grasp_generator

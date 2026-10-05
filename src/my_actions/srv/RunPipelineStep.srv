@@ -1,0 +1,13 @@
+# Empty context_id creates a bounded, automatically retained context.
+string context_id
+string step_id
+string function_name
+uint8[] request_cdr
+# Zero means use the current revision; otherwise reject stale callers.
+uint64 expected_revision
+---
+bool success
+string status
+string context_id
+uint64 revision
+my_actions/PipelineStepResult result

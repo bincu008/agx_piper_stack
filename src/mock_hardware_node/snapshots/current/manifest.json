@@ -1,0 +1,101 @@
+{
+  "captured_unix_time": 1790742519.6780713,
+  "cloud": {
+    "fields": [
+      "x",
+      "y",
+      "z",
+      "rgb"
+    ],
+    "height": 480,
+    "point_step": 20,
+    "row_step": 12800,
+    "width": 640
+  },
+  "format_version": 1,
+  "joint_names": [
+    "joint1",
+    "joint2",
+    "joint3",
+    "joint4",
+    "joint5",
+    "joint6",
+    "gripper"
+  ],
+  "joint_positions": [
+    0.0020245819323134223,
+    0.0614355896702004,
+    -0.6306223653305911,
+    -0.01947787445225672,
+    1.2348378990785083,
+    0.2759714613253434,
+    -0.00020999999999999998
+  ],
+  "receipt_span_sec": 0.06625539100787137,
+  "rgb": {
+    "encoding": "rgb8",
+    "height": 480,
+    "width": 640
+  },
+  "topics": {
+    "arm_status": {
+      "stamp": null,
+      "topic": "/feedback/arm_status",
+      "type": "AgxArmStatus"
+    },
+    "camera_info": {
+      "stamp": {
+        "frame_id": "camera_color_optical_frame",
+        "nanosec": 585021952,
+        "sec": 1790742519
+      },
+      "topic": "/camera/color/camera_info",
+      "type": "CameraInfo"
+    },
+    "cloud": {
+      "stamp": {
+        "frame_id": "camera_color_optical_frame",
+        "nanosec": 451964928,
+        "sec": 1790742519
+      },
+      "topic": "/camera/depth_registered/points",
+      "type": "PointCloud2"
+    },
+    "gripper_status": {
+      "stamp": {
+        "frame_id": "",
+        "nanosec": 645679473,
+        "sec": 1790742519
+      },
+      "topic": "/feedback/gripper_status",
+      "type": "GripperStatus"
+    },
+    "joint_state": {
+      "stamp": {
+        "frame_id": "",
+        "nanosec": 645502805,
+        "sec": 1790742519
+      },
+      "topic": "/feedback/joint_states",
+      "type": "JointState"
+    },
+    "rgb": {
+      "stamp": {
+        "frame_id": "camera_color_optical_frame",
+        "nanosec": 518288896,
+        "sec": 1790742519
+      },
+      "topic": "/camera/color/image_raw",
+      "type": "Image"
+    },
+    "tcp_pose": {
+      "stamp": {
+        "frame_id": "base_link",
+        "nanosec": 645114898,
+        "sec": 1790742519
+      },
+      "topic": "/feedback/tcp_pose",
+      "type": "PoseStamped"
+    }
+  }
+}

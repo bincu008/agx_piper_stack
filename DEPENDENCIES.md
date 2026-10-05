@@ -57,5 +57,5 @@ The AnyPlace checkpoint is optional and is not used by the default height-map
 placement backend. Install it only when testing `placement_backend:=anyplace`:
 
 ```bash
-ros2 run anyplace_ros download_anyplace_checkpoint
+ros2 run placement_node download_anyplace_checkpoint
 ```

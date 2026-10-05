@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Measure one image-grounding request without starting ROS or hardware."""
+
+import argparse
+import base64
+import json
+import time
+from urllib import request
+
+import cv2
+
+from placement_node.grounding import grounding_request
+from placement_node.perception import parse_grounding_box
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--image', required=True)
+    parser.add_argument('--target', default='the cup')
+    parser.add_argument('--api-server-url', default='http://10.10.10.2:18091/v1')
+    parser.add_argument('--model', default='robobrain2.5-4b')
+    parser.add_argument('--timeout', type=float, default=120.0)
+    args = parser.parse_args()
+    image = cv2.imread(args.image)
+    if image is None:
+        parser.error('could not read image')
+    success, encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    if not success:
+        parser.error('could not encode image')
+    payload = grounding_request(
+        args.model, 'data:image/jpeg;base64,' + base64.b64encode(encoded).decode('ascii'),
+        args.target)
+    endpoint = args.api_server_url.rstrip('/')
+    if not endpoint.endswith('/v1'):
+        endpoint += '/v1'
+    endpoint += '/chat/completions'
+    report = {'endpoint': endpoint, 'target': args.target,
+              'image_width': image.shape[1], 'image_height': image.shape[0],
+              'stream': False}
+    started = time.perf_counter()
+    try:
+        with request.urlopen(request.Request(
+                endpoint, json.dumps(payload).encode(),
+                {'Content-Type': 'application/json'}), timeout=args.timeout) as response:
+            result = json.loads(response.read())
+        report['complete_seconds'] = time.perf_counter() - started
+        reply = result['choices'][0]['message']['content']
+        report['reply'] = reply
+        report['pixels'] = parse_grounding_box(reply, image.shape[1], image.shape[0])
+        report['usage'] = result.get('usage')
+        report['server_timings'] = result.get('timings')
+    except Exception as error:
+        report['elapsed_seconds'] = time.perf_counter() - started
+        report['error'] = str(error)
+        print(json.dumps(report, indent=2))
+        return 1
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -33,6 +33,14 @@ def test_inference_profile_selects_consistent_endpoint(profile, port):
     assert defaults['pipeline_profiling'] == 'false'
 
 
+def test_insid3_profile_selects_local_grounding_server():
+    defaults = launch_defaults('insid3')
+    assert defaults['api_server_ip'] == '127.0.0.1'
+    assert defaults['api_server_port'] == '18092'
+    assert defaults['api_server_url'] == 'http://127.0.0.1:18092/v1'
+    assert defaults['model_name'] == 'insid3-grounding'
+
+
 def test_explicit_endpoint_and_model_override_profile():
     defaults = launch_defaults('lmstudio', {
         'api_server_ip': '192.0.2.1', 'api_server_port': '5678', 'model_name': 'custom'})

@@ -16,10 +16,12 @@ Target -> reference mapping:
     * target contains "cup"    -> brown_cup_mask_whole.png (whole cup)
     * anything else            -> HTTP 400 with a clear error message
 
-Validated config (mock snapshot, 640x480): --backbone vit-s --image-size 1024
---tau 0.9. The faster vit-b@512/tau=0.6 default merged the white plate into
-the cup mask and could not isolate the handle; the validated config segments
-the cup cleanly and isolates the handle (see insid3_eval/results/TIMING.md).
+Validated config (current mock snapshot, 640x480): --backbone vit-s
+--image-size 1024 --tau 0.9 --merge-threshold 0.35 --threads 2 with
+reference-feature caching enabled (default). merge-threshold 0.35 excludes
+the white bowls from the whole-cup mask on the current scene (beige cup +
+two white bowls); the upstream default 0.2 cross-matches them. Handle
+grounding is unaffected (perfect at both values).
 
 Run (from the repo root, after cloning this branch)::
 
@@ -34,7 +36,10 @@ Environment / flags:
     INSID3_DIR   path to the INSID3 checkout (default: ~/workspace/insid3)
     --weights    DINOv3 encoder weights .bin (default: <INSID3_DIR>/pretrain/<backbone>.bin)
     --backbone   vit-b (default) or vit-s  (timm DINOv3 Eva models)
-    --image-size model input resolution (default: 512)
+    --image-size model input resolution (default: 768)
+    --threads    torch CPU threads (default: half the CPUs)
+    --no-ref-cache
+                 disable reference-feature caching (slower, bit-identical)
     --ref-dir    reference image/mask dir (default: <repo>/insid3_eval/ref)
     --debug-dir  if set, per-request target/mask/overlay PNGs are written here
 """
@@ -81,10 +86,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18092)
     parser.add_argument("--backbone", choices=list(BACKBONES), default="vit-s")
-    parser.add_argument("--image-size", type=int, default=1024)
+    parser.add_argument("--image-size", type=int, default=1024,
+                        help="model input resolution (1024 validated for cup/handle "
+                             "grounding; 768 is ~3.6x faster but cross-matches white "
+                             "bowls/plate on the whole-cup reference)")
+    parser.add_argument("--threads", type=int,
+                        default=max(1, (os.cpu_count() or 2) // 2),
+                        help="torch CPU threads (default: half the CPUs)")
+    parser.add_argument("--no-ref-cache", action="store_true",
+                        help="disable reference-feature caching (recompute reference "
+                             "features per request; slower, bit-identical output)")
     parser.add_argument("--tau", type=float, default=0.9,
                         help="agglomerative-clustering threshold; 0.9 validated "
                              "for cup/handle grounding (finer part separation)")
+    parser.add_argument("--merge-threshold", type=float, default=0.35,
+                        help="cluster aggregation score cutoff; 0.35 validated on "
+                             "the current mock scene (beige cup + white bowls): "
+                             "excludes the bowls while keeping the full cup. "
+                             "Upstream default 0.2 cross-matches the bowls.")
     parser.add_argument("--weights", default=None,
                         help="DINOv3 weights .bin (default: <INSID3_DIR>/pretrain/<backbone>.bin)")
     parser.add_argument("--ref-dir", default=str(here.parent / "ref"),
@@ -102,8 +121,9 @@ ARGS = parse_args()
 
 import torch  # noqa: E402
 from torch import nn  # noqa: E402
+from torch.nn import functional as F  # noqa: E402
 
-torch.set_num_threads(max(1, (os.cpu_count() or 2) // 2))
+torch.set_num_threads(max(1, ARGS.threads))
 
 import timm  # noqa: E402
 from models.insid3 import INSID3  # noqa: E402
@@ -141,7 +161,7 @@ def load_model() -> "INSID3":
     print(f"[insid3] encoder load_state_dict: missing={len(missing)} "
           f"unexpected={len(unexpected)}", flush=True)
     model = INSID3(encoder=Dinov3Encoder(eva), image_size=ARGS.image_size,
-                   device="cpu", tau=ARGS.tau)
+                   device="cpu", tau=ARGS.tau, merge_threshold=ARGS.merge_threshold)
     for p in model.parameters():
         p.requires_grad_(False)
     model.eval()
@@ -162,6 +182,11 @@ for _key, (img, msk, _desc) in REFS.items():
     assert (REF_DIR / img).exists(), f"missing reference image {REF_DIR / img}"
     assert (REF_DIR / msk).exists(), f"missing reference mask {REF_DIR / msk}"
 
+# Reference-feature cache: one encoder pass per registered reference at
+# startup; per-request inference then only encodes the target image.
+# (Populated after the helper definitions below, once precompute_ref exists.)
+REF_CACHES = {}
+
 DEBUG_DIR = Path(ARGS.debug_dir) if ARGS.debug_dir else None
 if DEBUG_DIR:
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
@@ -173,6 +198,78 @@ if DEBUG_DIR:
 from PIL import Image  # noqa: E402
 import numpy as np  # noqa: E402
 from scipy import ndimage  # noqa: E402
+from utils.data import downsample_mask  # noqa: E402
+
+
+def precompute_ref(model, ref_img_path, ref_mask_path):
+    """Run the reference side of INSID3 once; cache features for reuse.
+
+    The reference image+mask never change per registered target, so its ViT
+    features, debiased features and foreground prototype are computed once at
+    startup instead of on every request. The per-request path then only pays
+    for the target image. Verified bit-exact vs the uncached path
+    (mask IoU 1.000).
+    """
+    tf = model._transform
+    img = Image.open(ref_img_path).convert("RGB")
+    img_t = tf(img).unsqueeze(0).unsqueeze(0)  # (1, 1, C, H, W)
+    m = torch.tensor(np.array(Image.open(ref_mask_path).convert("L")) > 0,
+                     dtype=torch.bool)
+    m = F.interpolate(m.unsqueeze(0).unsqueeze(0).float(),
+                      size=(model.image_size, model.image_size),
+                      mode="nearest") > 0.5  # (1, 1, H, W)
+    with torch.no_grad():
+        fmaps = model._extract_features(img_t)          # (1, 1, C, h, w)
+        fmaps_norm = F.normalize(fmaps, p=2, dim=2)
+        fmaps_deb = model._debias_features(fmaps_norm)  # (1, 1, C, h, w)
+        _, _, c, h, w = fmaps_norm.shape
+        fg = fmaps_deb[0, 0][:, downsample_mask(m, h, w)]
+        prototype = F.normalize(fg.mean(dim=1), p=2, dim=0).unsqueeze(1)
+    return {"feat_ref_deb": fmaps_deb, "prototype": prototype, "ref_masks": m}
+
+
+@torch.no_grad()
+def segment_cached(model, cache, image):
+    """Target-side-only inference reusing a precomputed reference cache.
+
+    Mirrors INSID3.predict() exactly, but the reference features come from
+    ``cache`` instead of a fresh encoder pass.
+    """
+    tgt = model._transform(image).unsqueeze(0).unsqueeze(0)  # (1, 1, C, H, W)
+    fmaps = model._extract_features(tgt)
+    fmaps_norm = F.normalize(fmaps, p=2, dim=2)
+    _, _, c, h, w = fmaps_norm.shape
+    fmaps_deb = model._debias_features(fmaps_norm)
+    feat_tgt = fmaps_norm[:, 0]
+    feat_tgt_deb = fmaps_deb[:, 0]
+    feat_ref_deb = cache["feat_ref_deb"][:, 0]
+    prototype = cache["prototype"]
+    sim_m = torch.einsum("bchw,bcxy->bhwxy", feat_ref_deb, fmaps_deb[:, 0])
+    candidate_mask = model._locate_candidates(
+        [sim_m], cache["ref_masks"], feat_tgt_deb, prototype, h, w)
+    if candidate_mask.sum() == 0:
+        model._orig_tgt_size = (image.height, image.width)
+        try:
+            return model._finalize_mask(candidate_mask, tgt[0, 0])
+        finally:
+            model._orig_tgt_size = None
+    from utils.clustering import (agglomerative_clustering,
+                                  compute_cluster_prototypes)
+    feat_tgt_flat = feat_tgt[0].reshape(c, -1).permute(1, 0)
+    cluster_labels = agglomerative_clustering(
+        feat_tgt_flat, model.tau).reshape(h, w)
+    k = int(cluster_labels.max().item()) + 1
+    feat_tgt_deb_flat = feat_tgt_deb[0].reshape(c, -1).permute(1, 0)
+    cluster_protos = compute_cluster_prototypes(
+        feat_tgt_deb_flat, cluster_labels.view(-1), k)
+    pred_mask = model._seed_and_aggregate(
+        candidate_mask, cluster_labels, cluster_protos, k,
+        prototype, feat_tgt, feat_tgt_deb, h, w)
+    model._orig_tgt_size = (image.height, image.width)
+    try:
+        return model._finalize_mask(pred_mask, tgt[0, 0])
+    finally:
+        model._orig_tgt_size = None
 
 
 def extract_target(prompt: str) -> str | None:
@@ -230,8 +327,17 @@ def mask_to_boxes(mask: np.ndarray, width: int, height: int):
     return norm, (x1p, y1p, x2p, y2p)
 
 
+if not ARGS.no_ref_cache:
+    for _key, (img, msk, _desc) in REFS.items():
+        t0 = time.time()
+        REF_CACHES[_key] = precompute_ref(MODEL, str(REF_DIR / img), str(REF_DIR / msk))
+        print(f"[insid3] ref-cache[{_key}] precomputed in {time.time() - t0:.1f}s",
+              flush=True)
+
+
 def run_grounding(image: Image.Image, target: str):
-    """Full per-request path: reference lookup + set_reference/set_target/segment."""
+    """Per-request path: reference lookup + INSID3 segment (cached or full)."""
+    key = "handle" if "handle" in target.lower() else "cup" if "cup" in target.lower() else None
     ref = pick_reference(target)
     if ref is None:
         raise ValueError(
@@ -240,9 +346,12 @@ def run_grounding(image: Image.Image, target: str):
     ref_img, ref_mask, desc = ref
     t0 = time.time()
     with INFER_LOCK:  # serialize: one request at a time, like the C++ client's policy
-        MODEL.set_reference(str(REF_DIR / ref_img), str(REF_DIR / ref_mask))
-        MODEL.set_target(image)
-        pred = MODEL.segment()
+        if key is not None and key in REF_CACHES:
+            pred = segment_cached(MODEL, REF_CACHES[key], image)
+        else:  # --no-ref-cache fallback: original set_reference/set_target/segment
+            MODEL.set_reference(str(REF_DIR / ref_img), str(REF_DIR / ref_mask))
+            MODEL.set_target(image)
+            pred = MODEL.segment()
     dt = time.time() - t0
     mask = pred.detach().cpu().squeeze().numpy() > 0
     mask = clean_mask(mask)  # cosmetic: bridge patch fragments, drop specks

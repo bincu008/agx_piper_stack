@@ -8,7 +8,7 @@ from collections import deque
 
 from geometry_msgs.msg import TransformStamped
 
-from my_actions.msg import PipelineTiming
+from my_actions.msg import ApiCallTrace, PipelineTiming
 from my_actions.srv import (
     CaptureObservation, GetPipelineFunctions, GetPipelineMetrics, RunPipelineStep,
 )
@@ -25,6 +25,12 @@ from sensor_msgs.msg import Image, PointCloud2
 from std_srvs.srv import Trigger
 
 from .registry import FUNCTIONS, catalog
+
+
+_LOCAL_CONTROLS = {
+    'run_step': '_run_step', 'submit_steps': '_submit', 'get_step_context': '_get',
+    'clear_step_context': '_clear', 'store_step_result': '_import'}
+_CONTROL_FUNCTIONS = {*_LOCAL_CONTROLS, 'append_task', 'execute_pipeline', 'flush_pipeline'}
 
 
 def response_success(response):
@@ -67,9 +73,10 @@ def set_failure(response, reason):
 class PipelineNode(Node):
     """Dispatch to existing engines; never publish actuator commands."""
 
-    def __init__(self):
+    def __init__(self, runtime=None):
         """Create bounded clients and observation subscriptions."""
         super().__init__('pipeline_node')
+        self._runtime = runtime
         self.declare_parameter('request_timeout_sec', 600.0)
         self.declare_parameter('capture_timeout_sec', 30.0)
         self._group = ReentrantCallbackGroup()
@@ -79,17 +86,22 @@ class PipelineNode(Node):
         self._samples = deque(maxlen=512)
         self._observations = {kind: deque(maxlen=8) for kind in ('image', 'cloud', 'transform')}
         self._timing_pub = self.create_publisher(PipelineTiming, '/pipeline/timings', 100)
+        self._trace_pub = self.create_publisher(ApiCallTrace, '/pipeline/api_traces', 100)
         self.create_subscription(PipelineTiming, '/pipeline/timings', self._record, 100,
                                  callback_group=self._group)
         self._backend_clients = {}
         for name, function in FUNCTIONS.items():
-            self._backend_clients[name] = self.create_client(
-                function.service_type, function.backend, callback_group=self._group)
+            # Numerical operations are dispatched by the master runtime. Do
+            # not add unused clients (and QoS waitables) to this executor.
+            if name in _CONTROL_FUNCTIONS and (runtime is None or name not in _LOCAL_CONTROLS):
+                self._backend_clients[name] = self.create_client(
+                    function.service_type, function.backend, callback_group=self._group)
             self.create_service(function.service_type, function.endpoint,
                                 lambda req, res, key=name: self._dispatch(key, req, res),
                                 callback_group=self._group)
-        self._master_step = self.create_client(
+        self._master_step = (self.create_client(
             RunPipelineStep, '/master/run_step', callback_group=self._group)
+            if runtime is None else None)
         self._scan = self.create_client(Trigger, '/active_vision/trigger_scan',
                                         callback_group=self._group)
         qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -200,33 +212,57 @@ class PipelineNode(Node):
         }))
 
     def _dispatch(self, name, request, response):
+        received_ns = time.monotonic_ns()
         started = time.monotonic()
         outcome = None
+        published = False
         spec = FUNCTIONS[name]
         admitted = self._active.acquire(blocking=False)
         try:
             if not admitted:
                 raise RuntimeError('PIPELINE_BUSY: bounded active operations, no queued requests')
-            if name in {
-                    'run_step', 'submit_steps', 'get_step_context', 'clear_step_context',
-                    'store_step_result', 'append_task', 'execute_pipeline', 'flush_pipeline'}:
-                response = self._rpc(self._backend_clients[name], request)
+            if name in _CONTROL_FUNCTIONS:
+                runtime = getattr(self, '_runtime', None)
+                if runtime is not None and name in _LOCAL_CONTROLS:
+                    if name == 'run_step':
+                        def completed(inner_request, inner_response, inner_outcome):
+                            nonlocal published
+                            inner_spec = FUNCTIONS[request.function_name]
+                            self._publish(request.function_name, inner_request, inner_response,
+                                          started, inner_spec.backend, inner_spec.input_mode,
+                                          inner_outcome)
+                            published = True
+                        response = runtime._run_step(request, response, on_complete=completed)
+                    else:
+                        response = getattr(runtime, _LOCAL_CONTROLS[name])(request, response)
+                else:
+                    response = self._rpc(self._backend_clients[name], request)
             else:
-                envelope = RunPipelineStep.Request(
-                    function_name=name, request_cdr=serialize_message(request))
-                result = self._rpc(self._master_step, envelope)
-                if not result.result.response_cdr:
-                    raise RuntimeError(result.status)
-                response = deserialize_message(
-                    bytes(result.result.response_cdr), spec.service_type.Response)
-                outcome = (result.result.success, result.result.status)
+                runtime = getattr(self, '_runtime', None)
+                if runtime is not None:
+                    response, outcome = runtime.run_typed(name, request)
+                else:
+                    envelope = RunPipelineStep.Request(
+                        function_name=name, request_cdr=serialize_message(request))
+                    result = self._rpc(self._master_step, envelope)
+                    if not result.result.response_cdr:
+                        raise RuntimeError(result.status)
+                    response = deserialize_message(
+                        bytes(result.result.response_cdr), spec.service_type.Response)
+                    outcome = (result.result.success, result.result.status)
         except Exception as error:
             outcome = (False, str(error))
             response = set_failure(response, str(error))
         finally:
             if admitted:
                 self._active.release()
-            self._publish(name, request, response, started, spec.backend, spec.input_mode, outcome)
+            if not published:
+                self._publish(name, request, response, started, spec.backend, spec.input_mode, outcome)
+            if name == 'run_step':
+                self._trace_pub.publish(ApiCallTrace(
+                    operation_id=request.step_id, function_name=request.function_name,
+                    component='dispatcher', received_ns=received_ns,
+                    finished_ns=time.monotonic_ns(), success=response.success))
         return response
 
     @staticmethod

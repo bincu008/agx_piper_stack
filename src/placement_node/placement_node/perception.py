@@ -4,6 +4,45 @@ import re
 
 import cv2
 import numpy as np
+from scipy.spatial import cKDTree
+
+
+def exposed_stack_support_labels(points, labels, eligible, resolution=0.005,
+                                 height_tolerance=0.002):
+    """Label only exposed tops of eligible geometry; keep its body blocking."""
+    points = np.asarray(points).reshape(-1, 3)
+    result = np.asarray(labels, dtype=np.uint8).copy()
+    eligible = np.asarray(eligible, dtype=bool)
+    if len(result) != len(points) or eligible.shape != result.shape:
+        raise ValueError('support labels and eligibility must match the scene')
+    if resolution <= 0 or height_tolerance < 0:
+        raise ValueError('invalid support grid settings')
+    finite = np.isfinite(points).all(axis=1)
+    # Former tops can become occluded after later virtual placements.
+    result[result == 2] = 3
+    if not finite.any():
+        return result
+    cells = np.floor(points[finite, :2] / resolution).astype(np.int64)
+    _, inverse = np.unique(cells, axis=0, return_inverse=True)
+    heights = np.full(inverse.max() + 1, -np.inf)
+    np.maximum.at(heights, inverse, points[finite, 2])
+    top = np.zeros(len(points), dtype=bool)
+    top[finite] = points[finite, 2] >= heights[inverse] - height_tolerance
+    result[eligible & top] = 2
+    return result
+
+
+def active_source_support_labels(labels, object_masks, active_index):
+    """Keep other/placed objects protected without mislabeling active-mask floor."""
+    result = np.asarray(labels, dtype=np.uint8).copy()
+    active = np.asarray(object_masks[active_index], dtype=bool)
+    other_sources = np.zeros_like(active)
+    for index, mask in enumerate(object_masks):
+        if index != active_index:
+            other_sources |= mask
+    active_only = (active & ~other_sources).reshape(-1)
+    result[:len(active_only)][active_only] = 0
+    return result
 
 
 def _resample_closed_contour(contour: np.ndarray, spacing: float) -> np.ndarray:
@@ -183,7 +222,12 @@ def construct_support_bottom(
         raise ValueError("refined source support plane exceeds tilt limit")
     offset = -float(np.dot(normal, centroid))
 
+
     heights = object_points @ normal + offset
+    # A surrounding table is not evidence for the underside of an elevated
+    # object. Completing down to it would attach its stand or empty air.
+    if float(np.percentile(heights, 3.0)) > float(bottom_band_m):
+        raise ValueError("source support plane is below the observed object; bottom completion refused")
     footprint_points = object_points[
         (heights >= -plane_distance_m * 2.0) &
         (heights <= float(bottom_band_m))]
@@ -228,6 +272,14 @@ def construct_support_bottom(
         body_uv = side_uv
 
     circular = _fit_circular_footprint(body_uv, spacing, rng)
+    if circular is None and len(side_uv) >= 30:
+        # A tapered wall spans several radii, so its dense interior samples
+        # need not lie on one circle. Test the observed outer contour instead;
+        # the same circle-consistency and angular-coverage gates still apply.
+        outer_hull = cv2.convexHull(side_uv.astype(np.float32)).reshape(-1, 2)
+        if len(outer_hull) >= 3:
+            outer_contour = _resample_closed_contour(outer_hull, spacing)
+            circular = _fit_circular_footprint(outer_contour, spacing, rng)
     footprint_model = "circle" if circular is not None else "oriented_box"
     if circular is not None:
         contour_uv, fitted_radius = circular
@@ -486,3 +538,62 @@ def extract_segmented_destination_cloud(
     if len(points) < minimum_points:
         raise ValueError("insufficient segmented destination depth points")
     return points.astype(np.float32), foreground, (0, 0, xyz.shape[1], xyz.shape[0])
+
+
+def recover_semantic_source_mask(organized, connected_mask, semantic_mask,
+                                 distance_m=0.012, surface_points=None):
+    """Associate disconnected depth duplicates only inside the same SAM target.
+
+    The grasp filter may discard image components even though their measured
+    XYZ samples coincide with the validated surface. Preserve their ownership
+    without growing through another object's mask or unrelated background.
+    """
+    points = np.asarray(organized, dtype=np.float32)
+    connected = np.asarray(connected_mask, dtype=bool)
+    semantic = np.asarray(semantic_mask, dtype=bool)
+    if points.shape != connected.shape + (3,) or semantic.shape != connected.shape:
+        raise ValueError('source association input dimensions differ')
+    finite = np.isfinite(points).all(axis=2)
+    result = connected.copy()
+    support = (points[connected & finite] if surface_points is None else
+               np.asarray(surface_points, dtype=np.float32).reshape(-1, 3))
+    support = support[np.isfinite(support).all(axis=1)]
+    candidates = semantic & ~connected & finite
+    if len(support) and candidates.any():
+        distances, _ = cKDTree(support).query(points[candidates])
+        result[candidates] = distances <= distance_m
+    return result
+
+
+def recover_depth_connected_boundary(organized, mask, protected=None, distance_m=0.010,
+                                     pixel_radius=3):
+    """Recover a bounded SAM seam using original-mask measured XYZ support.
+
+    Search a bounded image band and 10 mm from the ORIGINAL surface,
+    protecting other objects and depth discontinuities. No iterative growth.
+    """
+    points = np.asarray(organized, dtype=np.float32)
+    original = np.asarray(mask, dtype=bool)
+    protected = np.zeros_like(original) if protected is None else np.asarray(protected, bool)
+    if points.shape != original.shape + (3,) or protected.shape != original.shape:
+        raise ValueError('boundary recovery input dimensions differ')
+    valid = np.isfinite(points).all(axis=2)
+    recovered = original.copy()
+    radius = max(0, min(10, int(pixel_radius)))
+    band = cv2.dilate(original.astype(np.uint8),
+                      np.ones((2*radius + 1, 2*radius + 1), np.uint8)) > 0
+    rows, columns = np.nonzero(band & ~original & ~protected & valid)
+    height, width = original.shape
+    for dv in range(-radius, radius + 1):
+        for du in range(-radius, radius + 1):
+            if dv == 0 and du == 0:
+                continue
+            neighbours_v, neighbours_u = rows + dv, columns + du
+            inside = ((neighbours_v >= 0) & (neighbours_v < height) &
+                      (neighbours_u >= 0) & (neighbours_u < width))
+            v, u = rows[inside], columns[inside]
+            nv, nu = neighbours_v[inside], neighbours_u[inside]
+            supported = original[nv, nu] & valid[nv, nu]
+            close = np.sum((points[v, u] - points[nv, nu])**2, axis=1) <= distance_m**2
+            recovered[v, u] |= supported & close
+    return recovered

@@ -1,4 +1,4 @@
-#include "vamp_node/analytical_grasp_generator.hpp"
+#include "vamp_node/known_cloud_grasp_generator.hpp"
 
 #include <algorithm>
 #include <array>
@@ -56,15 +56,15 @@ Eigen::Vector3f stableNormal(const std::vector<Eigen::Vector3f> &points,
 
 }  // namespace
 
-AnalyticalGraspGenerator::AnalyticalGraspGenerator(AnalyticalGraspParameters parameters)
+KnownCloudGraspGenerator::KnownCloudGraspGenerator(KnownCloudGraspParameters parameters)
     : parameters_(parameters) {}
 
-std::vector<GraspProposal> AnalyticalGraspGenerator::generate(
+std::vector<GraspProposal> KnownCloudGraspGenerator::generate(
     const std::vector<Eigen::Vector3f> &target_points,
     const Eigen::Vector3f &seed,
     const Eigen::Vector3f &camera_origin,
-    AnalyticalGraspDiagnostics *diagnostics) const {
-  AnalyticalGraspDiagnostics local;
+    KnownCloudGraspDiagnostics *diagnostics) const {
+  KnownCloudGraspDiagnostics local;
   local.isolated_points = target_points.size();
   std::map<std::tuple<int, int, int>, VoxelAccumulator> voxels;
   const float voxel = std::max(0.001F, parameters_.voxel_size_m);
@@ -103,7 +103,7 @@ std::vector<GraspProposal> AnalyticalGraspGenerator::generate(
     std::size_t left;
     std::size_t right;
     float alignment;
-    AnalyticalProposalOrigin origin;
+    CloudProposalOrigin origin;
     bool model_supported = false;
     Eigen::Vector3f model_left = Eigen::Vector3f::Zero();
     Eigen::Vector3f model_right = Eigen::Vector3f::Zero();
@@ -129,7 +129,7 @@ std::vector<GraspProposal> AnalyticalGraspGenerator::generate(
     }
     if (best >= 0) local_pairs.push_back({i, static_cast<std::size_t>(best),
                                            -normals[i].dot(normals[best]),
-                                           AnalyticalProposalOrigin::kLocalPca});
+                                           CloudProposalOrigin::kLocalPca});
   }
 
   // Local PCA cross-sections cover every part of the connected target cloud.
@@ -217,7 +217,7 @@ std::vector<GraspProposal> AnalyticalGraspGenerator::generate(
     }
     if (std::isfinite(selected_opening)) {
       local_pairs.push_back({selected_left, selected_right, 0.80F,
-                             AnalyticalProposalOrigin::kLocalPca});
+                             CloudProposalOrigin::kLocalPca});
     }
   }
 
@@ -312,7 +312,7 @@ std::vector<GraspProposal> AnalyticalGraspGenerator::generate(
             if (candidate_right < right_distance) { right_distance = candidate_right; nearest_right = index; }
           }
           global_pairs.push_back({nearest_left, nearest_right, 0.75F,
-                                  AnalyticalProposalOrigin::kGlobalPca, true,
+                                  CloudProposalOrigin::kGlobalPca, true,
                                   model_left, model_right});
         }
       }
@@ -519,8 +519,8 @@ std::vector<GraspProposal> AnalyticalGraspGenerator::generate(
         proposal.model_supported_contacts = pair.model_supported;
         proposal.half_antipodal = pair.alignment >= 0.70F;
         proposal.full_antipodal = pair.alignment >= 0.90F;
-        proposal.source = GraspProposalSource::kAnalytical;
-        proposal.analytical_origin = pair.origin;
+        proposal.source = GraspProposalSource::kKnownCloud;
+        proposal.cloud_origin = pair.origin;
         proposal.family_index = family_index;
         proposal.variant_index = static_cast<std::size_t>(variants_emitted);
         const std::size_t proposal_count_before = proposals.size();

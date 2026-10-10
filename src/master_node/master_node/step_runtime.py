@@ -6,10 +6,10 @@ import time
 import uuid
 
 from my_actions.action import RunPipelineSteps
-from my_actions.msg import PipelineTiming
+from my_actions.msg import ApiCallTrace, PipelineTiming
 from my_actions.srv import (
-    ClearStepContext, GetStepContext, RunPipelineStep, StorePipelineResult,
-    SubmitPipelineSteps, VerifyPresence,
+    ClearStepContext, GetStepContext, PrepareCloudScene, RunPipelineStep,
+    StorePipelineResult, SubmitPipelineSteps, VerifyPresence,
 )
 
 import rclpy
@@ -37,6 +37,8 @@ class MasterStepRuntime:
         node.declare_parameter('pipeline_step_timeout_sec', 600.0)
         self.store = StepStore(self._call)
         self._timings = node.create_publisher(PipelineTiming, '/pipeline/timings', 100)
+        self._traces = node.create_publisher(ApiCallTrace, '/pipeline/api_traces', 100)
+        self._trace_local = threading.local()
         for service_type, name, callback in (
                 (RunPipelineStep, 'run_step', self._run_step),
                 (SubmitPipelineSteps, 'submit_steps', self._submit),
@@ -45,12 +47,16 @@ class MasterStepRuntime:
                 (StorePipelineResult, 'store_step_result', self._import)):
             node.create_service(service_type, '/master/' + name, callback,
                                 callback_group=self.group)
+        node.create_service(PrepareCloudScene, '/master/prepare_cloud_scene',
+                            self._prepare_cloud_scene, callback_group=self.group)
         self._action = ActionServer(
             node, RunPipelineSteps, '/pipeline/run_steps', self._execute,
             goal_callback=self._goal, cancel_callback=lambda _: CancelResponse.ACCEPT,
             handle_accepted_callback=self._accepted, callback_group=self.group)
 
     def _native(self, name, request):
+        if name == 'prepare_cloud_scene':
+            return self._prepare_cloud_scene(request, PrepareCloudScene.Response())
         spec = FUNCTIONS[name]
         if name not in self._clients:
             self._clients[name] = self.node.create_client(
@@ -71,7 +77,34 @@ class MasterStepRuntime:
             raise RuntimeError(str(future.exception()))
         return future.result()
 
+    @staticmethod
+    def _prepare_cloud_scene(request, response):
+        """Validate metadata and register source geometry without altering it."""
+        header = request.observation_header
+        if header.frame_id != 'base_link':
+            response.status = 'SCENE_MANUAL_FRAME_MISMATCH'
+            return response
+        for cloud in (request.object_cloud, request.scene_cloud):
+            if cloud.header != header:
+                response.status = 'SCENE_OBSERVATION_MISMATCH'
+                return response
+            if (not {'x', 'y', 'z'} <= {field.name for field in cloud.fields} or
+                    cloud.point_step <= 0 or cloud.height <= 0 or
+                    cloud.row_step < cloud.width * cloud.point_step or
+                    len(cloud.data) != cloud.row_step * cloud.height):
+                response.status = 'SCENE_CLOUD_MALFORMED'
+                return response
+        response.success = True
+        response.status = 'IMMUTABLE_CLOUD_SCENE_READY'
+        response.observation_header = header
+        response.object_cloud = request.object_cloud
+        response.scene_cloud = request.scene_cloud
+        return response
+
     def _call(self, name, request):
+        trace = getattr(self._trace_local, 'current', None)
+        if trace is not None and not trace.backend_started_ns:
+            trace.backend_started_ns = time.monotonic_ns()
         started = time.monotonic()
         failure = None
         try:
@@ -93,6 +126,10 @@ class MasterStepRuntime:
         except Exception as error:
             failure = str(error)
             response = set_failure(FUNCTIONS[name].service_type.Response(), str(error))
+        if trace is not None:
+            trace.backend_finished_ns = time.monotonic_ns()
+            if trace.function_name == name:
+                self._trace_local.public_call = (request, response)
         header = getattr(request, 'observation_header', None)
         if header is None and hasattr(request, 'image'):
             header = request.image.header
@@ -124,14 +161,18 @@ class MasterStepRuntime:
             raise RuntimeError(failure)
         return response
 
-    def _run_step(self, request, response):
+    def _run_step(self, request, response, on_complete=None):
+        trace = ApiCallTrace(
+            operation_id=request.step_id, function_name=request.function_name,
+            component='master', received_ns=time.monotonic_ns())
+        self._trace_local.current = trace
         admitted = self._active.acquire(blocking=False)
         try:
             if not admitted:
                 raise RuntimeError('MASTER_STEP_BUSY')
             response.context_id, response.revision, response.result = self.store.run_one(
                 request.context_id, request.step_id, request.function_name,
-                request.request_cdr, request.expected_revision)
+                request.request_cdr, request.expected_revision, request.bindings)
             response.success = response.result.success
             response.status = response.result.status
         except Exception as error:
@@ -140,7 +181,27 @@ class MasterStepRuntime:
         finally:
             if admitted:
                 self._active.release()
+            public_call = getattr(self._trace_local, 'public_call', None)
+            if hasattr(self._trace_local, 'public_call'):
+                del self._trace_local.public_call
+            if on_complete is not None and public_call is not None:
+                on_complete(*public_call, (response.success, response.status))
+            trace.finished_ns = time.monotonic_ns()
+            trace.success = response.success
+            self._trace_local.current = None
+            self._traces.publish(trace)
         return response
+
+    def run_typed(self, name, request):
+        """Execute a colocated API call through the same bounded result store."""
+        admitted = self._active.acquire(blocking=False)
+        if not admitted:
+            raise RuntimeError('MASTER_STEP_BUSY')
+        try:
+            _, _, item, response = self.store.run_typed('', uuid.uuid4().hex, name, request)
+            return response, (item.success, item.status)
+        finally:
+            self._active.release()
 
     def _submit(self, request, response):
         try:

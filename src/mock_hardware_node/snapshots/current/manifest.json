@@ -1,5 +1,5 @@
 {
-  "captured_unix_time": 1790742519.6780713,
+  "captured_unix_time": 1791278933.035794,
   "cloud": {
     "fields": [
       "x",
@@ -12,7 +12,12 @@
     "row_step": 12800,
     "width": 640
   },
-  "format_version": 1,
+  "depth": {
+    "encoding": "16UC1",
+    "height": 480,
+    "width": 640
+  },
+  "format_version": 2,
   "joint_names": [
     "joint1",
     "joint2",
@@ -23,20 +28,21 @@
     "gripper"
   ],
   "joint_positions": [
-    0.0020245819323134223,
-    0.0614355896702004,
-    -0.6306223653305911,
-    -0.01947787445225672,
-    1.2348378990785083,
-    0.2759714613253434,
-    -0.00020999999999999998
+    0.12938125745033965,
+    -0.010367255756846317,
+    -0.6560169059471087,
+    -0.11897909510845345,
+    1.2358501900446648,
+    0.3444058212960411,
+    -0.00028
   ],
-  "receipt_span_sec": 0.06625539100787137,
+  "receipt_span_sec": 0.13378532000933774,
   "rgb": {
     "encoding": "rgb8",
     "height": 480,
     "width": 640
   },
+  "synchronization_span_sec": 0.003866910934448242,
   "topics": {
     "arm_status": {
       "stamp": null,
@@ -46,8 +52,8 @@
     "camera_info": {
       "stamp": {
         "frame_id": "camera_color_optical_frame",
-        "nanosec": 585021952,
-        "sec": 1790742519
+        "nanosec": 964420096,
+        "sec": 1791278932
       },
       "topic": "/camera/color/camera_info",
       "type": "CameraInfo"
@@ -55,17 +61,26 @@
     "cloud": {
       "stamp": {
         "frame_id": "camera_color_optical_frame",
-        "nanosec": 451964928,
-        "sec": 1790742519
+        "nanosec": 898046976,
+        "sec": 1791278932
       },
       "topic": "/camera/depth_registered/points",
       "type": "PointCloud2"
     },
+    "depth": {
+      "stamp": {
+        "frame_id": "camera_color_optical_frame",
+        "nanosec": 898046976,
+        "sec": 1791278932
+      },
+      "topic": "/camera/depth/image_raw",
+      "type": "Image"
+    },
     "gripper_status": {
       "stamp": {
         "frame_id": "",
-        "nanosec": 645679473,
-        "sec": 1790742519
+        "nanosec": 19284486,
+        "sec": 1791278933
       },
       "topic": "/feedback/gripper_status",
       "type": "GripperStatus"
@@ -73,8 +88,8 @@
     "joint_state": {
       "stamp": {
         "frame_id": "",
-        "nanosec": 645502805,
-        "sec": 1790742519
+        "nanosec": 894180059,
+        "sec": 1791278932
       },
       "topic": "/feedback/joint_states",
       "type": "JointState"
@@ -82,8 +97,8 @@
     "rgb": {
       "stamp": {
         "frame_id": "camera_color_optical_frame",
-        "nanosec": 518288896,
-        "sec": 1790742519
+        "nanosec": 897688064,
+        "sec": 1791278932
       },
       "topic": "/camera/color/image_raw",
       "type": "Image"
@@ -91,8 +106,8 @@
     "tcp_pose": {
       "stamp": {
         "frame_id": "base_link",
-        "nanosec": 645114898,
-        "sec": 1790742519
+        "nanosec": 18827676,
+        "sec": 1791278933
       },
       "topic": "/feedback/tcp_pose",
       "type": "PoseStamped"

@@ -38,8 +38,9 @@ from my_actions.srv import (
     PlanCartesianGraspApproach, RefineGrasp, ToggleContinuousNavigation,
     UpdateObjectObservation,
 )
-from task_pipeline.registry import endpoint
 from rclpy.serialization import deserialize_message, serialize_message
+from task_pipeline.node import PipelineNode
+from task_pipeline.registry import endpoint
 
 from agx_arm_msgs.msg import AgxArmStatus, GripperStatus
 from master_node.task_manager import Task, TaskManager, canonical_task_type
@@ -283,9 +284,9 @@ class PiperMasterControl(Node):
         self.declare_parameter('require_grasp_collision_validation', True)
         self.require_grasp_collision_validation = self.get_parameter(
             'require_grasp_collision_validation').get_parameter_value().bool_value
-        self.declare_parameter('require_positive_gpd_score_for_grasp', True)
-        self.require_positive_gpd_score_for_grasp = self.get_parameter(
-            'require_positive_gpd_score_for_grasp').get_parameter_value().bool_value
+        self.declare_parameter('require_positive_grasp_score_for_grasp', True)
+        self.require_positive_grasp_score_for_grasp = self.get_parameter(
+            'require_positive_grasp_score_for_grasp').get_parameter_value().bool_value
         self.declare_parameter('require_measured_contacts_for_grasp', True)
         self.require_measured_contacts_for_grasp = self.get_parameter(
             'require_measured_contacts_for_grasp').get_parameter_value().bool_value
@@ -1435,10 +1436,10 @@ class PiperMasterControl(Node):
                 'REJECTED: measured opposing contacts and clear finger sweep '
                 'are required')
             return response
-        if (self.require_positive_gpd_score_for_grasp and
+        if (self.require_positive_grasp_score_for_grasp and
                 request.candidate.score <= 0.0):
             response.success = False
-            response.status = 'REJECTED: GPD classifier score is not positive'
+            response.status = 'REJECTED: grasp proposal score is not positive'
             return response
 
         refined_plan = None
@@ -2336,8 +2337,13 @@ class PiperMasterControl(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = PiperMasterControl()
+    node.declare_parameter('api_dispatch_in_master', True)
+    api = (PipelineNode(runtime=node.step_runtime)
+           if node.get_parameter('api_dispatch_in_master').value else None)
     executor = MultiThreadedExecutor(num_threads=16)
     executor.add_node(node)
+    if api is not None:
+        executor.add_node(api)
 
     try:
         executor.spin()
@@ -2345,6 +2351,8 @@ def main(args=None):
         pass
     finally:
         executor.shutdown()
+        if api is not None:
+            api.destroy_node()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -3,10 +3,41 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from std_msgs.msg import Header
 from visualization_msgs.msg import Marker
 
 from placement_node.node import PlacementNode
+
+
+def test_active_mask_floor_does_not_disable_other_or_placed_object_protection():
+    from placement_node.perception import active_source_support_labels
+    active = np.array([[True, True, False, False]])
+    neighbor = np.array([[False, True, True, False]])
+    # Pixel 0 is an active-mask floor return rejected by grasp segmentation;
+    # pixel 1 overlaps another mask. Appended geometry is already placed.
+    labels = np.array([3, 3, 3, 1, 3], dtype=np.uint8)
+    result = active_source_support_labels(labels, [active, neighbor], 0)
+    np.testing.assert_array_equal(result, [0, 3, 3, 1, 3])
+    np.testing.assert_array_equal(labels, [3, 3, 3, 1, 3])
+
+
+def test_stack_support_labels_preserve_bodies_and_revoke_occluded_tops():
+    from placement_node.perception import exposed_stack_support_labels
+    # Same XY: table, placed body, placed top, then an unplaced blocking object.
+    points = np.array([[0, 0, 0], [0, 0, .02], [0, 0, .08],
+                       [.02, 0, .08], [.02, 0, .12], [np.nan, 0, 0]])
+    labels = np.array([1, 3, 2, 2, 3, 3], dtype=np.uint8)
+    result = exposed_stack_support_labels(points, labels, labels == 2)
+    np.testing.assert_array_equal(result, [1, 3, 2, 3, 3, 3])
+    np.testing.assert_array_equal(labels, [1, 3, 2, 2, 3, 3])
+
+
+def test_new_placed_cloud_exposes_tops_on_multiple_surfaces():
+    from placement_node.perception import exposed_stack_support_labels
+    points = np.array([[0, 0, .01], [0, 0, .08], [.02, 0, .01], [.02, 0, .12]])
+    np.testing.assert_array_equal(exposed_stack_support_labels(
+        points, np.full(4, 3), np.ones(4, dtype=bool)), [3, 2, 3, 2])
 
 
 def test_ordered_layout_markers_keep_frame_order_and_both_objects():
@@ -73,7 +104,11 @@ def test_rigid_attachment_preserved_with_rotated_placement():
         np.linalg.inv(grasp) @ source_point, atol=1e-12)
 
 
-def test_template_continues_after_failed_grasp_for_each_object():
+@pytest.mark.parametrize('names, expected_intents', [
+    (['cup', 'plate'], ['AUTO', 'AUTO']),
+    (['cup body', 'plate rim'], ['BODY', 'RIM']),
+])
+def test_template_continues_after_failed_grasp_for_each_object(names, expected_intents):
     import threading
     from cv_bridge import CvBridge
     from sensor_msgs_py import point_cloud2
@@ -92,19 +127,22 @@ def test_template_continues_after_failed_grasp_for_each_object():
         mask[:, start:start+10] = 255
         masks.append(bridge.cv2_to_imgmsg(mask, 'mono8'))
     request = PlanObjectLayout.Request(
-        observation_header=header, object_names=['cup', 'plate'], object_masks=masks,
+        observation_header=header, object_names=names, object_masks=masks,
         destination_name='tray', orientation_policy='upright',
         destination_mask=bridge.cv2_to_imgmsg(np.ones((20, 20), np.uint8)*255, 'mono8'))
-    calls, logs = [], []
+    calls, logs, affordances, collision_inputs = [], [], [], []
 
     def call(request):
         calls.append(request.target_description)
+        affordances.append(request.affordance_type)
+        collision_inputs.append(request.collision_scene)
         return SimpleNamespace(result=lambda: SimpleNamespace(
             success=False, candidates=[], status='test no grasp'))
 
     client = SimpleNamespace(wait_for_service=lambda **k: True, call_async=call)
     pub = SimpleNamespace(publish=lambda _: None)
-    params = dict(layout_debug_directory='', minimum_destination_points=80,
+    params = dict(layout_debug_directory='', layout_support_mode='auto',
+                  minimum_destination_points=80,
                   request_timeout_sec=1.)
     node = SimpleNamespace(
         _lock=threading.Lock(), _observation_clouds=[cloud], _pinned_layout_cloud=None,
@@ -117,12 +155,19 @@ def test_template_continues_after_failed_grasp_for_each_object():
         _grasp_candidates_client=client, _plan_placement_client=client,
         _wait_for_future=lambda *a: True)
     response = PlacementNode._layout_callback(node, request, PlanObjectLayout.Response())
-    assert calls == ['layout: cup', 'layout-analytical: cup',
-                     'layout: plate', 'layout-analytical: plate']
+    assert calls == ['layout: ' + name for name in names]
+    assert affordances == expected_intents
+    assert len(collision_inputs) == len(names)
+    for frozen_scene in collision_inputs:
+        assert frozen_scene.header == header
+        assert frozen_scene.width * frozen_scene.height == xyz.shape[0] * xyz.shape[1]
+        np.testing.assert_array_equal(
+            point_cloud2.read_points_numpy(frozen_scene, field_names=('x', 'y', 'z')),
+            xyz.reshape(-1, 3))
     assert not response.success
     assert response.object_names == [] and response.placements == []
     assert 'failed=2' in response.status
-    assert 'cup[FAILED:' in response.status and 'plate[FAILED:' in response.status
+    assert all(name + '[FAILED:' in response.status for name in names)
 
 
 def test_single_object_placement_uses_exact_pinned_frame_after_ring_eviction():
@@ -145,7 +190,7 @@ def test_single_object_placement_uses_exact_pinned_frame_after_ring_eviction():
     mask = bridge.cv2_to_imgmsg(np.ones((10, 10), np.uint8), 'mono8')
     mask.header = header
     request = FindPlacementCandidates.Request(
-        observation_header=header, destination_mask=mask, orientation_policy='upright')
+        observation_header=header, destination_mask=mask, orientation_policy='upright', support_mode='auto')
 
     def search(*args, **kwargs):
         raise RuntimeError('SEARCH_REACHED_WITH_ORIGINAL_FRAME')

@@ -1,0 +1,10 @@
+# Register immutable geometry tied to one synchronized manual FK*X observation.
+std_msgs/Header observation_header
+sensor_msgs/PointCloud2 object_cloud
+sensor_msgs/PointCloud2 scene_cloud
+---
+bool success
+string status
+std_msgs/Header observation_header
+sensor_msgs/PointCloud2 object_cloud
+sensor_msgs/PointCloud2 scene_cloud

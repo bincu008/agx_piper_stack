@@ -102,7 +102,7 @@ public:
     gripper_self_filter_margin_px_ = this->declare_parameter<int>(
       "gripper_self_filter_margin_px", 10);
     gripper_self_filter_vertical_margin_px_ = this->declare_parameter<int>(
-      "gripper_self_filter_vertical_margin_px", 6);
+      "gripper_self_filter_vertical_margin_px", 8);
     gripper_calibration_width_px_ = this->declare_parameter<int>(
       "gripper_self_filter_calibration_width_px", 640);
     gripper_calibration_height_px_ = this->declare_parameter<int>(
@@ -1506,7 +1506,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   bool enable_gripper_self_filter_ = true;
   int gripper_self_filter_margin_px_ = 10;
-  int gripper_self_filter_vertical_margin_px_ = 6;
+  int gripper_self_filter_vertical_margin_px_ = 8;
   int gripper_calibration_width_px_ = 640;
   int gripper_calibration_height_px_ = 480;
   std::vector<double> gripper_calibration_widths_m_;

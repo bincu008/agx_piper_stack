@@ -19,7 +19,6 @@ find_package(tf2_eigen REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
-find_package(gpd_vendor REQUIRED)
 find_package(PCL REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(vamp REQUIRED)
@@ -36,18 +35,17 @@ if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
 endif()
 
 # Dedicated VAMP-MVT Motion Planner Node
-add_library(analytical_grasp_generator STATIC src/analytical_grasp_generator.cpp)
-set_target_properties(analytical_grasp_generator PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(analytical_grasp_generator PUBLIC
+add_library(known_cloud_grasp_generator STATIC src/known_cloud_grasp_generator.cpp)
+set_target_properties(known_cloud_grasp_generator PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(known_cloud_grasp_generator PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-target_link_libraries(analytical_grasp_generator Eigen3::Eigen)
-target_compile_features(analytical_grasp_generator PUBLIC cxx_std_17)
+target_link_libraries(known_cloud_grasp_generator Eigen3::Eigen)
+target_compile_features(known_cloud_grasp_generator PUBLIC cxx_std_17)
 
 add_library(vamp_planner_server_component SHARED
   src/vamp_planner_server.cpp
   src/local_grasp_refiner.cpp
-  src/gpd_grasp_adapter.cpp
   src/hggd_mcu_adapter.cpp)
 target_compile_definitions(vamp_planner_server_component PRIVATE "COMPONENT_BUILD")
 target_include_directories(vamp_planner_server_component PUBLIC
@@ -69,10 +67,9 @@ ament_target_dependencies(
   "geometry_msgs"
   "visualization_msgs"
   "ament_index_cpp"
-  "gpd_vendor"
 )
 target_link_libraries(vamp_planner_server_component
-  analytical_grasp_generator
+  known_cloud_grasp_generator
   Eigen3::Eigen
   vamp::vamp
   ${PCL_LIBRARIES}
@@ -102,16 +99,20 @@ if(BUILD_TESTING)
   ament_add_gtest(test_pipeline_timing test/test_pipeline_timing.cpp)
   target_include_directories(test_pipeline_timing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   ament_add_gtest(test_placement_geometry test/test_placement_geometry.cpp)
+  ament_add_gtest(test_collision_point_index test/test_collision_point_index.cpp)
+  target_include_directories(test_collision_point_index PRIVATE include)
+  target_link_libraries(test_collision_point_index Eigen3::Eigen vamp::vamp)
   target_include_directories(test_placement_geometry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(test_placement_geometry Eigen3::Eigen)
+  ament_target_dependencies(test_placement_geometry sensor_msgs)
   ament_add_gtest(test_placement_ranking test/test_placement_ranking.cpp)
   target_include_directories(test_placement_ranking PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  ament_add_gtest(test_analytical_grasp_generator
-    test/test_analytical_grasp_generator.cpp)
-  target_link_libraries(test_analytical_grasp_generator
-    analytical_grasp_generator Eigen3::Eigen)
-  target_include_directories(test_analytical_grasp_generator PRIVATE
+  ament_add_gtest(test_known_cloud_grasp_generator
+    test/test_known_cloud_grasp_generator.cpp)
+  target_link_libraries(test_known_cloud_grasp_generator
+    known_cloud_grasp_generator Eigen3::Eigen)
+  target_include_directories(test_known_cloud_grasp_generator PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   ament_add_gtest(test_hggd_mcu_adapter test/test_hggd_mcu_adapter.cpp)
   target_link_libraries(test_hggd_mcu_adapter vamp_planner_server_component)

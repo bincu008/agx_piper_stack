@@ -10,6 +10,12 @@ string target_description
 # AUTO, HANDLE, RIM, or BODY. This is an explicit routing contract, not a
 # free-form prompt heuristic in the planner.
 string affordance_type
+# Optional immutable calculation scene after earlier virtual placements.
+# base_link and the exact observation stamp are required. Its first image-sized
+# XYZ prefix preserves original pixel order (unchanged points or NaN removals);
+# appended points represent placed geometry. Empty retains the deployed default.
+# HGGD still consumes the original synchronized RGB-D and target mask.
+sensor_msgs/PointCloud2 collision_scene
 ---
 bool success
 string status
@@ -17,3 +23,8 @@ geometry_msgs/Point corrected_seed_camera
 geometry_msgs/Point corrected_seed_base
 float32 correction_distance_px
 my_actions/GraspCandidate[] candidates
+
+# Exact depth-connected target used to validate the returned grasps. Its source
+# observation association lets layout packing use the same geometry, without
+# reading a mutable debug topic or retaining segmentation edge-depth fragments.
+sensor_msgs/Image validated_target_mask

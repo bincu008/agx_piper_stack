@@ -4,13 +4,16 @@ my_actions/PlacementCandidate[] candidates
 string object_name
 string destination_name
 string orientation_policy
+# Optional frozen static obstacles for the single-object calculation path.
+# All finite XYZ points remain blocking, including points near the source object.
+sensor_msgs/PointCloud2 additional_obstacles
 # Optional immutable layout collision inputs. Empty inputs retain single-object behavior.
 bool use_layout_scene
 sensor_msgs/PointCloud2 source_object_cloud
-# XYZ plus UINT8 "support": 0 blocking, 1 tray floor, 2 selected stack support TOP.
+# XYZ plus UINT8 "support": 0 blocking, 1 tray floor, 2 exposed stack TOP, 3 object body.
 sensor_msgs/PointCloud2 placement_scene
 sensor_msgs/PointCloud2 destination_support_cloud
-# Empty/edge permits tray floor only; stack permits only the named support top.
+# Empty/edge permits tray floor only; stack permits exposed tops; auto permits both.
 string support_mode
 # Optional validated alternatives for joint grasp/placement search in one immutable scene.
 my_actions/GraspCandidate[] alternative_grasps

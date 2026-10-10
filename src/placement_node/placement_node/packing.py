@@ -15,16 +15,21 @@ import cv2
 import numpy as np
 
 from .inference import PlacementCandidate
+from .floor_slots import FloorSlots
 
 
 @dataclass
 class PackingDiagnostics:
+    slot_layout: dict | None = None
+    slot_candidate_cells: list | None = None
+    slot_blocked_cells: list | None = None
     tested: int = 0
     contained: int = 0
     stable: int = 0
     support_contacts_rejected: int = 0
     support_area_rejected: int = 0
     support_com_rejected: int = 0
+    stack_maximum_coverage: float = 0.0
     orientations: int = 0
     elapsed_seconds: float = 0.0
     support_tilt_deg: float = 0.0
@@ -306,7 +311,7 @@ def _support_is_stable(
     return distance >= margin, area, "com"
 
 
-def _select_diverse_candidates(candidates, candidate_count):
+def _select_ranked_candidates(candidates, candidate_count):
     """Keep existing spatial/yaw ranking using bounded local neighbor queries."""
     selected, deferred, cells = [], [], {}
     limit = max(1, int(candidate_count))
@@ -345,6 +350,176 @@ def _select_diverse_candidates(candidates, candidate_count):
     return selected
 
 
+def _select_diverse_candidates(candidates, candidate_count, preserve_yaw=False):
+    """Cover the support with coarse positions and different fixed-grasp yaws.
+
+    Inputs already passed containment/support checks and are score-ranked.
+    Keep the best packing pose, then greedily cover XY and yaw. Never relax
+    geometric feasibility to fill a shortlist; return fewer poses if necessary.
+    """
+    if not candidates:
+        return []
+    limit = max(1, int(candidate_count))
+    xy = np.asarray([item.translation[:2] for item in candidates], dtype=np.float64)
+    yaw = np.asarray([math.atan2(item.rotation[1, 0], item.rotation[0, 0])
+                      for item in candidates])
+    # A fixed grasp rotates with the object. Give yaw comparable weight to a
+    # 10 cm translation so a small shortlist also explores arm orientations,
+    # while retaining the independent 4 cm positional separation below.
+    features = np.column_stack((xy, 0.10 * np.cos(yaw), 0.10 * np.sin(yaw)))
+    nearest = np.full(len(candidates), np.inf)
+    available = np.ones(len(candidates), dtype=bool)
+    chosen = []
+    index = 0
+    spatial_limit = max(1, min(limit, max(4, limit // 2))) if preserve_yaw else limit
+    while len(chosen) < spatial_limit:
+        chosen.append(index)
+        # Every distinct returned position is at least 4 cm from every other.
+        separation = np.sum((xy - xy[index]) ** 2, axis=1)
+        available &= separation >= 0.040 ** 2 - 1e-12
+        nearest = np.minimum(nearest, np.sum((features - features[index]) ** 2, axis=1))
+        if not available.any():
+            break
+        index = int(np.argmax(np.where(available, nearest, -np.inf)))
+    if preserve_yaw:
+        anchors = xy[chosen].copy()
+        # Rotating a partial footprint recenters its bounding box. Retain
+        # nearby yaw alternatives despite that shift; containment and exclusive
+        # slot checks have already validated each proposal independently.
+        near_anchor = np.min(np.sum((xy[:, None] - anchors) ** 2, axis=2), axis=1) <= 0.0251 ** 2
+        while len(chosen) < limit:
+            valid = near_anchor.copy()
+            for selected in chosen:
+                angle = np.abs(np.arctan2(np.sin(yaw-yaw[selected]), np.cos(yaw-yaw[selected])))
+                valid &= ((np.sum((xy-xy[selected]) ** 2, axis=1) > 0.012 ** 2) |
+                          (angle >= math.radians(45)))
+            if not valid.any():
+                break
+            index = int(np.argmax(np.where(valid, nearest, -np.inf)))
+            chosen.append(index)
+            nearest = np.minimum(nearest, np.sum((features-features[index]) ** 2, axis=1))
+    # Preserve the original score ordering used by downstream validation.
+    return [candidates[index] for index in sorted(chosen)]
+
+
+def _heightmap_trial_block(positions, offsets, bottom, pile, plate, stack_grid,
+                          obstacle_distance, clearance, contact_tolerance,
+                          obstacle_clearance, support_mode, stack_minimum_coverage=0.0):
+    """Evaluate unchanged height/contact/mode filters in bounded batches."""
+    rows = positions[:, 0, None] + offsets[None, :, 1]
+    columns = positions[:, 1, None] + offsets[None, :, 0]
+    heights = pile[rows, columns]
+    valid = np.isfinite(heights).all(axis=1)
+    z = np.max(heights - bottom, axis=1).astype(np.float64) + clearance
+    # The scalar path adds a Python float to float32 arrays. Match that
+    # rounding before contact tests and scoring, rather than promoting
+    # the batched arrays to float64 and changing threshold decisions.
+    support = z.astype(np.float32)[:, None] + bottom - heights <= contact_tolerance
+    elevated = np.any(support & (heights > plate[rows, columns] + 0.012), axis=1)
+    if support_mode == 'edge':
+        valid &= ~elevated
+    valid &= elevated | ~np.any(
+        obstacle_distance[rows, columns] < max(0.0, obstacle_clearance), axis=1)
+    if support_mode in ('auto', 'stack'):
+        selected_top = stack_grid[rows, columns]
+        covered = np.isfinite(selected_top) & (
+            np.abs(z.astype(np.float32)[:, None] + np.min(bottom) - clearance - selected_top) <= contact_tolerance)
+        matched = support & covered
+        if stack_minimum_coverage > 0.0:
+            supported = np.any(matched, axis=1) & (covered.mean(axis=1) >= stack_minimum_coverage)
+            valid &= (elevated & supported) if support_mode == "stack" else (~elevated | supported)
+            # Contacts across all exposed support surfaces share the hull check.
+            support = np.where(elevated[:, None], matched, support)
+        elif support_mode == "stack":
+            valid &= (np.any(support, axis=1) & elevated & ~np.any(support & ~matched, axis=1))
+    return rows, columns, heights, z, support, valid
+
+
+def _exhaustive_orientation(centers, offsets, bottom, top, pile, plate,
+                            stack_grid, obstacle_distance, edge_distance,
+                            corner_distance, occupied_distance, occupied_centroid,
+                            origin, resolution, clearance, contact_tolerance,
+                            obstacle_clearance, support_mode, minimum_area,
+                            support_margin, center_of_mass, maximum_pile_height,
+                            support_baseline, adjacency_weight, tilt_penalty,
+                            rotation_base, support_frame, diagnostics, stack_minimum_coverage=0.0):
+    """Batch the scalar trial equations, retaining their precision and order."""
+    candidates = []
+    stability_cache = {}
+    # Bound temporary memory independently of the destination size.
+    batch_size = max(1, min(256, 262144 // max(1, len(offsets))))
+    for start in range(0, len(centers), batch_size):
+        positions = centers[start:start + batch_size]
+        rows, columns, heights, z, support, valid = _heightmap_trial_block(
+            positions, offsets, bottom, pile, plate, stack_grid, obstacle_distance,
+            clearance, contact_tolerance, obstacle_clearance, support_mode, stack_minimum_coverage)
+        if support_mode in ('auto', 'stack') and len(positions):
+            exposed_top = stack_grid[rows, columns]
+            covered = np.isfinite(exposed_top) & (
+                np.abs(z.astype(np.float32)[:, None] + np.min(bottom) - clearance - exposed_top) <= contact_tolerance)
+            raised = np.any((heights > plate[rows, columns] + 0.012) & (
+                z.astype(np.float32)[:, None] + bottom - heights <= contact_tolerance), axis=1)
+            if raised.any():
+                diagnostics.stack_maximum_coverage = max(
+                    diagnostics.stack_maximum_coverage, float(covered[raised].mean(axis=1).max()))
+        indices = np.flatnonzero(valid)
+        if not len(indices):
+            continue
+        # Stability depends on local contact cells, not their translated XY.
+        # Identical contact masks share the exact same hull and COM test.
+        packed = np.packbits(support[indices], axis=1)
+        masks, first, inverse = np.unique(packed, axis=0, return_index=True, return_inverse=True)
+        for group, (mask, representative) in enumerate(zip(masks, first)):
+            key = mask.tobytes()
+            result = stability_cache.get(key)
+            if result is None:
+                result = _support_is_stable(
+                    offsets, support[indices[representative]], resolution,
+                    minimum_area, support_margin, center_of_mass)
+                if len(stability_cache) < 1024:
+                    stability_cache[key] = result
+            stable, _, rejection = result
+            members = indices[inverse == group]
+            if stable:
+                diagnostics.stable += len(members)
+            else:
+                valid[members] = False
+                attribute = {'contacts': 'support_contacts_rejected',
+                             'area': 'support_area_rejected',
+                             'com': 'support_com_rejected'}[rejection]
+                setattr(diagnostics, attribute, getattr(diagnostics, attribute) + len(members))
+        indices = np.flatnonzero(valid)
+        if not len(indices):
+            continue
+        placed_top = z[indices].astype(np.float32)[:, None] + top
+        maximum_height = np.max(placed_top, axis=1).astype(np.float64) - support_baseline
+        if support_mode != 'auto':
+            below_limit = maximum_height <= maximum_pile_height
+            indices = indices[below_limit]
+            placed_top = placed_top[below_limit]
+            maximum_height = maximum_height[below_limit]
+        if not len(indices):
+            continue
+        trial_rows, trial_columns = rows[indices], columns[indices]
+        increase = np.maximum(placed_top - heights[indices], 0.0)
+        volume = np.sum(increase, axis=1).astype(np.float64) * resolution * resolution
+        compact = np.linalg.norm(positions[indices, ::-1] - occupied_centroid, axis=1) * resolution
+        edges = np.min(edge_distance[trial_rows, trial_columns], axis=1).astype(np.float64)
+        corners = np.min(corner_distance[trial_rows, trial_columns], axis=1).astype(np.float64)
+        adjacency = (np.min(occupied_distance[trial_rows, trial_columns], axis=1).astype(np.float64)
+                     if occupied_distance is not None else corners)
+        scores = -(volume + 0.0002 * maximum_height + 0.00001 * compact +
+                   0.00005 * edges + adjacency_weight * adjacency + tilt_penalty)
+        translations = np.column_stack((
+            origin + positions[indices, ::-1] * resolution, z[indices])).astype(np.float32)
+        # Keep scalar matrix/vector multiplication, including its rounding.
+        for translation, score in zip(translations, scores):
+            candidates.append((PlacementCandidate(
+                rotation_base.astype(np.float32),
+                (support_frame.T @ translation).astype(np.float32), float(score)), 0.0))
+    return candidates
+
+
 def search_heightmap_placements(
         object_points: np.ndarray, organized_scene: np.ndarray,
         destination_points: np.ndarray, orientation_policy: str,
@@ -364,13 +539,32 @@ def search_heightmap_placements(
         obstacle_clearance_m: float = 0.006,
         support_mode: str = "auto",
         stack_support_points: np.ndarray | None = None,
-        early_stop_candidate_count: int = 0):
-    """Search compact stable placements using top/bottom heightmaps."""
+        early_stop_candidate_count: int = 0,
+        stack_minimum_coverage: float = 0.6,
+        candidate_yaw_variants: bool = False,
+        reserve_near_space: bool = False,
+        grasp_reference_positions=None,
+        flatten_planar_support: bool = False,
+        floor_slot_layout=None, floor_slot_reserved_cells=(),
+        floor_slot_yaw_step_deg=5.0, floor_slot_share_unused_space=False, floor_slot_occupied_xy=(),
+        floor_slot_adaptive=True, floor_slot_max_size_m=.125,
+        floor_slot_min_size_m=.06):
+    """Search stable floor or combined-surface stack placements.
+
+    stack_support_points is deprecated and ignored; scene heights are authoritative.
+    Preserve measured floor heights by default so packing and collision validation
+    agree. Flattening is an explicit option for prefiltered plane observations.
+    """
     started = time.perf_counter()
+    if not np.isfinite(stack_minimum_coverage) or not 0 <= stack_minimum_coverage <= 1:
+        raise ValueError("stack minimum coverage must be in [0, 1] (0 disables footprint coverage)")
+    grid_policy = support_mode == "floor_slots"
+    if grid_policy:
+        if orientation_policy != "upright":
+            raise ValueError("floor_slots requires upright orientation")
+        support_mode = "edge"
     if support_mode not in ("auto", "edge", "stack"):
         raise ValueError(f"unknown support mode: {support_mode}")
-    if support_mode == "stack" and stack_support_points is None:
-        raise ValueError("stack mode requires an explicit support top")
     points = _finite(object_points)
     if len(points) < 80:
         raise ValueError("object cloud has fewer than 80 finite points")
@@ -419,11 +613,15 @@ def search_heightmap_placements(
     (container, pile, plate, origin, edge_distance, corner_distance,
      flattened_support) = _make_container_grid(
         scene_in_support_frame, destination_in_support_frame, resolution,
-        maximum_pile_height_m, flatten_planar_support=(policy == "upright"))
+        maximum_pile_height_m,
+        flatten_planar_support=(policy == "upright" and flatten_planar_support))
 
     orientations = []
     if policy == "upright":
-        yaw_values = np.arange(0.0, 360.0, upright_yaw_step_deg)
+        yaw_step = floor_slot_yaw_step_deg if grid_policy else upright_yaw_step_deg
+        if not np.isfinite(yaw_step) or yaw_step <= 0:
+            raise ValueError("yaw step must be positive and finite")
+        yaw_values = np.arange(0.0, 360.0, yaw_step)
         orientations = [(0.0, 0.0, yaw) for yaw in yaw_values]
     else:
         yaw_values = np.arange(0.0, 360.0, free_yaw_step_deg)
@@ -480,14 +678,59 @@ def search_heightmap_placements(
     normals = np.column_stack((edges[:, 1], -edges[:, 0])).astype(np.float64)
     normals /= np.linalg.norm(normals, axis=1, keepdims=True)
     boundary_offsets = np.sum(normals * boundary, axis=1)
-    stack_grid = np.full(pile.shape, -np.inf, dtype=np.float32)
-    if support_mode == "stack":
-        stack_points = _finite(stack_support_points) @ support_frame.T
-        cells = np.floor((stack_points[:, :2] - origin) / resolution).astype(np.int32)
-        valid = ((cells[:, 0] >= 0) & (cells[:, 0] < pile.shape[1]) &
-                 (cells[:, 1] >= 0) & (cells[:, 1] < pile.shape[0]))
-        np.maximum.at(stack_grid, (cells[valid, 1], cells[valid, 0]),
-                      stack_points[valid, 2])
+    # Exposed raised cells come from the scene, without object identity labels.
+    stack_grid = np.where(pile > plate + 0.012, pile, -np.inf)
+    slot_grid = None
+    slot_offsets_by_rotation = {}
+    slot_reserved = (set() if floor_slot_share_unused_space else
+                     set(map(tuple, floor_slot_reserved_cells)))
+    if grid_policy:
+        slot_grid = (FloorSlots.from_dict(floor_slot_layout) if floor_slot_layout else
+                     FloorSlots.build_adaptive(
+                         boundary, clearance_m, floor_slot_max_size_m,
+                         floor_slot_min_size_m,
+                         surface_mask=(container & (pile <= plate+.012)),
+                         surface_origin=origin, surface_resolution=resolution)
+                     if floor_slot_adaptive else FloorSlots.build(boundary, clearance_m))
+        # Existing scene geometry blocks whole slots, not just the footprint.
+        raised = np.argwhere((pile > plate + .012) & container)
+        if len(raised) and not floor_slot_share_unused_space:
+            slot_reserved |= slot_grid.touched(origin + raised[:, ::-1]*resolution)
+        diagnostics.slot_layout = slot_grid.to_dict()
+        diagnostics.slot_blocked_cells = [list(cell) for cell in sorted(slot_reserved)]
+        early_stop_candidate_count = max(1, candidate_count*4)
+    grid_free_base = container.astype(np.uint8)
+    slot_cell_masks = {}
+    slot_free_radius_cache = {}
+    slot_available = set(map(tuple, slot_grid.cells))-slot_reserved if slot_grid else set()
+    if slot_grid is not None:
+        usable = np.zeros(container.shape, np.uint8)
+        for cell in slot_grid.cells:
+            world = slot_grid.territory_vertices(cell)
+            vertices = np.rint((world-origin)/resolution).astype(np.int32)
+            cv2.fillConvexPoly(usable, vertices, 1)
+            if not floor_slot_share_unused_space:
+                cell_mask = np.zeros(container.shape, np.uint8)
+                cv2.fillConvexPoly(cell_mask, vertices, 1)
+                slot_cell_masks[tuple(cell)] = cell_mask.astype(bool)
+        grid_free_base &= usable
+        if not floor_slot_share_unused_space:
+            for cell in slot_reserved:
+                mask = slot_cell_masks.get(cell)
+                if mask is not None:
+                    grid_free_base[mask] = 0
+    reservation_free = None
+    if grid_policy and floor_slot_share_unused_space and len(floor_slot_occupied_xy):
+        occupied_xy = (np.asarray(floor_slot_occupied_xy, np.float64)+.5)*.005
+        indices = np.rint((occupied_xy-origin)/resolution).astype(int)
+        inside = ((indices[:, 0]>=0) & (indices[:, 0]<container.shape[1]) &
+                  (indices[:, 1]>=0) & (indices[:, 1]<container.shape[0]))
+        indices = indices[inside]
+        reserved_grid = np.zeros(container.shape, np.uint8)
+        reserved_grid[indices[:, 1], indices[:, 0]] = 1
+        # Stored footprints already include one 5 mm dilation. Add the new
+        # object's allowance before shortlisting, matching commit semantics.
+        reservation_free = 1-cv2.dilate(reserved_grid, np.ones((3, 3), np.uint8))
     valid_centers = np.argwhere(container)
     for roll_deg, pitch_deg, yaw_deg in orientations:
         policy_rotation = _rotation(
@@ -516,7 +759,27 @@ def search_heightmap_placements(
             container.astype(np.uint8), footprint,
             anchor=(-int(min_offset[0]), -int(min_offset[1])),
             borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool)
+        if reservation_free is not None:
+            contained &= cv2.erode(reservation_free, footprint,
+                                  anchor=(-int(min_offset[0]), -int(min_offset[1])),
+                                  borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool)
         contained_centers = np.argwhere(contained & container)
+        if slot_grid is not None:
+            phases = tuple(np.arange(-.04, .0401, .01)) if floor_slot_share_unused_space else (0.,)
+            trials = slot_grid.trials(offsets*resolution, slot_reserved, clearance_m, phases)
+            centers = np.asarray([np.rint((xy-origin)/resolution).astype(int)[::-1]
+                                  for xy, _ in trials], np.int32).reshape(-1, 2)
+            if len(centers):
+                inside = ((centers[:, 0]>=0) & (centers[:, 0]<container.shape[0]) &
+                          (centers[:, 1]>=0) & (centers[:, 1]<container.shape[1]))
+                centers = centers[inside]
+                centers = centers[contained[centers[:, 0], centers[:, 1]]]
+                # Quantization must not move the footprint into a reserved cell.
+                centers = np.asarray([c for c in centers if slot_grid.touched(
+                    offsets*resolution + origin+c[::-1]*resolution, clearance_m)
+                    <= slot_available],
+                    np.int32).reshape(-1, 2)
+            contained_centers = np.unique(centers, axis=0)
         footprint_hull = cv2.convexHull(
             rotated_points[:, :2].astype(np.float32)).reshape(-1, 2)
         footprint_limits = np.max(footprint_hull @ normals.T, axis=0)
@@ -526,17 +789,40 @@ def search_heightmap_placements(
             boundary_offsets - max(0.0, float(clearance_m)) + 1.0e-7,
             axis=1)
         contained_centers = contained_centers[exact_containment]
-        if early_stop_candidate_count > 0 and len(contained_centers):
+        if not grid_policy and early_stop_candidate_count > 0 and len(contained_centers):
             # Corner/adjacency order is only a search priority. Every returned
             # candidate still passes the unchanged exact support/collision tests.
             proximity = occupied_distance if occupied_distance is not None else corner_distance
             priority = proximity[contained_centers[:, 0], contained_centers[:, 1]]
             contained_centers = contained_centers[np.argsort(priority, kind='stable')]
-        diagnostics.tested += len(valid_centers)
+        diagnostics.tested += len(contained_centers) if grid_policy else len(valid_centers)
         diagnostics.contained += len(contained_centers)
+        if early_stop_candidate_count <= 0:
+            raw_candidates.extend(_exhaustive_orientation(
+                contained_centers, offsets, bottom, top, pile, plate,
+                stack_grid, obstacle_distance, edge_distance, corner_distance,
+                occupied_distance, occupied_centroid, origin, resolution,
+                clearance_m, contact_tolerance_m, obstacle_clearance_m,
+                support_mode, minimum_support_area_m2, support_margin_m,
+                center_of_mass_xy, maximum_pile_height_m, support_baseline,
+                float(adjacency_weight), 0.00002 * (abs(roll_deg) + abs(pitch_deg)),
+                support_frame.T @ rotation, support_frame, diagnostics, stack_minimum_coverage))
+            continue
+        # Fast searches keep their original priority, early-stop and diversity
+        # decisions. Batch only the exact rejection filters, which also makes
+        # exhausted/blocked supports cheap to reject before the Python loop.
+        filtered = []
+        batch_size = max(1, min(256, 262144 // max(1, len(offsets))))
+        for start in range(0, len(contained_centers), batch_size):
+            positions = contained_centers[start:start + batch_size]
+            *_, valid = _heightmap_trial_block(
+                positions, offsets, bottom, pile, plate, stack_grid, obstacle_distance,
+                clearance_m, contact_tolerance_m, obstacle_clearance_m, support_mode, stack_minimum_coverage)
+            filtered.append(positions[valid])
+        contained_centers = np.vstack(filtered) if filtered else contained_centers
         orientation_positions = []
         for row, column in contained_centers:
-            if early_stop_candidate_count > 0 and any(
+            if not grid_policy and early_stop_candidate_count > 0 and any(
                     (row-prior_row)**2 + (column-prior_column)**2 < (.025/resolution)**2
                     for prior_row, prior_column in orientation_positions):
                 continue
@@ -560,12 +846,20 @@ def search_heightmap_placements(
             if floor_contacts and np.any(
                     obstacle_distance[rows, columns] < max(0.0, obstacle_clearance_m)):
                 continue
-            if support_mode == "stack":
+            if support_mode == "stack" or (support_mode == "auto" and not floor_contacts):
                 selected_top = stack_grid[rows, columns]
-                if (not np.any(support) or np.any(support & (
-                        ~np.isfinite(selected_top) |
-                        (np.abs(supporting_height - selected_top) > contact_tolerance_m))) or
-                        not np.any(support & (supporting_height > plate[rows, columns] + 0.012))):
+                covered = np.isfinite(selected_top) & (
+                    np.abs(z + np.min(bottom) - clearance_m - selected_top) <= contact_tolerance_m)
+                diagnostics.stack_maximum_coverage = max(
+                    diagnostics.stack_maximum_coverage, float(covered.mean()))
+                matched = support & covered
+                if not np.any(matched & (supporting_height > plate[rows, columns] + 0.012)):
+                    continue
+                if stack_minimum_coverage > 0.0:
+                    if covered.mean() < stack_minimum_coverage:
+                        continue
+                    support = matched
+                elif not np.any(support) or np.any(support & ~matched):
                     continue
             stable, support_area, rejection = _support_is_stable(
                 offsets, support, resolution, minimum_support_area_m2,
@@ -601,11 +895,41 @@ def search_heightmap_placements(
                 0.00001 * compact_distance +
                 0.00005 * edge_clearance +
                 float(adjacency_weight) * adjacency_clearance + tilt_penalty)
+            if slot_grid is not None:
+                used = slot_grid.touched(offsets*resolution + origin +
+                                         np.asarray([column, row])*resolution, clearance_m)
+                score -= .01*len(used)
+                if floor_slot_share_unused_space:
+                    score -= .001*len(used-set(map(tuple, floor_slot_reserved_cells)))
+                # Preserve a contiguous opening for later objects rather than
+                # greedily scattering individually reachable placements.
+                if floor_slot_share_unused_space:
+                    free_after = grid_free_base.copy()
+                    if reservation_free is not None:
+                        free_after &= reservation_free
+                    free_after[rows, columns] = 0
+                    free_radius = float(cv2.distanceTransform(
+                        free_after, cv2.DIST_L2, 3).max())*resolution
+                else:
+                    # Exclusive inventory slots consume whole cells. Equivalent
+                    # groups share the same remaining-space score across yaws.
+                    key = frozenset(used)
+                    free_radius = slot_free_radius_cache.get(key)
+                    if free_radius is None:
+                        free_after = grid_free_base.copy()
+                        for cell in used:
+                            free_after[slot_cell_masks[cell]] = 0
+                        free_radius = float(cv2.distanceTransform(
+                            free_after, cv2.DIST_L2, 3).max())*resolution
+                        slot_free_radius_cache[key] = free_radius
+                score += .01*free_radius
             translation_support = np.asarray([
                 origin[0] + column * resolution,
                 origin[1] + row * resolution,
                 z], dtype=np.float32)
             rotation_base = support_frame.T @ rotation
+            if slot_grid is not None:
+                slot_offsets_by_rotation[rotation_base.astype(np.float32).tobytes()] = offsets
             translation_base = support_frame.T @ translation_support
             raw_candidates.append((
                 PlacementCandidate(
@@ -613,15 +937,74 @@ def search_heightmap_placements(
                     translation_base.astype(np.float32), score),
                 support_area))
             orientation_positions.append((row, column))
-            if early_stop_candidate_count > 0 and (
+            if not grid_policy and early_stop_candidate_count > 0 and (
                     len(raw_candidates) >= early_stop_candidate_count or
                     len(orientation_positions) >= min(4, early_stop_candidate_count)):
                 break
-        if early_stop_candidate_count > 0 and len(raw_candidates) >= early_stop_candidate_count:
+        if (not grid_policy and early_stop_candidate_count > 0 and
+                len(raw_candidates) >= early_stop_candidate_count):
             break
 
     raw_candidates.sort(key=lambda item: item[0].score, reverse=True)
-    selected = _select_diverse_candidates(
-        [candidate for candidate, _ in raw_candidates], candidate_count)
+    # Preserve fast/refined benchmark policies; coarse coverage targets small
+    # exhaustive shortlists where ranked neighbors otherwise exhaust the budget.
+    use_ranked = (early_stop_candidate_count > 0 or candidate_count > 16
+                  or support_mode == 'stack')
+    selector = _select_ranked_candidates if use_ranked else _select_diverse_candidates
+    pool = [candidate for candidate, _ in raw_candidates]
+    if grid_policy and grasp_reference_positions is None:
+        grasp_reference_positions = [center]
+    if grasp_reference_positions is not None and len(grasp_reference_positions):
+        references = np.asarray(grasp_reference_positions, dtype=np.float32).reshape(-1, 3)
+        if not np.isfinite(references).all():
+            raise ValueError('grasp reference positions must be finite')
+        source_bearings = np.arctan2(references[:, 1], references[:, 0])
+        def heading_error(candidate):
+            placed_grasps = (references-center) @ candidate.rotation.T + candidate.translation
+            bearing_change = np.arctan2(placed_grasps[:, 1], placed_grasps[:, 0])-source_bearings
+            yaw = math.atan2(candidate.rotation[1, 0], candidate.rotation[0, 0])
+            return float(np.min(np.abs(np.arctan2(
+                np.sin(yaw-bearing_change), np.cos(yaw-bearing_change)))))
+        # Rank yaw proposals by preservation of the grasp's radial heading.
+        # This is only a shortlist heuristic; unchanged IK/motion checks decide.
+        pool = [PlacementCandidate(item.rotation, item.translation,
+                                   item.score - (.0001 if grid_policy else .002) * heading_error(item)) for item in pool]
+        pool.sort(key=lambda item: item.score, reverse=True)
+    if slot_grid is not None:
+        # Generic spatial diversity used to promote larger groups before nearby
+        # small-group yaw alternatives. Preserve cell-count priority strictly.
+        groups = {}
+        for candidate in pool:
+            cell_offsets = slot_offsets_by_rotation[candidate.rotation.tobytes()]
+            used = slot_grid.touched(cell_offsets*resolution+candidate.translation[:2], clearance_m)
+            groups.setdefault(len(used), []).append(candidate)
+        selected = []
+        for count in sorted(groups):
+            # Spread positions and yaw only WITHIN a footprint-size tier, so
+            # diverse wrist approaches never promote a larger cell group.
+            selected.extend(_select_diverse_candidates(
+                groups[count], candidate_count-len(selected), preserve_yaw=True))
+            if len(selected) >= candidate_count:
+                break
+    else:
+        selected = (_select_diverse_candidates(pool, candidate_count, candidate_yaw_variants)
+                    if selector is _select_diverse_candidates else selector(pool, candidate_count))
+    if reserve_near_space and not grid_policy:
+        # A large first object may reach farther via its off-center grasp.
+        # Preserve floor priority, then reserve nearer workspace for later objects.
+        def priority(candidate):
+            placed = (points - center) @ candidate.rotation.T + candidate.translation
+            bottom_height = float(np.min((placed @ support_frame.T)[:, 2]))
+            floor = bottom_height <= support_baseline + clearance_m + 0.015
+            return floor, float(np.linalg.norm(candidate.translation[:2]))
+        selected.sort(key=priority, reverse=True)
+        selected = [PlacementCandidate(item.rotation, item.translation, -float(rank))
+                    for rank, item in enumerate(selected)]
+    if slot_grid is not None:
+        diagnostics.slot_candidate_cells = []
+        for candidate in selected:
+            offsets = slot_offsets_by_rotation[candidate.rotation.tobytes()]
+            used = slot_grid.touched(offsets*resolution+candidate.translation[:2], clearance_m)
+            diagnostics.slot_candidate_cells.append([list(cell) for cell in sorted(used)])
     diagnostics.elapsed_seconds = time.perf_counter() - started
     return selected, diagnostics

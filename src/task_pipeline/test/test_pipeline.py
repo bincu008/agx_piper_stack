@@ -74,6 +74,26 @@ def test_wrong_response_association_is_rejected_without_retry_loop():
     assert result.validated_candidate_count == 3
 
 
+def test_final_ik_rejection_preserves_earlier_lift_failure():
+    """Keep the actual motion blocker when later alternatives fail IK."""
+    calls = []
+
+    def backend(item):
+        calls.append(item)
+        if len(calls) == 1:
+            return PlanPlacement.Response(
+                status='LIFT_INITIAL_HELD_STATE_COLLISION:ATTACHED_OBJECT',
+                motion_status='LIFT_INITIAL_HELD_STATE_COLLISION:ATTACHED_OBJECT',
+                selected_grasp_candidate=item.grasp_candidate,
+                selected_candidate=item.candidates[0])
+        return PlanPlacement.Response(status='PLACEMENT_NO_REACHABLE_CANDIDATE')
+
+    result = validate_placements(request(), backend)
+    assert not result.success
+    assert result.status.startswith('PLACEMENT_NO_REACHABLE_CANDIDATE')
+    assert 'earlier_motion_failures=LIFT_INITIAL_HELD_STATE_COLLISION' in result.status
+
+
 def test_motion_success_required_for_full_motion_scope():
     """Test motion success required for full motion scope."""
     query = request()
@@ -117,6 +137,20 @@ def test_busy_dispatch_is_rejected_and_measured():
     response = PipelineNode._dispatch(node, 'plan_placement', request(), PlanPlacement.Response())
     assert not response.success and response.status.startswith('PIPELINE_BUSY')
     assert len(samples) == 1
+
+
+def test_colocated_dispatch_uses_master_store_without_rpc():
+    """The public typed API must keep master execution while eliminating the proxy hop."""
+    calls, samples = [], []
+    runtime = SimpleNamespace(run_typed=lambda name, query: (
+        calls.append((name, query)), (PlanPlacement.Response(success=True), (True, 'OK')))[1])
+    node = SimpleNamespace(_active=threading.BoundedSemaphore(1), _runtime=runtime,
+                           _publish=lambda *args: samples.append(args),
+                           _rpc=lambda *args: pytest.fail('unnecessary ROS proxy hop'))
+    query = request()
+    response = PipelineNode._dispatch(node, 'plan_placement', query, PlanPlacement.Response())
+    assert response.success and calls == [('plan_placement', query)]
+    assert len(samples) == 1 and samples[0][-1] == (True, 'OK')
 
 
 @pytest.mark.parametrize('matching', [True, False])
@@ -167,7 +201,9 @@ def test_real_node_constructs_without_clobbering_rclpy_clients():
     node = None
     try:
         node = PipelineNode()
-        assert len(node._backend_clients) > 20
+        assert set(node._backend_clients) == {
+            'run_step', 'submit_steps', 'get_step_context', 'clear_step_context',
+            'store_step_result', 'append_task', 'execute_pipeline', 'flush_pipeline'}
         assert isinstance(node._clients, list)
     finally:
         if node is not None:

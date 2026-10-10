@@ -9,7 +9,7 @@
 
 namespace vamp_node {
 
-struct AnalyticalGraspParameters {
+struct KnownCloudGraspParameters {
   int maximum_proposals = 300;
   float voxel_size_m = 0.005F;
   float roll_step_degrees = 15.0F;
@@ -30,7 +30,7 @@ struct AnalyticalGraspParameters {
   float opening_clearance_m = 0.004F;
 };
 
-struct AnalyticalGraspDiagnostics {
+struct KnownCloudGraspDiagnostics {
   std::size_t isolated_points = 0;
   std::size_t downsampled_points = 0;
   std::size_t normal_points = 0;
@@ -47,18 +47,18 @@ struct AnalyticalGraspDiagnostics {
 // Deterministic single-view grasp proposal generator. It uses stable voxel
 // ordering, PCA normals, normal-supported contact pairs, and PCA extent pairs
 // as a conservative fallback for partial RGB-D observations.
-class AnalyticalGraspGenerator {
+class KnownCloudGraspGenerator {
  public:
-  explicit AnalyticalGraspGenerator(AnalyticalGraspParameters parameters = {});
+  explicit KnownCloudGraspGenerator(KnownCloudGraspParameters parameters = {});
 
   std::vector<GraspProposal> generate(
       const std::vector<Eigen::Vector3f> &target_points,
       const Eigen::Vector3f &seed,
       const Eigen::Vector3f &camera_origin,
-      AnalyticalGraspDiagnostics *diagnostics = nullptr) const;
+      KnownCloudGraspDiagnostics *diagnostics = nullptr) const;
 
  private:
-  AnalyticalGraspParameters parameters_;
+  KnownCloudGraspParameters parameters_;
 };
 
 }  // namespace vamp_node

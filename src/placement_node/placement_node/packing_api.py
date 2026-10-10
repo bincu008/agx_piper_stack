@@ -30,7 +30,7 @@ def make_search_request(header, name, *args, **kwargs):
         points = bound.pop(source, None)
         if points is not None:
             setattr(request, target, point_cloud2.create_cloud_xyz32(
-                header, np.asarray(points).reshape(-1, 3).tolist()))
+                header, np.asarray(points, dtype=np.float32).reshape(-1, 3)))
     request.options_json = json.dumps(bound)
     return request
 

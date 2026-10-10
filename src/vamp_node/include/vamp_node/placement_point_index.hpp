@@ -1,6 +1,10 @@
 #pragma once
 
 #include <cmath>
+#include <array>
+#include <cstring>
+#include <deque>
+#include <memory>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -10,10 +14,18 @@ namespace vamp_node {
 // Index exact points; do not downsample or reduce any collision radius.
 class PlacementPointIndex {
 public:
-    explicit PlacementPointIndex(const std::vector<Eigen::Vector3f> &points) {
-        for (const auto &point : points) {
-            if (point.allFinite()) cells_[cell(point)].push_back(point);
+    template<class Point>
+    explicit PlacementPointIndex(const std::vector<Point> &points) {
+        for (size_t index = 0; index < points.size(); ++index) {
+            const Eigen::Vector3f point(points[index][0], points[index][1], points[index][2]);
+            if (point.allFinite()) cells_[cell(point)].push_back({point, index});
         }
+    }
+    template<class Predicate>
+    bool sphereClearWithPredicate(const Eigen::Vector3f &center, float radius,
+        Predicate collides) const {
+        return boxClearIndexed(center-Eigen::Vector3f::Constant(radius),
+            center+Eigen::Vector3f::Constant(radius), collides);
     }
     bool sphereClear(const Eigen::Vector3f &center, float radius) const {
         return boxClear(center - Eigen::Vector3f::Constant(radius),
@@ -59,6 +71,13 @@ private:
     template<class Predicate>
     bool boxClear(const Eigen::Vector3f &lower,const Eigen::Vector3f &upper,
         Predicate collides) const {
+        return boxClearIndexed(lower, upper, [&](size_t, const auto &point) {
+            return collides(point);
+        });
+    }
+    template<class Predicate>
+    bool boxClearIndexed(const Eigen::Vector3f &lower,const Eigen::Vector3f &upper,
+        Predicate collides) const {
         const auto lo=cell(lower-Eigen::Vector3f::Constant(1e-6F));
         const auto hi=cell(upper+Eigen::Vector3f::Constant(1e-6F));
         for (int x=lo.x();x<=hi.x();++x)
@@ -66,10 +85,35 @@ private:
                 for (int z=lo.z();z<=hi.z();++z) {
                     auto found=cells_.find(Eigen::Vector3i(x,y,z));
                     if (found==cells_.end()) continue;
-                    for (const auto &point:found->second) if (collides(point)) return false;
+                    for (const auto &entry:found->second)
+                        if (collides(entry.index, entry.point)) return false;
                 }
         return true;
     }
-    std::unordered_map<Eigen::Vector3i,std::vector<Eigen::Vector3f>,Hash,Equal> cells_;
+    struct Entry { Eigen::Vector3f point; size_t index; };
+    std::unordered_map<Eigen::Vector3i,std::vector<Entry>,Hash,Equal> cells_;
+};
+
+// Cache geometry only. Complete byte comparisons catch in-place scene edits;
+// no collision decision, classification, FK or IK result is cached here.
+class ExactPointIndexCache {
+public:
+    using Point = std::array<float, 3>;
+    const PlacementPointIndex &get(const std::vector<Point> &points) {
+        for (auto &entry : entries_) {
+            if (entry.snapshot.size() == points.size() && (points.empty() ||
+                std::memcmp(entry.snapshot.data(), points.data(),
+                    points.size()*sizeof(Point)) == 0)) return *entry.index;
+        }
+        if (entries_.size() == 2) entries_.pop_back();
+        entries_.push_front({points, std::make_unique<PlacementPointIndex>(points)});
+        return *entries_.front().index;
+    }
+private:
+    struct Entry {
+        std::vector<Point> snapshot;
+        std::unique_ptr<PlacementPointIndex> index;
+    };
+    std::deque<Entry> entries_;
 };
 }  // namespace vamp_node

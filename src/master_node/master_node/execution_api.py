@@ -12,6 +12,8 @@ from my_actions.srv import (
 
 from rclpy.callback_groups import ReentrantCallbackGroup
 
+from task_pipeline.grasp_input import affordance_from_description
+
 from .grasp_stages import GraspStages
 
 
@@ -53,14 +55,7 @@ class ExecutionAPI:
         response.seed_u = (box[0] + box[2]) // 2
         response.seed_v = (box[1] + box[3]) // 2
         response.image_width, response.image_height = image.width, image.height
-        target = request.target_description.lower()
-        response.affordance_type = 'AUTO'
-        if 'handle' in target:
-            response.affordance_type = 'HANDLE'
-        elif any(word in target for word in ('rim', 'lip', 'edge')):
-            response.affordance_type = 'RIM'
-        elif any(word in target for word in ('body', 'side')):
-            response.affordance_type = 'BODY'
+        response.affordance_type = affordance_from_description(request.target_description)
         response.success = True
         response.status = 'GRASP_INPUT_READY'
         return response

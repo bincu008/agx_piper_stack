@@ -4,9 +4,9 @@
 #include <cmath>
 #include <vector>
 
-#include "vamp_node/analytical_grasp_generator.hpp"
+#include "vamp_node/known_cloud_grasp_generator.hpp"
 #include "vamp_node/deterministic_ik.hpp"
-#include "vamp_node/gpd_diversity.hpp"
+#include "vamp_node/grasp_diversity.hpp"
 
 namespace {
 
@@ -53,13 +53,13 @@ void expectValid(const std::vector<vamp_node::GraspProposal> &proposals) {
   }
 }
 
-TEST(AnalyticalGraspGenerator, DeterministicBoxCylinderAndHandle) {
-  vamp_node::AnalyticalGraspParameters parameters;
+TEST(KnownCloudGraspGenerator, DeterministicBoxCylinderAndHandle) {
+  vamp_node::KnownCloudGraspParameters parameters;
   parameters.maximum_proposals = 200;
   parameters.voxel_size_m = 0.004F;
   parameters.normal_radius_m = 0.012F;
   parameters.min_normal_neighbors = 8;
-  vamp_node::AnalyticalGraspGenerator generator(parameters);
+  vamp_node::KnownCloudGraspGenerator generator(parameters);
   const Eigen::Vector3f seed(0.0F, 0.0F, 0.03F);
   const Eigen::Vector3f camera(0.0F, -0.35F, 0.20F);
   for (const auto &cloud : {makeBox(), makeCylinder(), makeHandle()}) {
@@ -75,8 +75,8 @@ TEST(AnalyticalGraspGenerator, DeterministicBoxCylinderAndHandle) {
   }
 }
 
-TEST(AnalyticalGraspGenerator, SelectsSpatiallyDiverseContactFamilies) {
-  vamp_node::AnalyticalGraspParameters parameters;
+TEST(KnownCloudGraspGenerator, SelectsSpatiallyDiverseContactFamilies) {
+  vamp_node::KnownCloudGraspParameters parameters;
   parameters.maximum_proposals = 100;
   parameters.local_pca_searches = 50;
   parameters.global_pca_searches = 50;
@@ -85,8 +85,8 @@ TEST(AnalyticalGraspGenerator, SelectsSpatiallyDiverseContactFamilies) {
   parameters.voxel_size_m = 0.004F;
   parameters.normal_radius_m = 0.012F;
   parameters.min_normal_neighbors = 8;
-  vamp_node::AnalyticalGraspGenerator generator(parameters);
-  vamp_node::AnalyticalGraspDiagnostics diagnostics;
+  vamp_node::KnownCloudGraspGenerator generator(parameters);
+  vamp_node::KnownCloudGraspDiagnostics diagnostics;
   const auto proposals = generator.generate(
     makeCylinder(), Eigen::Vector3f(0.0F, 0.0F, 0.03F),
     Eigen::Vector3f(0.0F, -0.35F, 0.20F), &diagnostics);
@@ -136,7 +136,7 @@ TEST(DeterministicIk, StableSeedOrderAndSolutionSelection) {
   EXPECT_TRUE(vamp_node::deterministicIkSolutionPreferred(current, 1, current, 2, current));
 }
 
-TEST(GpdDiversity, SymmetricClosingAxesAndDifferentApproaches) {
+TEST(GraspDiversity, SymmetricClosingAxesAndDifferentApproaches) {
   const Eigen::Vector3f position(0.2F, 0.0F, 0.1F);
   const Eigen::Vector3f approach = Eigen::Vector3f::UnitZ();
   const Eigen::Vector3f closing = Eigen::Vector3f::UnitY();

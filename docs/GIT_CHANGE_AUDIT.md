@@ -1,149 +1,106 @@
-# Git change audit
+# Checkpoint change audit
 
-Audit date: 2026-10-05. Comparison base: `dad5a99` (`baseline code`).
+Reviewed 2026-10-10 against `83b26a9` (`API split`), the latest committed
+checkpoint. Earlier counts of 134/147 files referred to the preceding API work;
+they are not the current pending diff.
 
-## Why the change list is large
+## Current inventory
 
-Before this documentation/cleanup pass, Git showed **31 modified tracked files
-and 103 new files**. The repository has one baseline commit; the working tree
-contains the accumulated grounding, simulation, packing, motion-profiling and
-shared-API work from multiple tasks. It is not a diff of only the last API change.
-There are no intermediate commits from which to reliably assign every line to
-an individual request.
+The reviewed checkpoint contains **98 paths: 61 modified, 25 new, 12 deleted**.
+The audit update itself adds one modified documentation path to the initial
+97-path inventory. Counts include source, tests, documentation and replay inputs.
+After staging, Git recognizes four renames: **94 change records** (61 modified,
+21 added, eight deleted, four renamed). The known-cloud generator/header/test
+and shared diversity helper retain existing code instead of duplicating it.
 
-The original 103 new files break down as follows:
+| Group | Paths | Purpose |
+| --- | ---: | --- |
+| VAMP | 23 | HGGD-only deployment, internal known-cloud proposals, contact/attachment checks, lift/transfer/descent planning, geometry helpers and regression tests |
+| Placement | 14 | Adaptive square floor grid, exclusive reservations, heightmap support/stacking, scene association, benchmark/API transport and tests |
+| Shared API | 14 | Typed bindings and colocated dispatch, tracing, shared grasp-input preparation, recipe changes and tests |
+| Mock replay | 14 | Updated captured scene/joints, raw depth replay, synchronized capture and fixture tests |
+| Shared ROS interfaces | 8 | API trace, immutable cloud preparation, slot commit and matching caller/response schemas |
+| Master | 6 | Colocated API dispatcher, typed step runtime, shared input preparation, launch parameters and tests |
+| Retired GPD vendor | 6 | Deletions required by removal of the obsolete engine/dependency |
+| Vision / VLM | 2 | Requested gripper mask correction; EdgeSAM-only masks, grid policy and validated slot commits |
+| Documentation | 11 | Current commands, API/code map, policies, journal, runtime reports and this audit |
 
-| Kind | Files | Why they exist |
-|---|---:|---|
-| ROS interface definitions | 31 | Services, messages and action shared by independently running nodes; ROSIDL requires separate definition files |
-| Implementation sources | 26 | New pipeline package, master microstep classes, mock replay, benchmark adapters and planner helpers |
-| Regression tests | 15 | API handoffs, cancellation/idempotence, geometry, grounding and motion checks |
-| Launch/build/entrypoint/config metadata | 14 | Install and launch the new nodes; register interfaces/tests and inference profiles |
-| Documentation | 8 | Seven feature guides and the mock README |
-| Recorded mock fixture | 9 | Seven serialized ROS inputs, manifest and optional RGB preview |
+The numerical counts are a review inventory, not a claim that all files are
+runtime dependencies. Tests verify behavior; historical reports preserve tuning
+evidence. Cross-node interfaces and their consumers must be committed together.
 
-`git diff --stat` shows only changes to tracked files. Use
-`git status --short --untracked-files=all` to include new files. Directory rows
-such as `?? src/task_pipeline/` expand to many real source/interface files.
+## What can be removed
 
-## Changes grouped by launched component
+No pending tracked build output, Python cache, benchmark cloud dump, debug image,
+RPC capture or rosbag was found. Generated output is already ignored or stored
+under home-directory run folders. No further implementation files were deleted
+solely to reduce the count.
 
-Counts below are from before this documentation pass; the new audit/guide edits
-and ignored RGB preview change the final totals.
+The twelve existing deletions remove the requested analytical/GPD grasp paths,
+GPD adapter/test and vendor package. Keep those deletions. Their replacement
+known-cloud generator is simulation-only; deployed proposals remain HGGD.
 
-| Group | Modified / new | Main files and behavior |
-|---|---:|---|
-| Shared schemas (`my_actions`) | 3 / 31 | New microstep/result/timing messages, `RunPipelineSteps` action, image/grasp/cache/state/search/execution services; `PlanPlacement.srv` gains frozen-scene inputs, grasp alternatives, motion paths and timings; CMake/package register dependencies |
-| Shared API (`task_pipeline`) | 0 / 14 | `registry.py`, `node.py`, `context.py`, `recipes.py`, common placement policy and timing helpers; installed dispatcher/recipe CLI, package metadata and two test modules |
-| Master (`master_node`) | 5 / 6 | `step_runtime.py`, `execution_api.py`, `grasp_stages.py`; execution facade refactor and shared client routing; launch/profiles, state handling, install/dependency wiring and tests |
-| VLM (`vlm_node`) | 4 / 4 | `vlm_reasoning_node.cpp`: optimized requests, image APIs, multiple-object templates, common API/master-cache routing; strict parsing/template headers and tests; standalone multithread executor; removal of an unnecessary EdgeSAM image copy |
-| Placement/benchmark (`placement_node`) | 8 / 12 | `node.py`, `packing.py`, extraction/attachment helpers; edge/stack search and joint-grasp validation; new benchmark/fixture/typed adapters, entrypoints/launch and tests; runtime node renamed `placement_node` |
-| Planner (`vamp_node`) | 7 / 9 | `vamp_planner_server.cpp`: fixed-attachment placement collision/descent/lift/transfer validation, candidate alternatives, early stopping and profiling; geometry/index/payload/ranking helpers and tests; HGGD depth/orientation handling; RViz updates |
-| Acquisition (`vision_node`) | 2 / 0 | `active_vision_server.cpp`: clock-domain/arrival association, bounded RGB receipt fallback and fewer copies; CMake removes duplicate dependency declarations |
-| Mock (`mock_hardware_node`) | 0 / 20 | Replay/capture/serialization code, package/launch/test/docs and recorded input fixture |
-| Root documentation | 2 / 7 | README/code map and feature/tuning guides |
+Keep the eight `.cdr` replay messages and `manifest.json` under
+`mock_hardware_node/snapshots/current`. They contain the newly requested RGB,
+registered cloud, raw depth, current joints and feedback. They are installed
+runtime inputs, not generated build output. The derived `rgb_preview.png`
+remains ignored. RViz launch/configuration and benchmark/debug regression tests
+are reusable source, not disposable session logs.
 
-The largest tracked changes are in VAMP, VLM and placement node implementations.
-They include substantial placement/motion and controller behavior, not just API
-renaming. The new `task_pipeline` package and API definitions depend on matching
-changes in their backend nodes and launch files. Removing only those backend
-changes would leave callers, schemas or installation inconsistent.
+`FLOOR_SLOTS_PROFILE.md` and `GRID_SPACE_OPTIMIZATION.md` are optional historical
+reports for users, not runtime code. Retain them because the journal and policy
+documentation reference the experiments. Current behavior is described by README,
+AGENTS, STANDARD_PIPELINE_API and ADAPTIVE_FLOOR_GRID; historical measurements
+must not be presented as current defaults.
 
-Some small diffs are performance/housekeeping carryovers: `world_state.py` removes
-a second deep copy after constructing an already-copied queue; `edge_sam_onnx.cpp`
-and ActiveVision retain immutable reference-counted image data instead of making
-extra clones; Vision CMake removes duplicate `find_package` declarations. These
-are not required simply to rename API endpoints. This audit identifies their
-purpose; it does not claim that every accumulated change is necessary for the
-latest refactor.
+## Cleanup and optimization in this review
 
-## Generated output and removable inspection files
+The square-grid matcher formerly scanned the entire dense footprint for every
+contained one-cell trial. A bounding rectangle now proves one-cell membership
+when it lies strictly within that cell and cannot intersect any other cell's
+gap territory. Boundary cases, multi-cell footprints and overlapping territories
+retain the original point-level checks. Per-call cell indices avoid repeated
+linear lookups. No geometry, support, collision or candidate budget was relaxed.
+The new grid module/test were cleaned to pass their Flake8 and docstring checks.
+Touched master imports and launch argument wrapping were cleaned without
+reformatting the controller; total master lint findings dropped below HEAD.
 
-The audit found **no tracked build/install/log files, Python bytecode, object
-files or recorded benchmark output** in the pending changes. Build/install/log
-and Python cache directories were already ignored. Most local inference and
-benchmark reports are under home-directory output folders, outside this Git tree.
+432 old/new comparisons produced identical ordered candidates/cell sets, covering
+recorded and randomized footprints, rotations, reservations, phases and clearance.
+Alternating five-repeat matching benchmark: median **4.230 s → 0.629 s (6.73×)**
+for three recorded footprints over 72 yaw angles. This is matching time, not
+complete API or pipeline latency. Raw results: `~/checkpoint_grid_benchmark.json`.
 
-This pass expands `.gitignore` for CTest/coverage/object by-products, backups,
-root-level run-output folders (`benchmark_results`, `debug_output`,
-`runtime_artifacts`), default rosbag folders and the derived mock RGB preview.
-Required runtime libraries, robot meshes, model assets, source images and CDR
-fixtures are not globally ignored by extension.
+The live ordered lower-bowl → upper-bowl → cup calculation accepted all three in
+**18.124 s**, layout **12.629 s**. Support-contact tolerance was overridden to
+8 mm; its source default remains 6 mm. Lift-only attached/environment bypass was
+active and explicitly marked; transfer/descent checks remained active. Results
+are in `~/checkpoint_layout.json` and `~/checkpoint_layout_capture/`.
 
-| File/group | Decision | Reason |
-|---|---|---|
-| `mock_hardware_node/snapshots/current/rgb_preview.png` | Ignore; leave the local copy available | Derived inspection image; replay reads `rgb_image.cdr`. It can be regenerated; grounding documentation now explains export from the CDR input |
-| Seven `.cdr` files plus `manifest.json` in the bundled snapshot | Keep | Runtime inputs installed with the mock package; a fresh clone needs them for replay. They total about 7.07 MB |
-| `vamp_node/rviz/grasp_debug.rviz` and RViz launch | Keep | Reusable operator visualization required to inspect grasp and placement; the name “debug” does not make it generated output |
-| `box_benchmark.py`, fixture, entrypoint and launch | Keep | Requested simulation/benchmark functionality, using the shared APIs |
-| `scripts/benchmark_grounding` and `grounding.py` | Keep as optional utility | Reusable inference-latency tool; not launched by the arm stack and not used for deployed pipeline latency measurements |
-| `test/test_layout_debug.py` and other new tests | Keep | Regression source, including pinned-frame and visualization behavior; not a saved debug session |
-| Run reports, saved cloud/path arrays, CDR RPC dumps, PNG debug captures, bags | Exclude from Git | Generated run evidence, not source. Use a home output directory or an ignored runtime directory |
-| Historical tuning/performance guides | Keep as supporting documentation | Not runtime dependencies. Current launch instructions are in README/code map/API guide; old timings must not be presented as the current deployed latency |
+## Checks and limits
 
-No planner, solver, hardware source or required replay message was deleted or
-reverted in this pass. The optional preview remains on disk but will not be
-staged by a normal `git add`. Tests and source utilities were not removed merely
-to make the file count smaller.
+- 223 functional tests passed, one skipped, across placement, pipeline, master
+  and mock packages. Package lint checks were evaluated separately; running
+  lint tests from the workspace root incorrectly scans build/vendor directories.
+- The new grid module and test pass Flake8 and docstring checks.
+- Master Flake8 reports 508 findings versus 511 in the committed version;
+  master docstring checks pass. This review does not claim repository-wide lint
+  cleanliness or mechanically rewrite the existing controller.
+- Latest VAMP build and nine C++ test executables passed during the preceding
+  default-bypass change. This review changes Python grid matching only.
+- Live three-object calculation passed; saved motion responses confirm success
+  and `LIFT_ATTACHED_ENVIRONMENT_CHECK_BYPASSED` for every object.
+- `git diff --check`, fixture eligibility and source/output separation checked.
 
-## Review boundaries before publishing
+The requested lift bypass is now a deliberate default; set
+`placement_bypass_attached_collision_during_lift:=false` to restore lift checking.
+Physical execution remains disabled during development. Current testing does
+not validate hardware contact/CAN execution, a collision-free lift, or plate
+placement after these three objects. Computational transforms still use manual
+FK/X only. The free-space redivision overlay used a home-directory visualization
+script; it is a preview, not a newly installed production API.
 
-These groups are useful for reviewing the accumulated diff. They are not
-independent folder-only commits: shared definitions and consumers cross groups.
-
-1. **Grounding and inference configuration:** request format/parse rules, endpoint
-   profiles, image association, streaming/timeout/authentication behavior.
-2. **Mock and benchmark:** recorded inputs, known-cloud grasp mode, sequential
-   scene updates, failure continuation, blocking trigger and generated output.
-3. **Placement and motion:** height-map edge/stack behavior, fixed grasp attachment,
-   collision checks, descent/lift/transfer paths, early stopping and timing.
-4. **API/master orchestration:** typed catalog, result store, bindings, idempotence,
-   queue cancellation, execution-stage ordering and physical gates.
-5. **Documentation and output hygiene:** current commands, source hierarchy,
-   fixture/output distinction and ignore rules.
-
-Acquisition now pairs cloud/joints by local arrival and has a bounded RGB receipt
-fallback for different clock domains. HGGD depth snapping/orientation retention,
-placement early termination, and master execution-stage refactoring also change
-behavior. These are real functional diffs that need review, not removable debug
-noise. The mock checks do not validate real camera synchronization, contact or CAN
-execution. Existing master lint debt is recorded in `docs/VALIDATION.md`.
-
-For this documentation/ignore pass, check Markdown links, launch arguments,
-fixture loading, whitespace and ignore behavior. The preceding implementation
-checks are recorded in `docs/STANDARD_PIPELINE_API.md`.
-
-Completed checks: all local links in the seven edited/new guides resolve;
-documented parameters match all four launch files' `--show-args`; the catalog
-contains the documented 54 services and one action; prompt tags match the VLM
-parser; the eight-file replay fixture loads in a temporary directory without
-the preview PNG; the snapshot helper test and `git diff --check` pass. Required
-CDR/API/RViz source remains eligible for Git, while sample run outputs and the
-preview are ignored. No runtime algorithms or hardware behavior changed in
-this documentation/ignore pass.
-
-## Inspect and stage
-
-The placement package and Python module were subsequently moved to
-`src/placement_node/placement_node`, and backend endpoints to `/placement/*`.
-Launch, dependency, import, registry, RViz and documentation references were
-updated together. The obsolete executable/class aliases were removed. Before
-staging, Git can show the directory move as deletions and new files; rename
-detection applies when the corresponding paths are staged. The numerical
-placement algorithm is unchanged by this rename.
-
-```bash
-git status --short --untracked-files=all
-git diff --stat
-git diff -- src/vamp_node/src/vamp_planner_server.cpp
-git diff -- src/vision_node/src/active_vision_server.cpp
-git diff -- src/master_node/master_node/piper_master_control.py
-git ls-files --others --exclude-standard
-git diff --check
-```
-
-After review, stage the coupled source/interfaces/tests/docs and inspect
-`git diff --cached --stat` before committing. Do not use `git clean` or discard
-new files to reduce the count: required untracked package code and ROS schemas
-are part of the implementation. This pass does not create commits or push to
-`origin`; the working tree remains available for review.
+Compare future performance using the same completed work, settings and timing
+scopes. Warm starts, CPU load and remote inference can change latency; the
+18.124 s rerun does not isolate the full effect of the matching optimization.
+The engineering journal preserves both successful runtime summaries.

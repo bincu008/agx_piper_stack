@@ -13,6 +13,7 @@ from sensor_msgs.msg import CameraInfo, Image, JointState, PointCloud2
 
 MESSAGE_SPECS = {
     'rgb': ('/camera/color/image_raw', Image, 'rgb_image.cdr'),
+    'depth': ('/camera/depth/image_raw', Image, 'depth_image.cdr'),
     'cloud': (
         '/camera/depth_registered/points', PointCloud2,
         'registered_cloud.cdr'),
@@ -32,6 +33,9 @@ def save_messages(directory: Path, messages: dict, metadata: dict) -> None:
     """Serialize a complete snapshot without changing ROS message content."""
     directory.mkdir(parents=True, exist_ok=True)
     for key, (_, _, filename) in MESSAGE_SPECS.items():
+        if key == 'depth' and key not in messages:
+            (directory / filename).unlink(missing_ok=True)
+            continue
         (directory / filename).write_bytes(bytes(serialize_message(messages[key])))
     (directory / 'manifest.json').write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + '\n',
@@ -43,6 +47,8 @@ def load_messages(directory: Path) -> tuple[dict, dict]:
     messages = {}
     for key, (_, message_type, filename) in MESSAGE_SPECS.items():
         path = directory / filename
+        if key == 'depth' and not path.is_file():
+            continue  # Older snapshots contain registered depth only.
         if not path.is_file():
             raise FileNotFoundError(f'missing snapshot message: {path}')
         messages[key] = deserialize_message(path.read_bytes(), message_type)

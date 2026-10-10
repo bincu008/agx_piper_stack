@@ -13,6 +13,7 @@ from rclpy.serialization import serialize_message
 
 from task_pipeline.context import StepStore, fields
 from task_pipeline.recipes import step
+from my_actions.msg import StepBinding
 
 
 def test_queue_binds_exact_observation_and_depletes_successful_steps():
@@ -110,6 +111,72 @@ def test_step_id_is_idempotent_and_conflicting_payload_is_rejected():
         store.run_one(context, 'two', 'ground_object', payload, expected=revision - 1)
 
 
+def test_bound_call_reuses_exact_image_and_keeps_stored_data_immutable():
+    """Sparse calls bind stored observations without resending pixels."""
+    observed = CaptureObservation.Response(success=True)
+    observed.image.header.stamp.sec = 123
+    observed.image.data = bytes([1, 2, 3])
+    calls = []
+
+    def backend(name, request):
+        assert request.image.header.stamp.sec == 123
+        assert list(request.image.data) == [1, 2, 3]
+        calls.append(name)
+        request.image.data[0] = 99
+        return GroundObject.Response(success=True)
+
+    store = StepStore(backend)
+    context, revision = store.store('test', 'observation', 'capture_observation',
+                                    serialize_message(observed))
+    bindings = [StepBinding(target_field='image', source_step_id='observation', source_field='image')]
+    payload = serialize_message(GroundObject.Request(target='cup'))
+    first = store.run_one(context, 'ground', 'ground_object', payload, revision, bindings)[2]
+    assert store.run_one(context, 'ground', 'ground_object', payload, bindings=bindings)[2] == first
+    store.run_one(context, 'second', 'ground_object', payload, bindings=bindings)
+    assert len(calls) == 2
+    with pytest.raises(ValueError, match='UNKNOWN_CONTEXT'):
+        store.run_one('missing', 'bad', 'ground_object', payload, bindings=bindings)
+
+
+def test_typed_fast_path_keeps_idempotence_and_storage_limits():
+    """Colocated calls retain the same state checks as serialized calls."""
+    calls = []
+    store = StepStore(lambda *args: (calls.append(args), GroundObject.Response(success=True))[1])
+    request = GroundObject.Request(target='cup')
+    context, _, item, response = store.run_typed('test', 'ground', 'ground_object', request)
+    assert item.success and response.success
+    store.run_typed(context, 'ground', 'ground_object', request)
+    assert len(calls) == 1
+    with pytest.raises(TypeError, match='REQUEST_TYPE_MISMATCH'):
+        store.run_typed(context, 'invalid', 'ground_object', CaptureObservation.Request())
+
+
+def test_multiple_bindings_decode_predecessor_once(monkeypatch):
+    """Reading several observation fields must not decode its whole cloud repeatedly."""
+    import task_pipeline.context as module
+    from my_actions.srv import PrepareCloudScene
+
+    observation = CaptureObservation.Response(success=True)
+    observation.cloud.header.stamp.sec = 123
+    store = StepStore(lambda name, request: PrepareCloudScene.Response(success=True))
+    context, revision = store.store('test', 'observe', 'capture_observation',
+                                    serialize_message(observation))
+    store.submit(context, [step('scene', 'prepare_cloud_scene', PrepareCloudScene.Request(), [
+        ('observation_header', 'observe', 'cloud.header'),
+        ('object_cloud', 'observe', 'cloud'), ('scene_cloud', 'observe', 'cloud')])], revision)
+    original = module.deserialize_message
+    decodes = []
+
+    def counted(payload, kind):
+        if kind is CaptureObservation.Response:
+            decodes.append(kind)
+        return original(payload, kind)
+
+    monkeypatch.setattr(module, 'deserialize_message', counted)
+    assert store.run_queue(context)[0] == 'COMPLETE'
+    assert len(decodes) == 1
+
+
 def test_unknown_backend_completion_is_not_reexecuted_on_retry():
     """Remember timeout failures rather than repeating potentially completed actions."""
     calls = []
@@ -203,3 +270,15 @@ def test_registry_rejects_queue_control_functions_as_executable_steps():
         StepStore.spec('run_step')
     with pytest.raises(ValueError, match='UNKNOWN_OR_CONTROL_FUNCTION'):
         StepStore.spec('/emergency_stop')
+
+
+def test_fingerprint_preserves_wire_digest_for_buffer_and_sequence_inputs():
+    """Buffer hashing preserves replay/conflict detection without concatenation."""
+    import array
+    import hashlib
+    from task_pipeline.context import fingerprint
+
+    payload = serialize_message(GroundObject.Request(target='brown cup'))
+    expected = hashlib.sha256(b'ground_object' + payload).hexdigest()
+    for value in (payload, bytearray(payload), array.array('B', payload), list(payload)):
+        assert fingerprint('ground_object', value) == expected

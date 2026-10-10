@@ -47,7 +47,7 @@ class MockHardware(Node):
     def _start_publishers(self) -> None:
         topics = {
             key: prefixed_topic(self.topic_prefix, spec[0])
-            for key, spec in MESSAGE_SPECS.items()
+            for key, spec in MESSAGE_SPECS.items() if key in self.messages
         }
         if not self.allow_conflict:
             occupied = [
@@ -64,6 +64,8 @@ class MockHardware(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE)
         for key, (_, message_type, _) in MESSAGE_SPECS.items():
+            if key not in self.messages:
+                continue
             self._mock_publishers[key] = self.create_publisher(
                 message_type, topics[key], qos)
         self.started = True
@@ -104,8 +106,9 @@ class MockHardware(Node):
         self.camera_accumulator += self.period
         if self.camera_accumulator + 1.0e-9 >= 1.0 / self.camera_rate:
             self.camera_accumulator = 0.0
-            for key in ('camera_info', 'rgb', 'cloud'):
-                self._publish(key, stamp)
+            for key in ('camera_info', 'rgb', 'cloud', 'depth'):
+                if key in self.messages:
+                    self._publish(key, stamp)
 
 
 def main(args=None) -> None:

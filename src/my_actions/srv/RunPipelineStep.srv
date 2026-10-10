@@ -3,6 +3,8 @@ string context_id
 string step_id
 string function_name
 uint8[] request_cdr
+# Optional references to immutable results in the same context.
+my_actions/StepBinding[] bindings
 # Zero means use the current revision; otherwise reject stale callers.
 uint64 expected_revision
 ---

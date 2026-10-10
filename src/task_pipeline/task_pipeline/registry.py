@@ -23,6 +23,7 @@ class Function:
 
 
 FUNCTIONS = {item.name: item for item in (
+    Function('commit_floor_slots', srv.CommitFloorSlots, '/placement/commit_floor_slots'),
     Function('capture_observation', srv.CaptureObservation,
              '/pipeline/_capture_observation', 'rgbd'),
     Function('run_step', srv.RunPipelineStep, '/master/run_step'),
@@ -49,6 +50,8 @@ FUNCTIONS = {item.name: item for item in (
     Function('close_grasp_gripper', srv.GraspStage, '/master/close_grasp_gripper'),
     Function('verify_grasp_contact', srv.GraspStage, '/master/verify_grasp_contact'),
     Function('prepare_grasp_input', srv.PrepareGraspInput, '/master/prepare_grasp_input'),
+    Function('prepare_cloud_scene', srv.PrepareCloudScene, '/master/prepare_cloud_scene',
+             'known_cloud'),
     Function('request_scan', Trigger, '/active_vision/trigger_scan', 'trigger_ack'),
     Function('get_3d_coordinate', srv.Get3DCoordinate, '/active_vision/get_3d_coordinate'),
     Function('infer_yolo', srv.GetYoloInference, '/active_vision/get_yolo_inference', 'rgb'),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 import time
 
@@ -15,6 +16,25 @@ from rclpy.qos import ReliabilityPolicy
 from .snapshot_io import MESSAGE_SPECS, save_messages
 
 
+def select_synchronized_samples(buffers, tolerance):
+    """Match buffered camera/joint samples to the newest viable cloud stamp."""
+    def stamp(message):
+        return message.header.stamp.sec + message.header.stamp.nanosec / 1e9
+
+    best_span = float('inf')
+    for cloud, receipt in reversed(buffers['cloud']):
+        anchor = stamp(cloud)
+        selected = {'cloud': (cloud, receipt)}
+        for key in ('rgb', 'depth', 'joint_state'):
+            selected[key] = min(buffers[key], key=lambda sample: abs(stamp(sample[0]) - anchor))
+        stamps = [stamp(sample[0]) for sample in selected.values()]
+        span = max(stamps) - min(stamps)
+        best_span = min(best_span, span)
+        if span <= tolerance:
+            return selected, span
+    return None, best_span
+
+
 class SnapshotCapture(Node):
     """Wait for one message on each required hardware topic and save it."""
 
@@ -22,6 +42,7 @@ class SnapshotCapture(Node):
         super().__init__('mock_hardware_snapshot_capture')
         self.declare_parameter('output_directory', '')
         self.declare_parameter('timeout_sec', 30.0)
+        self.declare_parameter('synchronization_tolerance_sec', 0.05)
         output = str(self.get_parameter('output_directory').value)
         if not output:
             raise RuntimeError('output_directory parameter is required')
@@ -30,6 +51,8 @@ class SnapshotCapture(Node):
             self.get_parameter('timeout_sec').value)
         self.messages = {}
         self.received_monotonic = {}
+        self.buffers = {key: deque(maxlen=64 if key == "joint_state" else 6)
+                        for key in MESSAGE_SPECS}
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
@@ -59,17 +82,34 @@ class SnapshotCapture(Node):
     def _callback(self, key, message) -> None:
         self.messages[key] = message
         self.received_monotonic[key] = time.monotonic()
+        self.buffers[key].append((message, self.received_monotonic[key]))
 
     def _check_complete(self) -> None:
         if self.done:
             return
         missing = sorted(set(MESSAGE_SPECS) - set(self.messages))
         if not missing:
+            tolerance = float(self.get_parameter('synchronization_tolerance_sec').value)
+            selected, span = select_synchronized_samples(self.buffers, tolerance)
+            if selected is None:
+                if time.monotonic() >= self.deadline:
+                    self.get_logger().error(f'Snapshot synchronization timed out: span={span:.6f}s')
+                    self.done = True
+                return
+            for key, (message, receipt) in selected.items():
+                self.messages[key] = message
+                self.received_monotonic[key] = receipt
             image = self.messages['rgb']
             cloud = self.messages['cloud']
             joints = self.messages['joint_state']
             metadata = {
-                'format_version': 1,
+                'format_version': 2,
+                'synchronization_span_sec': span,
+                'depth': {
+                    'width': int(self.messages['depth'].width),
+                    'height': int(self.messages['depth'].height),
+                    'encoding': str(self.messages['depth'].encoding),
+                },
                 'captured_unix_time': time.time(),
                 'topics': {
                     key: {

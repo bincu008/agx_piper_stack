@@ -31,7 +31,7 @@ engine's bounded frame buffer with a single global buffer.
 
 | Launch | Processes/nodes | Purpose |
 |---|---|---|
-| `master_node/reasoning_stack.launch.py` | `robot_core_container` with `active_vision_server` and `vamp_planner_server`; standalone `vlm_reasoning_node`, `pipeline_node`, `piper_master_control`, `placement_node` | Official production/planning stack; no camera or CAN driver is started |
+| `master_node/reasoning_stack.launch.py` | `robot_core_container` with `active_vision_server` and `vamp_planner_server`; standalone `vlm_reasoning_node`, `piper_master_control`, `placement_node`; `pipeline_node` hosted inside the master process | Official production/planning stack; no camera or CAN driver is started |
 | `mock_hardware_node/mock_hardware.launch.py` | `mock_hardware` | Replays recorded RGB-D and feedback on driver topic names |
 | `placement_node/box_benchmark.launch.py` | `box_benchmark` | Adds synthetic box clouds and calculates sequential edge/stack placements |
 | `vamp_node/grasp_debug_rviz.launch.py` | `grasp_debug_rviz` | Opens RViz with the installed grasp/placement configuration |
@@ -89,13 +89,14 @@ src/
 │   ├── src/vamp_planner_server.cpp          grasp/IK/collision/motion/placement service engine
 │   ├── src/hggd_mcu_adapter.cpp             HGGD AnchorNet/LocalNet proposals
 │   ├── src/local_grasp_refiner.cpp          close-up contact geometry refinement
-│   ├── src/analytical_grasp_generator.cpp   retained analytical candidate backend
-│   ├── src/gpd_grasp_adapter.cpp            retained optional GPD candidate backend
+│   ├── src/known_cloud_grasp_generator.cpp  internal geometric known-cloud proposals
 │   ├── include/vamp_node/
 │   │   ├── deterministic_ik.hpp            current numerical IK and stagnation guard
 │   │   ├── grasp_proposal.hpp              internal proposal representation
 │   │   ├── payload_checked_robot.hpp       held-object collision adapter for VAMP
 │   │   ├── placement_geometry.hpp          attachment/support/collision helpers
+│   │   ├── organized_xyz_reader.hpp        per-scan XYZ offsets, unchanged point validity
+│   │   ├── layout_scene_cache.hpp          exact frozen-scene geometry reuse
 │   │   ├── placement_point_index.hpp       exact-point spatial collision lookup
 │   │   ├── placement_ranking.hpp           placement candidate ordering
 │   │   └── pipeline_timing.hpp             request-local numerical profiling
@@ -211,3 +212,20 @@ closing uses 0 m / 1 N only after the final waypoint, and speed is restored to
 Emergency stop and drivers retain direct control paths. See [AGENTS.md](../AGENTS.md)
 for contributor invariants and [the API guide](STANDARD_PIPELINE_API.md) for
 failure, timeout, result-store and cancellation semantics.
+
+API performance support: `task_pipeline/api_metrics.py` correlates client/server
+request and response phases; `my_actions/msg/ApiCallTrace.msg` carries server
+monotonic timestamps. `PrepareCloudScene.srv` registers reusable geometry;
+`RunPipelineStep.srv` carries optional same-context result bindings. The exact
+collision index and bounded geometric cache are in
+`vamp_node/include/vamp_node/placement_point_index.hpp`. Cached geometry is
+compared byte-for-byte; collision decisions and IK results are never cached.
+
+Floor-slot placement: `placement_node/floor_slots.py` owns the ROS-independent
+adaptive 6–12.5 cm square grid with rectangular remainder slots, largest-inscribed-rectangle decomposition,
+legacy fixed-grid builder and footprint stencil matching; `packing.py` validates its
+coarse placements with the existing heightmaps. `placement_node/node.py` owns
+bounded grid/reservation storage and `/placement/floor_slots` visualization.
+`my_actions/srv/CommitFloorSlots.srv` defines the commit/reset contract;
+`task_pipeline/registry.py` declares `commit_floor_slots`, and `recipes.py` appends
+it after successful grid placement validation.

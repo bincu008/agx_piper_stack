@@ -4,7 +4,9 @@ This package records and replays the exact hardware inputs used by the
 calculation-only reasoning stack. The bundled `snapshots/current` scene
 contains registered RGB-D data and Piper feedback captured together.
 
-The seven CDR messages and `manifest.json` are required installed replay inputs.
+The default snapshot contains eight CDR messages and `manifest.json`, including
+raw depth (`depth_image.cdr`, `/camera/depth/image_raw`). Older seven-message
+snapshots remain supported and replay registered depth through the point cloud.
 The derived `rgb_preview.png` is local inspection output and is ignored by Git.
 The mock republishes recorded geometry/state with fresh timestamps; it does not
 simulate physics or respond to motion commands. Camera data defaults to 10 Hz
@@ -42,3 +44,9 @@ Replay that capture with
 
 For a source-tree capture that will be committed and installed on rebuild, use
 `src/mock_hardware_node/snapshots/current` as the output directory.
+
+Capture buffers a bounded recent history and matches RGB, raw depth and joint
+feedback to a registered-cloud timestamp within 50 ms by default
+(`synchronization_tolerance_sec`). The manifest records the actual timestamp
+spread. Arrival-time differences are reported separately and can be larger due
+to cloud processing latency. No capture/replay command moves the arm.

@@ -1,0 +1,9 @@
+# Commit a candidate only after successful public placement validation.
+# Exact source header and pose must match a retained floor_slots search result.
+geometry_msgs/PoseStamped selected_pose
+# Explicitly clear all floor-slot reservations (does not change scene clouds).
+bool reset
+---
+bool success
+string status
+uint32 occupied_slots

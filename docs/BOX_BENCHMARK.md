@@ -75,7 +75,8 @@ IDs in its report and releases them before rerunning.
 |---|---|---|
 | `box_count` | 10 | Number of known synthetic boxes |
 | `box_gap_m` | 0.04 | Source separation |
-| `placement_policy` | `edge_then_stack` | Prefer floor/edge, then named-support stacking |
+| `placement_policy` | `edge_then_stack` | Prefer floor/edge, then universal heightmap stacking |
+| `stack_minimum_coverage` | `0.6` | Minimum projected footprint fraction supported at the stacking height |
 | `optimize_pipeline` | true | Stop grasp/search work once a useful set is available |
 | `grasp_early_stop_count` | 4 | Initial validated grasp target |
 | `placement_early_stop_count` | 32 | Initial packing candidate target |

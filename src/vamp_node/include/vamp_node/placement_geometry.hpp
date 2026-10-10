@@ -3,11 +3,26 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 #include <Eigen/Geometry>
 
 namespace vamp_node {
+// Account for the narrow-phase point neighborhood when accepting source-table
+// depth variation. This applies only to labeled bottom/support contact, never
+// to other objects or to transfer/final placement.
+inline float initialLiftSupportBand(float departure_allowance) {
+    if (departure_allowance <= 0.0F) return 0.004F;
+    // Fit uncertainty, point neighborhood and the existing bottom-contact
+    // margin are separate distances; this does not enlarge penetration.
+    return 0.004F + 0.003F + 0.003F +
+        std::clamp(departure_allowance, 0.0F, 0.002F);
+}
+inline float initialLiftContactTravel(float departure_allowance) {
+    if (departure_allowance <= 0.0F) return 0.006F;
+    return initialLiftSupportBand(departure_allowance) + 0.003F;
+}
 // Match the scene's 3 mm point-collision neighborhood at source edges. The
 // existing bottom-only contact and 1 mm penetration limits still apply.
 inline bool initialLiftSupportSample(const Eigen::Vector3f &point,
@@ -60,10 +75,39 @@ inline bool fingerBodiesClear(const std::vector<Eigen::Vector3f> &environment,
 }
 
 // Point geometry only; ROS observations and robot FK are supplied by the node.
-// Support contact is restricted to the held object's bottom and named support
-// samples. Only the selected support top may permit bottom contact; other geometry blocks.
+// Support contact is restricted to the held object's bottom and exposed support
+// samples. Multiple support tops may permit bottom contact; other geometry blocks.
 class AttachedObjectScene {
 public:
+    // A segment-wide budget, not a fresh allowance at every waypoint. Count
+    // unique obstacle samples (never source/sample pairs) and bound their
+    // occupied cells. Separate sparse clusters have no distance restriction.
+    struct NoiseBudget {
+        size_t maximum_points = 0;
+        size_t maximum_voxels = 0;
+        std::vector<Eigen::Vector3f> points;
+        size_t observed_points = 0;
+        size_t observed_voxels = 0;
+
+        bool add(const Eigen::Vector3f &point) {
+            if (std::any_of(points.begin(), points.end(), [&](const auto &existing) {
+                return (point.array() == existing.array()).all();
+            })) return true;
+            points.push_back(point);
+            observed_points = points.size();
+            if (points.size() > maximum_points || maximum_points == 0) return false;
+            std::vector<Eigen::Vector3i> voxels;
+            for (const auto &sample : points) {
+                const Eigen::Vector3i voxel =
+                    (sample.array() / 0.005F).floor().cast<int>().matrix();
+                if (std::none_of(voxels.begin(), voxels.end(), [&](const auto &existing) {
+                    return (voxel.array() == existing.array()).all();
+                })) voxels.push_back(voxel);
+            }
+            observed_voxels = voxels.size();
+            return observed_voxels <= maximum_voxels;
+        }
+    };
     struct Sample { Eigen::Vector3f point; bool support; };
     struct CollisionInfo {
         Eigen::Vector3f held_point;
@@ -71,30 +115,93 @@ public:
         bool named_support = false;
         bool source_bottom = false;
     };
+    struct InitialContact {
+        float distance_squared = std::numeric_limits<float>::infinity();
+        Eigen::Vector3f obstacle = Eigen::Vector3f::Zero();
+    };
+    std::vector<InitialContact> initialContacts(
+        const std::vector<Eigen::Vector3f> &source) const {
+        std::vector<InitialContact> result(source.size());
+        for (size_t index = 0; index < source.size(); ++index) {
+            const auto cell = cellOf(source[index]);
+            for (int x = -1; x <= 1; ++x)
+                for (int y = -1; y <= 1; ++y)
+                    for (int z = -1; z <= 1; ++z) {
+                        const auto entry = cells_.find(cell + Eigen::Vector3i(x,y,z));
+                        if (entry == cells_.end()) continue;
+                        for (const auto &sample : entry->second) {
+                            const float distance = (source[index] - sample.point).squaredNorm();
+                            if (distance <= 9e-6F && distance < result[index].distance_squared)
+                                result[index] = {distance, sample.point};
+                        }
+                    }
+        }
+        return result;
+    }
     void add(const Eigen::Vector3f &point, bool support) {
         if (point.allFinite()) cells_[cellOf(point)].push_back({point, support});
     }
     bool clear(const std::vector<Eigen::Vector3f> &source,
         const Eigen::Isometry3f &delta, float bottom_z, bool final_contact,
-        CollisionInfo *collision = nullptr) const {
-        for (const auto &source_point : source) {
+        CollisionInfo *collision = nullptr,
+        const std::vector<uint8_t> *bottom_flags = nullptr,
+        float support_penetration_m = 0.001F,
+        const std::vector<InitialContact> *departure_contacts = nullptr,
+        float departure_slack_m = 0.0F,
+        NoiseBudget *noise_budget = nullptr) const {
+        const float slack = std::clamp(departure_slack_m, 0.0F, 0.002F);
+        NoiseBudget proposed;
+        if (noise_budget) proposed = *noise_budget;
+        for (size_t source_index = 0; source_index < source.size(); ++source_index) {
+            const auto &source_point = source[source_index];
+            const bool source_bottom = bottom_flags && bottom_flags->size() == source.size() ?
+                (*bottom_flags)[source_index] != 0 : source_point.z() <= bottom_z + 0.003F;
             const Eigen::Vector3f point = delta * source_point;
             const Eigen::Vector3i cell = cellOf(point);
-            for (int x = -1; x <= 1; ++x) {
-                for (int y = -1; y <= 1; ++y) {
-                    for (int z = -1; z <= 1; ++z) {
-                        const auto entry = cells_.find(Eigen::Vector3i(cell + Eigen::Vector3i(x,y,z)));
+            // The unchanged 3 mm narrow test can only reach cells in this
+            // conservative AABB. Retain the original neighborhood and order.
+            const Eigen::Vector3i lower = cellOf(point - Eigen::Vector3f::Constant(0.003001F))
+                .cwiseMax(cell - Eigen::Vector3i::Ones());
+            const Eigen::Vector3i upper = cellOf(point + Eigen::Vector3f::Constant(0.003001F))
+                .cwiseMin(cell + Eigen::Vector3i::Ones());
+            for (int x = lower.x(); x <= upper.x(); ++x) {
+                for (int y = lower.y(); y <= upper.y(); ++y) {
+                    for (int z = lower.z(); z <= upper.z(); ++z) {
+                        const auto entry = cells_.find(Eigen::Vector3i(x,y,z));
                         if (entry == cells_.end()) continue;
                         for (const auto &sample : entry->second) {
                             if ((point - sample.point).squaredNorm() > 9e-6F) continue;
                             if (final_contact && sample.support &&
-                                source_point.z() <= bottom_z + 0.003F &&
-                                point.z() >= sample.point.z() - 0.001F) continue;
+                                source_bottom &&
+                                point.z() >= sample.point.z() - std::clamp(support_penetration_m, 0.001F, 0.003F)) continue;
+                            // Opt-in source departure only: retain the measured
+                            // initial clearance within the configured small
+                            // allowance. Never admit new contacts or movement
+                            // beyond the bounded 6 mm. The caller must still
+                            // require ordinary clearance at departure completion.
+                            if (departure_contacts && departure_contacts->size() == source.size()) {
+                                const auto &initial = (*departure_contacts)[source_index];
+                                const Eigen::Vector3f movement = point - source_point;
+                                const float initial_distance = std::sqrt(initial.distance_squared);
+                                const float minimum_distance = std::max(0.0F, initial_distance - slack);
+                                if ((slack > 0.0F || initial.distance_squared >= 0.00025F*0.00025F) &&
+                                    initial.distance_squared <= 9e-6F &&
+                                    movement.norm() <= 0.006F &&
+                                    (source_point-sample.point).squaredNorm() <= 9e-6F &&
+                                    (point-sample.point).squaredNorm() + 1e-10F >= minimum_distance*minimum_distance &&
+                                    movement.dot(source_point-initial.obstacle) >=
+                                        -slack*initial_distance - 1e-9F) continue;
+                            }
+                            if (noise_budget && proposed.add(sample.point)) continue;
+                            if (noise_budget) {
+                                noise_budget->observed_points = proposed.observed_points;
+                                noise_budget->observed_voxels = proposed.observed_voxels;
+                            }
                             if (collision) {
                                 collision->held_point = point;
                                 collision->obstacle_point = sample.point;
                                 collision->named_support = sample.support;
-                                collision->source_bottom = source_point.z() <= bottom_z + 0.003F;
+                                collision->source_bottom = source_bottom;
                             }
                             return false;
                         }
@@ -102,6 +209,7 @@ public:
                 }
             }
         }
+        if (noise_budget) *noise_budget = std::move(proposed);
         return true;
     }
 private:

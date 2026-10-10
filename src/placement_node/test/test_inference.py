@@ -164,7 +164,7 @@ def test_heightmap_packing_stacks_upright_cup_on_small_box():
     cup = np.vstack((wall, bottom))
     candidates, diagnostics = search_heightmap_placements(
         cup, scene, plate, "upright", candidate_count=4,
-        resolution=0.005, upright_yaw_step_deg=45.0)
+        resolution=0.005, upright_yaw_step_deg=45.0, stack_minimum_coverage=0.0)
     assert candidates
     best = candidates[0]
     placed = (cup - cup.mean(axis=0)) @ best.rotation.T + best.translation
@@ -290,7 +290,7 @@ def test_upright_packing_flattens_noisy_planar_destination():
     candidates, diagnostics = search_heightmap_placements(
         box, plate, plate, "upright", candidate_count=1,
         resolution=0.005, upright_yaw_step_deg=45.0,
-        bottom_points=bottom)
+        bottom_points=bottom, stack_minimum_coverage=0.0, flatten_planar_support=True)
     assert candidates
     assert diagnostics.flattened_support
     assert abs(float(candidates[0].rotation[2, 2])) > 0.999
@@ -534,3 +534,199 @@ def test_metric_edge_clearance_on_rotated_destination():
         xy = placed[:, :2] @ rotation
         assert np.all(xy >= np.array([-0.101, -0.080]) - 1e-6)
         assert np.all(xy <= np.array([0.095, 0.116]) + 1e-6)
+
+
+def test_legacy_capture_releases_subscriptions_after_setup_failure(monkeypatch):
+    """Raw capture must not leave permanent subscriptions on failure."""
+    import threading
+    from collections import deque
+    from types import SimpleNamespace
+    import pytest
+    from placement_node.node import PlacementNode
+
+    destroyed = []
+    created = []
+
+    def subscribe(*args, **kwargs):
+        if created:
+            raise RuntimeError('subscription setup failed')
+        created.append(object())
+        return created[-1]
+
+    node = SimpleNamespace(
+        _raw_capture_lock=threading.Lock(), _lock=threading.Lock(),
+        _raw_ready=threading.Event(), _recent_images=deque(),
+        _recent_clouds=deque(), _recent_joints=deque(), _service_group=None,
+        _image_callback=lambda message: None, _cloud_callback=lambda message: None,
+        _joint_callback=lambda message: None,
+        get_parameter=lambda name: SimpleNamespace(value='topic'),
+        create_subscription=subscribe, destroy_subscription=destroyed.append)
+    with pytest.raises(RuntimeError, match='subscription setup failed'):
+        PlacementNode._capture_legacy_inputs(node)
+    assert destroyed == created
+    assert node._raw_capture_lock.acquire(blocking=False)
+    node._raw_capture_lock.release()
+
+
+def test_legacy_capture_requires_matching_timestamps(monkeypatch):
+    """Mismatched inputs wait for synchronization and release all readers."""
+    import threading
+    from collections import deque
+    from types import SimpleNamespace
+    from placement_node import node as module
+
+    def header(seconds):
+        return SimpleNamespace(stamp=SimpleNamespace(sec=seconds, nanosec=0))
+
+    destroyed = []
+    created = []
+    values = {'request_timeout_sec': 1.0, 'sync_tolerance_sec': 0.03,
+              'joint_sync_tolerance_sec': 0.03}
+    state = SimpleNamespace(
+        _raw_capture_lock=threading.Lock(), _lock=threading.Lock(),
+        _recent_images=deque(), _recent_clouds=deque(), _recent_joints=deque(),
+        _service_group=None, _image_callback=None, _cloud_callback=None,
+        _joint_callback=None, _stamp_seconds=module.PlacementNode._stamp_seconds,
+        get_parameter=lambda name: SimpleNamespace(value=values.get(name, 'topic')),
+        destroy_subscription=destroyed.append)
+
+    def subscribe(*args, **kwargs):
+        created.append(object())
+        if len(created) == 3:
+            state._recent_images.append((header(1), None))
+            state._recent_clouds.append(SimpleNamespace(header=header(2)))
+            state._recent_joints.append((header(2), None))
+        return created[-1]
+
+    waits = []
+
+    def wait(timeout):
+        waits.append(timeout)
+        state._recent_images.append((header(2), None))
+
+    state.create_subscription = subscribe
+    state._raw_ready = SimpleNamespace(clear=lambda: None, wait=wait)
+    monkeypatch.setattr(module.rclpy, 'ok', lambda: True)
+    result = module.PlacementNode._capture_legacy_inputs(state)
+    assert len(waits) == 1
+    assert len(result[0]) == 2
+    assert destroyed == created
+    assert state._raw_capture_lock.acquire(blocking=False)
+    state._raw_capture_lock.release()
+
+
+def test_default_preserves_measured_support_height():
+    axis = np.linspace(-0.08, 0.08, 33)
+    tray = np.array([[x, y, 0.0] for x in axis for y in axis], np.float32)
+    tray[::7, 2] = 0.004
+    foot = np.array([[x, y, 0.0] for x in np.linspace(-.02, .02, 9)
+                     for y in np.linspace(-.02, .02, 9)], np.float32)
+    box = np.vstack((foot, foot + [0, 0, .05]))
+    candidates, diagnostics = search_heightmap_placements(
+        box, tray, tray, 'upright', candidate_count=1, bottom_points=foot,
+        stack_minimum_coverage=0.0)
+    assert candidates
+    assert not diagnostics.flattened_support
+    placed = (box - box.mean(axis=0)) @ candidates[0].rotation.T + candidates[0].translation
+    assert placed[:, 2].min() >= .0059
+
+
+def test_elevated_object_does_not_get_extruded_to_surrounding_table():
+    import pytest
+    from placement_node.perception import construct_support_bottom
+    axis = np.linspace(-.05, .05, 21)
+    plate = np.array([[x, y, .04] for x in axis for y in axis], np.float32)
+    table_axis = np.linspace(-.09, .09, 37)
+    table = np.array([[x, y, 0.] for x in table_axis for y in table_axis], np.float32)
+    with pytest.raises(ValueError, match='below the observed object'):
+        construct_support_bottom(plate, table)
+
+
+def test_boundary_recovery_preserves_depth_steps_and_other_objects():
+    from placement_node.perception import recover_depth_connected_boundary
+    yy, xx = np.mgrid[:5, :5]
+    cloud = np.stack((xx*.001, yy*.001, np.zeros_like(xx)), axis=-1).astype(np.float32)
+    mask = np.zeros((5, 5), bool)
+    mask[2, 2] = True
+    cloud[1, 2, 2] = .02
+    protected = np.zeros_like(mask)
+    protected[2, 3] = True
+    expanded = recover_depth_connected_boundary(cloud, mask, protected)
+    assert expanded[2, 1]
+    assert not expanded[1, 2]
+    assert not expanded[2, 3]
+    assert expanded[2, 0]
+    # Depth support is measured against the original mask, not grown pixels.
+    assert not recover_depth_connected_boundary(cloud, mask, protected, .0015)[2, 0]
+    cloud[2, 1] = np.nan
+    assert not recover_depth_connected_boundary(cloud, mask, protected)[2, 1]
+
+
+def test_boundary_recovery_covers_registration_seam_without_unbounded_growth():
+    from placement_node.perception import recover_depth_connected_boundary
+    yy, xx = np.mgrid[:25, :25]
+    cloud = np.stack((xx*.0005, yy*.0005, np.zeros_like(xx)), axis=-1).astype(np.float32)
+    mask = np.zeros((25, 25), bool)
+    mask[12, 12] = True
+    recovered = recover_depth_connected_boundary(cloud, mask, pixel_radius=10)
+    assert recovered[12, 4]  # Eight-pixel registration seam, four measured mm.
+    assert not recovered[12, 1]  # Beyond the bounded ten-pixel search.
+    cloud[12, 4, 2] = .03
+    assert not recover_depth_connected_boundary(cloud, mask, pixel_radius=10)[12, 4]
+
+
+def test_semantic_source_recovers_disconnected_duplicate_without_other_objects():
+    from placement_node.perception import recover_semantic_source_mask
+    cloud = np.zeros((3, 30, 3), dtype=np.float32)
+    cloud[..., 0] = .4
+    connected = np.zeros((3, 30), bool)
+    connected[1, 1] = True
+    cloud[1, 1] = (.1, .2, .03)
+    cloud[1, 25] = (.1002, .2, .03)
+    cloud[1, 26] = cloud[1, 25]
+    cloud[1, 27] = (.1, .2, .06)
+    semantic = connected.copy()
+    semantic[1, 25] = semantic[1, 27] = True
+    result = recover_semantic_source_mask(cloud, connected, semantic)
+    assert result[1, 25]  # Same target, distant image component, same measured surface.
+    assert not result[1, 26]  # An identical XYZ outside the semantic target stays blocking.
+    assert not result[1, 27]  # Unrelated depth inside the mask stays blocking.
+    completed = np.array([(.1, .2, .03), (.1, .2, .06)], np.float32)
+    assert recover_semantic_source_mask(
+        cloud, connected, semantic, surface_points=completed)[1, 27]
+
+
+def test_layout_seam_tolerance_retains_other_objects_and_depth_steps():
+    from placement_node.perception import recover_depth_connected_boundary
+    cloud = np.zeros((3, 13, 3), dtype=np.float32)
+    cloud[..., 0] = np.arange(13) * .0013
+    mask = np.zeros((3, 13), bool)
+    mask[1, 1] = True
+    protected = np.zeros_like(mask)
+    protected[1, 9] = True
+    cloud[0, 9, 2] = .020
+    recovered = recover_depth_connected_boundary(
+        cloud, mask, protected, distance_m=.012, pixel_radius=10)
+    assert recovered[2, 9]  # 10.4 mm registration seam.
+    assert not recovered[1, 9]  # Another scheduled object stays blocking.
+    assert not recovered[0, 9]  # A real depth step stays blocking.
+    assert not recovered[2, 12]  # No iterative growth beyond ten pixels.
+
+
+def test_tapered_round_body_uses_consistent_outer_contour_not_rectangle():
+    from placement_node.perception import construct_support_bottom
+    angles = np.linspace(0, 2*np.pi, 120, endpoint=False)
+    wall = np.vstack([
+        np.column_stack(((0.03 + height*.5)*np.cos(angles),
+                         (0.03 + height*.5)*np.sin(angles),
+                         np.full_like(angles, height)))
+        for height in np.linspace(.004, .05, 16)]).astype(np.float32)
+    axis = np.linspace(-.1, .1, 61)
+    xx, yy = np.meshgrid(axis, axis)
+    floor = np.column_stack((xx.ravel(), yy.ravel(),
+                             np.zeros(xx.size))).astype(np.float32)
+    completed, bottom, _, diagnostics = construct_support_bottom(wall, floor)
+    assert diagnostics['footprint_model'] == 'circle'
+    assert .04 < diagnostics['fitted_radius_m'] < .065
+    np.testing.assert_array_equal(completed[:len(wall)], wall)
+    assert np.max(np.linalg.norm(bottom[:, :2], axis=1)) < .065

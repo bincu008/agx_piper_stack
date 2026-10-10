@@ -5,15 +5,13 @@
 namespace vamp_node {
 
 enum class GraspProposalSource {
-  kAnalytical,
-  kGpd,
+  kKnownCloud,
   kHggd,
 };
 
-enum class AnalyticalProposalOrigin {
+enum class CloudProposalOrigin {
   kLocalPca,
   kGlobalPca,
-  kLegacyGpd,
 };
 
 enum class LocalGraspSkill {
@@ -61,8 +59,8 @@ struct GraspProposal {
   bool has_local_dominant_axis = false;
   // Selected from measured local geometry, never from an object-class label.
   LocalGraspSkill grasp_skill = LocalGraspSkill::kUnknown;
-  GraspProposalSource source = GraspProposalSource::kAnalytical;
-  AnalyticalProposalOrigin analytical_origin = AnalyticalProposalOrigin::kLocalPca;
+  GraspProposalSource source = GraspProposalSource::kKnownCloud;
+  CloudProposalOrigin cloud_origin = CloudProposalOrigin::kLocalPca;
   std::size_t family_index = 0;
   std::size_t variant_index = 0;
 };

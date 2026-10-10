@@ -52,7 +52,7 @@ class _GraspExecutionGateTarget:
         self.allow_pregrasp_collision_override = False
         self.require_measured_contacts_for_grasp = True
         self.allow_model_based_body_grasp_execution = False
-        self.require_positive_gpd_score_for_grasp = True
+        self.require_positive_grasp_score_for_grasp = True
         self.logger = _Logger()
 
     def get_logger(self):
@@ -147,4 +147,4 @@ def test_physical_grasp_score_gate_remains_explicit():
         target, _grasp_request(True, -1.0), response)
 
     assert response.success is False
-    assert 'classifier score is not positive' in response.status
+    assert 'grasp proposal score is not positive' in response.status

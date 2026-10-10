@@ -29,7 +29,7 @@ from std_srvs.srv import Trigger
 from my_actions.msg import PlacementCandidate as PlacementCandidateMessage
 from my_actions.srv import (
     FindGraspCandidates, FindPlacementCandidates, PinLayoutObservation,
-    PlanObjectLayout, PlanPlacement, SearchPlacements)
+    PlanObjectLayout, PlanPlacement, SearchPlacements, CommitFloorSlots)
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -38,14 +38,17 @@ from .inference import infer_placements, make_dummy_box_cloud
 from .model import load_anyplace_checkpoint
 from task_pipeline.timing import publish_timing
 from my_actions.msg import PipelineTiming
+from task_pipeline.grasp_input import affordance_from_description
 from task_pipeline.registry import endpoint
 from task_pipeline.placement import search_placements, validate_placements
 
+from .floor_slots import FloorSlots, layout_key
 from .packing import search_heightmap_placements
 from .packing_api import make_search_request, decode_search_response, diagnostics_json
 from .perception import (
     construct_support_bottom, estimate_support_translation,
-    extract_destination_cloud, parse_grounding_box)
+    extract_destination_cloud, parse_grounding_box, recover_depth_connected_boundary,
+    recover_semantic_source_mask, active_source_support_labels, exposed_stack_support_labels)
 from .transforms import (
     load_hand_eye_matrix, piper_base_to_camera, transform_points,
     transform_pose, pose_matrix, attached_object_delta)
@@ -88,7 +91,9 @@ class PlacementNode(Node):
             "grounding_target": "the entire visible plate surface",
             "request_timeout_sec": 120.0,
             "sync_tolerance_sec": 0.20,
-            "candidate_count": 8,
+            # A short edge-only shortlist can exclude every reachable wrist yaw.
+            # Keep the ranked spatial/yaw alternatives for downstream IK batches.
+            "candidate_count": 16,
             "refinement_steps": 50,
             "placement_backend": "heightmap",
             "random_seed": 13,
@@ -111,9 +116,15 @@ class PlacementNode(Node):
             "placement_support_clearance_m": 0.002,
             "placement_support_maximum_shift_m": 0.15,
             "layout_debug_directory": "",
-            "layout_candidate_count": 64,
+            "layout_candidate_count": 16,
+            "layout_support_mode": "floor_slots",
+            "floor_slot_share_unused_space": False,
+            "floor_slot_adaptive": True,
+            "floor_slot_max_size_m": .125,
+            "floor_slot_min_size_m": .06,
             "packing_adjacency_weight": 0.004,
             "packing_grid_resolution_m": 0.005,
+            "packing_stack_minimum_coverage": 0.6,
             "packing_upright_yaw_step_deg": 15.0,
             "packing_free_yaw_step_deg": 30.0,
             "packing_tilt_angles_deg": [-20.0, -10.0, 0.0, 10.0, 20.0],
@@ -131,6 +142,8 @@ class PlacementNode(Node):
         self._service_group = ReentrantCallbackGroup()
         self._lock = threading.Lock()
         self._inference_lock = threading.Lock()
+        self._raw_capture_lock = threading.Lock()
+        self._raw_ready = threading.Event()
         self._recent_images = deque(maxlen=20)
         self._recent_clouds = deque(maxlen=5)
         self._recent_joints = deque(maxlen=200)
@@ -143,6 +156,9 @@ class PlacementNode(Node):
         self._cached_collision_envelope_points = None
         self._completed_object_stamp = None
         self._bottom_attempt_stamp = None
+        self._slot_lock = threading.Lock()
+        self._slot_layouts = {}
+        self._slot_pending = deque(maxlen=32)
         self._model = None
         self._model_path = None
         self._hand_eye_matrix = load_hand_eye_matrix(
@@ -159,21 +175,13 @@ class PlacementNode(Node):
             PointCloud2, "/placement/completed_object_cloud", transient)
         self._bottom_pub = self.create_publisher(
             PointCloud2, "/placement/artificial_bottom_cloud", transient)
+        self._slot_pub = self.create_publisher(MarkerArray, '/placement/floor_slots', transient)
         self._marker_pub = self.create_publisher(
             MarkerArray, "/placement/placement_candidates", transient)
         self._debug_pub = self.create_publisher(
             Image, "/placement/grounding_debug", transient)
         self._status_pub = self.create_publisher(
             String, "/placement/status", transient)
-        self.create_subscription(
-            Image, self.get_parameter("rgb_topic").value,
-            self._image_callback, qos_profile_sensor_data)
-        self.create_subscription(
-            PointCloud2, self.get_parameter("point_cloud_topic").value,
-            self._cloud_callback, qos_profile_sensor_data)
-        self.create_subscription(
-            JointState, self.get_parameter("joint_state_topic").value,
-            self._joint_callback, 50)
         self.create_subscription(
             PointCloud2, "/active_vision/observation_cloud",
             self._observation_cloud_callback, transient)
@@ -196,9 +204,13 @@ class PlacementNode(Node):
             "/placement/pin_layout_observation",
             self._pin_layout_observation_callback,
             callback_group=self._service_group)
+        self.create_service(CommitFloorSlots, '/placement/commit_floor_slots',
+                            self._commit_floor_slots, callback_group=self._service_group)
         self.create_service(
             SearchPlacements, '/placement/search_placements', self._search_callback,
             callback_group=self._service_group)
+        self._commit_slots_client = self.create_client(
+            CommitFloorSlots, endpoint('commit_floor_slots'), callback_group=self._service_group)
         self._search_client = self.create_client(
             SearchPlacements, endpoint('search_placements'), callback_group=self._service_group)
         self._grasp_candidates_client = self.create_client(
@@ -348,6 +360,7 @@ class PlacementNode(Node):
             return
         with self._lock:
             self._recent_images.append((message.header, image.copy()))
+        self._raw_ready.set()
 
     def _cloud_callback(self, message):
         if message.height <= 1:
@@ -357,6 +370,7 @@ class PlacementNode(Node):
             return
         with self._lock:
             self._recent_clouds.append(message)
+        self._raw_ready.set()
 
     def _joint_callback(self, message):
         if len(message.position) < 6:
@@ -373,6 +387,50 @@ class PlacementNode(Node):
             return
         with self._lock:
             self._recent_joints.append((message.header, np.asarray(positions)))
+        self._raw_ready.set()
+
+    def _capture_legacy_inputs(self):
+        """Subscribe only while the legacy raw-input trigger needs a snapshot."""
+        if not self._raw_capture_lock.acquire(blocking=False):
+            raise RuntimeError('LEGACY_CAPTURE_BUSY')
+        subscriptions = []
+        try:
+            with self._lock:
+                self._recent_images.clear()
+                self._recent_clouds.clear()
+                self._recent_joints.clear()
+            self._raw_ready.clear()
+            for kind, parameter, callback, qos in (
+                    (Image, 'rgb_topic', self._image_callback, qos_profile_sensor_data),
+                    (PointCloud2, 'point_cloud_topic', self._cloud_callback, qos_profile_sensor_data),
+                    (JointState, 'joint_state_topic', self._joint_callback, 50)):
+                subscriptions.append(self.create_subscription(
+                    kind, self.get_parameter(parameter).value, callback, qos,
+                    callback_group=self._service_group))
+            deadline = time.monotonic() + min(
+                5.0, float(self.get_parameter('request_timeout_sec').value))
+            while rclpy.ok() and time.monotonic() < deadline:
+                with self._lock:
+                    snapshot = (list(self._recent_images), list(self._recent_clouds),
+                                list(self._recent_joints))
+                if all(snapshot):
+                    images, clouds, joints = snapshot
+                    pair = min(((image_header, cloud.header) for image_header, _ in images
+                                for cloud in clouds), key=lambda item: abs(
+                                    self._stamp_seconds(item[0]) - self._stamp_seconds(item[1])))
+                    image_time, cloud_time = map(self._stamp_seconds, pair)
+                    joint_offset = min(abs(self._stamp_seconds(header) - cloud_time)
+                                       for header, _ in joints)
+                    if (abs(image_time-cloud_time) <= self.get_parameter('sync_tolerance_sec').value
+                            and joint_offset <= self.get_parameter('joint_sync_tolerance_sec').value):
+                        return snapshot
+                self._raw_ready.wait(0.02)
+                self._raw_ready.clear()
+            raise RuntimeError('NO_SYNCHRONIZED_OBSERVATION: raw input capture timed out')
+        finally:
+            for subscription in subscriptions:
+                self.destroy_subscription(subscription)
+            self._raw_capture_lock.release()
 
     @staticmethod
     def _stamp_seconds(header):
@@ -656,6 +714,11 @@ class PlacementNode(Node):
             policy = request.orientation_policy.strip().lower()
             if policy not in ("upright", "free"):
                 raise RuntimeError(f"INVALID_ORIENTATION_POLICY: {policy}")
+            layout_support_mode = str(self.get_parameter('layout_support_mode').value)
+            if policy == 'free' and layout_support_mode == 'floor_slots':
+                layout_support_mode = 'auto'
+            if layout_support_mode not in ('auto', 'edge', 'stack', 'floor_slots'):
+                raise RuntimeError('INVALID_LAYOUT_SUPPORT_MODE')
 
             with self._lock:
                 clouds = list(self._observation_clouds)
@@ -730,6 +793,13 @@ class PlacementNode(Node):
                         f"LAYOUT_OBJECT_MASK_DIMENSION_MISMATCH: {name}")
                 object_masks.append(object_mask)
                 scheduled_sources |= object_mask
+            # Recover bounded, measured SAM seams before both grasping and
+            # placement. Future object masks remain protected collision geometry.
+            for object_index, object_mask in enumerate(object_masks):
+                object_masks[object_index] = recover_depth_connected_boundary(
+                    organized, object_mask, scheduled_sources & ~object_mask)
+                scheduled_sources |= object_masks[object_index]
+            scheduled_sources = np.logical_or.reduce(object_masks)
             # A 2.5-D destination map is image-visible geometry inside the
             # grounded container silhouette. Selecting the full camera cloud
             # merely by base-frame XY can project unrelated foreground or
@@ -755,6 +825,10 @@ class PlacementNode(Node):
             support_valid = destination_valid & (
                 organized[:, :, 2] <= support_plane_z + 0.003)
             collision_support = support_valid.reshape(-1).astype(np.uint8)
+            # Label known source objects independently of support height, so
+            # departure noise tolerance cannot mistake another object's base
+            # for the table. Successfully removed samples become NaN below.
+            collision_support[scheduled_sources.reshape(-1)] = 3
             destination_support = organized[support_valid]
             measured_scene = organized.reshape(-1, 3)
             placed_objects = []
@@ -804,9 +878,13 @@ class PlacementNode(Node):
                     grasp_request.seed_v = int(seed_v)
                     grasp_request.image_width = int(object_mask.shape[1])
                     grasp_request.image_height = int(object_mask.shape[0])
-                    grasp_request.target_mask = mask_message
+                    grasp_request.target_mask = self._bridge.cv2_to_imgmsg(
+                        object_mask.astype(np.uint8) * 255, encoding="mono8")
+                    grasp_request.target_mask.header = mask_message.header
                     grasp_request.target_description = "layout: " + name
-                    grasp_request.affordance_type = "AUTO"
+                    grasp_request.affordance_type = affordance_from_description(name)
+                    grasp_request.collision_scene = point_cloud2.create_cloud_xyz32(
+                        header, collision_scene.tolist())
                     grasp_started = time.perf_counter()
                     grasp_future = self._grasp_candidates_client.call_async(
                         grasp_request)
@@ -815,34 +893,38 @@ class PlacementNode(Node):
                             float(self.get_parameter("request_timeout_sec").value)):
                         raise RuntimeError(f"LAYOUT_GRASP_TIMEOUT: {name}")
                     grasp_result = grasp_future.result()
-                    used_analytical_fallback = False
-                    if (grasp_result is None or not grasp_result.success or
-                            not grasp_result.candidates):
-                        hggd_status = (
-                            grasp_result.status if grasp_result is not None else
-                            "no response")
-                        self.get_logger().warn(
-                            f"[LAYOUT] {name}: HGGD produced no validated grasp "
-                            f"({hggd_status}); retrying the same observation "
-                            "through the analytical grasp pipeline")
-                        grasp_request.target_description = (
-                            "layout-analytical: " + name)
-                        grasp_future = self._grasp_candidates_client.call_async(
-                            grasp_request)
-                        if not self._wait_for_future(
-                                grasp_future,
-                                float(self.get_parameter(
-                                    "request_timeout_sec").value)):
-                            raise RuntimeError(
-                                f"LAYOUT_ANALYTICAL_GRASP_TIMEOUT: {name}")
-                        grasp_result = grasp_future.result()
-                        used_analytical_fallback = True
+                    if debug_directory:
+                        try:
+                            (directory / f"layout_object_{index + 1}_grasp_request.cdr").write_bytes(
+                                serialize_message(grasp_request))
+                            if grasp_result is not None:
+                                (directory / f"layout_object_{index + 1}_grasp_response.cdr").write_bytes(
+                                    serialize_message(grasp_result))
+                        except OSError as exception:
+                            self.get_logger().warn(f"[LAYOUT] grasp debug save failed: {exception}")
                     if grasp_result is None or not grasp_result.success or not grasp_result.candidates:
                         status = (
                             grasp_result.status if grasp_result is not None else
                             "no response")
                         raise RuntimeError(
                             f"LAYOUT_GRASP_FAILED: {name}: {status}")
+
+                    # Use the same depth-connected geometry that the grasp engine
+                    # validated, carried in the response for this exact observation.
+                    # A raw SAM silhouette can include disconnected floor returns.
+                    validated_mask = grasp_result.validated_target_mask
+                    if (self._stamp_key(validated_mask.header) !=
+                            self._stamp_key(request.observation_header)):
+                        raise RuntimeError(f"LAYOUT_GRASP_MASK_TIMESTAMP_MISMATCH: {name}")
+                    connected_mask = self._bridge.imgmsg_to_cv2(
+                        validated_mask, desired_encoding="mono8") > 0
+                    if (connected_mask.shape != object_mask.shape or
+                            np.any(connected_mask & ~object_mask)):
+                        raise RuntimeError(f"LAYOUT_GRASP_MASK_INVALID: {name}")
+                    source_points = organized[
+                        connected_mask & np.isfinite(organized).all(axis=2)]
+                    if len(source_points) < 80:
+                        raise RuntimeError(f"LAYOUT_GRASP_MASK_EMPTY: {name}")
 
                     grasp_seconds = time.perf_counter() - grasp_started
                     bottom_points = None
@@ -870,6 +952,24 @@ class PlacementNode(Node):
                     except ValueError as exception:
                         self.get_logger().warn(
                             f"[LAYOUT] {name}: support contour unavailable: {exception}")
+
+                    # Associate the complete rigid source after completion.
+                    # Otherwise a discarded image component on the same cup
+                    # rim can collide with its own completed body envelope.
+                    # Semantic ownership, measured XYZ proximity and the bounded
+                    # seam protect other objects and already-placed geometry.
+                    associated_source = recover_semantic_source_mask(
+                        organized, connected_mask, object_mask,
+                        surface_points=packing_points)
+                    # Do not assign a lower stand or table to an elevated body.
+                    lower_geometry = (organized[..., 2] <
+                                      float(np.percentile(source_points[:, 2], 3)) - 0.003)
+                    source_region = recover_depth_connected_boundary(
+                        organized, associated_source,
+                        (scheduled_sources & ~object_mask) | lower_geometry,
+                        distance_m=0.012, pixel_radius=10)
+                    source_indices = np.flatnonzero(source_region.reshape(-1))
+                    saved_source = collision_scene[source_indices].copy()
 
                     # VAMP's placed-support visualization consumes a contour in
                     # the SOURCE pose. Publish this object's synchronized contour
@@ -904,8 +1004,26 @@ class PlacementNode(Node):
                         float(self.get_parameter(
                             "packing_maximum_pile_height_m").value),
                         bottom_points=bottom_points,
+                        support_mode=layout_support_mode,
+                        floor_slot_adaptive=bool(self.get_parameter('floor_slot_adaptive').value),
+                        floor_slot_max_size_m=float(self.get_parameter('floor_slot_max_size_m').value),
+                        floor_slot_min_size_m=float(self.get_parameter('floor_slot_min_size_m').value),
+
+                        floor_slot_share_unused_space=bool(self.get_parameter(
+                            "floor_slot_share_unused_space").value),
+                        stack_minimum_coverage=float(self.get_parameter(
+                            "packing_stack_minimum_coverage").value),
                         adjacency_weight=float(self.get_parameter(
                             "packing_adjacency_weight").value),
+                        candidate_yaw_variants=True,
+                        grasp_reference_positions=[[
+                            grasp.grasp_pose.pose.position.x,
+                            grasp.grasp_pose.pose.position.y,
+                            grasp.grasp_pose.pose.position.z]
+                            for grasp in grasp_result.candidates],
+                        reserve_near_space=bool(index == 0 and len(object_masks) > 1 and
+                            np.prod(np.ptp(packing_points[:, :2], axis=0)) >=
+                            0.2 * np.prod(np.ptp(destination[:, :2], axis=0))),
                         timing_sink=lambda seconds, success, status: publish_timing(
                             getattr(self, '_pipeline_timing_pub', None), 'search_placements',
                             seconds, header, name, success, status))
@@ -914,7 +1032,8 @@ class PlacementNode(Node):
                             f"LAYOUT_NO_PLACEMENT: {name} tested="
                             f"{packing_diagnostics.tested} contained="
                             f"{packing_diagnostics.contained} stable="
-                            f"{packing_diagnostics.stable} support_tilt_deg="
+                            f"{packing_diagnostics.stable} stack_maximum_coverage="
+                            f"{packing_diagnostics.stack_maximum_coverage:.3f} support_tilt_deg="
                             f"{packing_diagnostics.support_tilt_deg:.1f} "
                             f"support_rejected={{contacts:"
                             f"{packing_diagnostics.support_contacts_rejected},"
@@ -965,18 +1084,50 @@ class PlacementNode(Node):
                     plan_request.object_name = name
                     plan_request.destination_name = request.destination_name
                     plan_request.orientation_policy = policy
-                    collision_scene[np.flatnonzero(object_mask.reshape(-1))] = np.nan
+                    collision_scene[source_indices] = np.nan
                     plan_request.use_layout_scene = True
+                    plan_request.support_mode = ('edge' if layout_support_mode == 'floor_slots'
+                                                 else layout_support_mode)
                     plan_request.source_object_cloud = point_cloud2.create_cloud_xyz32(
                         header, packing_points.tolist())
+                    if bottom_points is not None and len(bottom_points) >= 3:
+                        bottom_center = bottom_points.mean(axis=0)
+                        _, _, axes = np.linalg.svd(bottom_points - bottom_center,
+                                                   full_matrices=False)
+                        bottom_normal = axes[-1]
+                        bottom_flags = (np.abs((packing_points - bottom_center) @
+                                               bottom_normal) <= 0.003).astype(np.uint8)
+                        # Value 2 identifies the exact inferred contour/cap;
+                        # noisy measured samples may be bottom contacts (1),
+                        # but must not bias its source support-plane fit.
+                        bottom_flags[len(source_points):] *= 2
+                        bottom_fields = [
+                            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+                            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+                            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+                            PointField(name='bottom', offset=12, datatype=PointField.UINT8, count=1)]
+                        plan_request.source_object_cloud = point_cloud2.create_cloud(
+                            header, bottom_fields,
+                            [(*point, int(flag)) for point, flag in zip(
+                                packing_points, bottom_flags)])
                     finite_collision = np.isfinite(collision_scene).all(axis=1)
+                    # Disconnected floor returns rejected from this object's
+                    # semantic mask are still environment, but are not OTHER
+                    # objects. Preserve protection for every overlapping mask
+                    # and for appended, already-placed geometry.
+                    active_support = active_source_support_labels(
+                        collision_support, object_masks, index)
+                    active_support = exposed_stack_support_labels(
+                        collision_scene, active_support, active_support == 2,
+                        resolution=float(self.get_parameter(
+                            'packing_grid_resolution_m').value))
                     scene_fields = [
                         PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
                         PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
                         PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
                         PointField(name='support', offset=12, datatype=PointField.UINT8, count=1)]
                     collision_rows = [(*point, int(support)) for point, support in zip(
-                        collision_scene[finite_collision], collision_support[finite_collision])]
+                        collision_scene[finite_collision], active_support[finite_collision])]
                     plan_request.placement_scene = point_cloud2.create_cloud(
                         header, scene_fields, collision_rows)
                     plan_request.destination_support_cloud = point_cloud2.create_cloud_xyz32(
@@ -1066,14 +1217,28 @@ class PlacementNode(Node):
                         centered_packing @ accepted.rotation.T +
                         accepted.translation)
 
+                    if layout_support_mode == 'floor_slots':
+                        query = CommitFloorSlots.Request(
+                            selected_pose=plan_result.selected_candidate.object_pose)
+                        if not self._commit_slots_client.wait_for_service(timeout_sec=3.0):
+                            raise RuntimeError('FLOOR_SLOT_COMMIT_API_UNAVAILABLE')
+                        committed = self._commit_slots_client.call_async(query)
+                        if not self._wait_for_future(committed, 10.0):
+                            raise RuntimeError('FLOOR_SLOT_COMMIT_TIMEOUT_STATE_UNKNOWN')
+                        if not committed.result().success:
+                            raise RuntimeError(committed.result().status)
                     # Commit the accepted virtual pose. The next object sees the
                     # destination plus this placed object, not its old source pose.
                     virtual_scene = np.vstack((planning_scene, placed_packing))
                     collision_scene = np.vstack((collision_scene, placed_packing))
-                    # Even bottom samples of placed objects are blocking. Never
-                    # relabel them as tray support because they share a voxel.
-                    collision_support = np.concatenate((collision_support,
-                        np.zeros(len(placed_packing), dtype=np.uint8)))
+                    # Only exposed placed tops permit final bottom contact.
+                    # Sides and bottoms remain blocking and are never tray floor.
+                    placed_support = exposed_stack_support_labels(
+                        placed_packing, np.full(len(placed_packing), 3, dtype=np.uint8),
+                        np.ones(len(placed_packing), dtype=bool),
+                        resolution=float(self.get_parameter(
+                            'packing_grid_resolution_m').value))
+                    collision_support = np.concatenate((collision_support, placed_support))
                     if bottom_points is not None:
                         active_footprint = (
                             (bottom_points - object_center) @ accepted.rotation.T +
@@ -1094,7 +1259,7 @@ class PlacementNode(Node):
                         f"#{index + 1}:{name}[tested={packing_diagnostics.tested},"
                         f"stable={packing_diagnostics.stable},"
                         f"grasp={plan_request.grasp_candidate.id},"
-                        f"grasp_backend={'analytical' if used_analytical_fallback else 'hggd'},"
+                        "grasp_backend=hggd,"
                         f"placement={selected_id},"
                         f"grasp_seconds={grasp_seconds:.3f},"
                         f"packing_seconds={packing_diagnostics.elapsed_seconds:.3f},"
@@ -1157,6 +1322,90 @@ class PlacementNode(Node):
             raise RuntimeError('SEARCH_API_TIMEOUT_STATE_UNKNOWN')
         return decode_search_response(future.result())
 
+    def _publish_floor_slots(self, header, layout, blocked=(), selected=(), z=0.0, occupied_xy=()):
+        """Display reusable cells and only the committed selected group."""
+        grid = FloorSlots.from_dict(layout)
+        blocked, selected = set(map(tuple, blocked)), set(map(tuple, selected))
+        markers = MarkerArray(markers=[Marker(action=Marker.DELETEALL)])
+        for index, cell in enumerate(map(tuple, grid.cells)):
+            marker = Marker(header=header, ns='floor_slots', id=index,
+                            type=Marker.LINE_STRIP, action=Marker.ADD)
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = .002
+            marker.color = (ColorRGBA(r=.2, g=1.0, b=.3, a=1.0) if cell in selected else
+                            ColorRGBA(r=1.0, g=.4, b=.1, a=1.0) if cell in blocked else
+                            ColorRGBA(r=.15, g=.7, b=1.0, a=.9))
+            vertices = grid.vertices(cell)
+            marker.points = [self._point([xy[0], xy[1], z+.003])
+                             for xy in np.vstack((vertices, vertices[0]))]
+            markers.markers.append(marker)
+            label = Marker(header=header, ns='floor_slot_ids', id=index,
+                           type=Marker.TEXT_VIEW_FACING, action=Marker.ADD)
+            label.pose.orientation.w = 1.0
+            xy = vertices.mean(axis=0)
+            label.pose.position = self._point([xy[0], xy[1], z+.008])
+            label.scale.z = .012
+            label.color = copy.deepcopy(marker.color)
+            label.text = f'{cell[0]},{cell[1]}'
+            markers.markers.append(label)
+        if occupied_xy:
+            occupied = Marker(header=header, ns='floor_slot_occupied_area', id=0,
+                              type=Marker.POINTS, action=Marker.ADD)
+            occupied.pose.orientation.w = 1.0
+            occupied.scale.x = occupied.scale.y = .005
+            occupied.color = ColorRGBA(r=1.0, g=.75, b=.05, a=.65)
+            occupied.points = [self._point([(x+.5)*.005, (y+.5)*.005, z+.005])
+                               for x, y in sorted(occupied_xy)]
+            markers.markers.append(occupied)
+        self._slot_pub.publish(markers)
+
+    def _commit_floor_slots(self, request, response):
+        """Commit a source-associated validated pose, or reset reservations."""
+        with self._slot_lock:
+            if request.reset:
+                self._slot_layouts.clear()
+                self._slot_pending.clear()
+                self._slot_pub.publish(MarkerArray(markers=[Marker(action=Marker.DELETEALL)]))
+                response.success, response.status = True, 'FLOOR_SLOTS_RESET'
+                return response
+            pose = self._pose_matrix(request.selected_pose.pose)
+            for pending in reversed(self._slot_pending):
+                header, key, candidates, cells, z = pending[:5]
+                shared = pending[5] if len(pending) > 5 else False
+                masks = pending[6] if len(pending) > 6 else None
+                if header != request.selected_pose.header:
+                    continue
+                for candidate_index, (candidate, used) in enumerate(zip(candidates, cells)):
+                    if (np.linalg.norm(candidate.translation-pose[:3, 3]) < 1e-5 and
+                            np.linalg.norm(candidate.rotation-pose[:3, :3]) < 1e-4):
+                        entry = self._slot_layouts.get(key)
+                        if entry is None:
+                            break
+                        fingerprint = (header.stamp.sec, header.stamp.nanosec,
+                                       tuple(np.round(pose[:3, 3], 5)),
+                                       tuple(np.round(pose[:3, :3], 5).ravel()))
+                        if fingerprint not in entry['commits']:
+                            occupied = entry.setdefault('occupied_xy', set())
+                            footprint_mask = masks[candidate_index] if masks else set()
+                            if not masks and len(pending) > 7:
+                                footprint_mask = FloorSlots.reservation_mask(
+                                    pending[7], candidate.rotation, candidate.translation)
+                            if ((not shared and set(map(tuple, used)) & entry['reserved']) or
+                                    shared and footprint_mask & occupied):
+                                response.status = 'FLOOR_SLOT_RESERVATION_CONFLICT'
+                                return response
+                            occupied.update(footprint_mask)
+                            entry['reserved'].update(map(tuple, used))
+                            entry['commits'].add(fingerprint)
+                        self._publish_floor_slots(header, entry['layout'], entry['reserved'], used, z,
+                                                 entry.get('occupied_xy', ()))
+                        response.success = True
+                        response.status = 'FLOOR_SLOTS_COMMITTED'
+                        response.occupied_slots = len(entry['reserved'])
+                        return response
+            response.status = 'FLOOR_SLOT_SOURCE_OR_POSE_MISMATCH'
+        return response
+
     def _search_callback(self, request, response):
         try:
             if request.observation_header.frame_id != 'base_link':
@@ -1169,22 +1418,63 @@ class PlacementNode(Node):
             options = json.loads(request.options_json or '{}')
             if not isinstance(options, dict):
                 raise ValueError('SEARCH_OPTIONS_MUST_BE_AN_OBJECT')
-            forbidden = {'object_points', 'organized_scene', 'destination_points',
+            forbidden = {'floor_slot_occupied_xy', 'floor_slot_layout', 'floor_slot_reserved_cells', 'object_points', 'organized_scene', 'destination_points',
                          'orientation_policy', 'bottom_points', 'stack_support_points',
                          'support_mode'}
             if forbidden.intersection(options):
                 raise ValueError('SEARCH_OPTIONS_CANNOT_OVERRIDE_CLOUD_INPUTS')
             bottom = self._cloud_xyz(request.bottom_cloud) if request.bottom_cloud.width else None
             top = self._cloud_xyz(request.stack_support_cloud) if request.stack_support_cloud.width else None
+            clouds = {name: self._cloud_xyz(getattr(request, name)) for name in cloud_fields}
+            support_mode = request.support_mode or str(self.get_parameter('layout_support_mode').value)
+            slot_key = None
+            if support_mode == 'floor_slots':
+                destination = clouds['destination_cloud']
+                for name in ('floor_slot_adaptive', 'floor_slot_max_size_m',
+                             'floor_slot_min_size_m'):
+                    options.setdefault(name, self.get_parameter(name).value)
+                slot_key = layout_key(destination) + json.dumps([
+                    options.get(name, default) for name, default in (
+                        ("floor_slot_adaptive", True), ("floor_slot_max_size_m", .125),
+                        ("floor_slot_min_size_m", .06))])
+                with self._slot_lock:
+                    entry = self._slot_layouts.get(slot_key)
+                    if entry:
+                        options['floor_slot_layout'] = entry['layout']
+                        options['floor_slot_reserved_cells'] = [list(c) for c in entry['reserved']]
+                        options['floor_slot_occupied_xy'] = [list(c) for c in entry.get('occupied_xy', ())]
             candidates, diagnostics = search_placements(
                 search_heightmap_placements,
-                *[self._cloud_xyz(getattr(request, name)) for name in cloud_fields],
+                *[clouds[name] for name in cloud_fields],
                 request.orientation_policy, bottom_points=bottom,
-                stack_support_points=top, support_mode=request.support_mode or 'auto',
+                stack_support_points=top, support_mode=support_mode,
                 timing_sink=lambda seconds, success, status: publish_timing(
                     self._pipeline_timing_pub, 'search_placements', seconds,
                     request.observation_header, request.object_name, success, status),
                 **options)
+            if slot_key is not None and diagnostics.slot_layout:
+                with self._slot_lock:
+                    if slot_key not in self._slot_layouts:
+                        if len(self._slot_layouts) >= 8:
+                            self._slot_layouts.pop(next(iter(self._slot_layouts)))
+                        self._slot_layouts[slot_key] = {
+                            'layout': diagnostics.slot_layout, 'reserved': set(), 'commits': set()}
+                    source = clouds['object_cloud']
+                    centered_source = source-source.mean(axis=0)
+                    shared = bool(options.get('floor_slot_share_unused_space', False))
+                    # Whole-cell search needs no per-candidate occupancy masks.
+                    # Compute only the selected mask at commit, retaining the
+                    # identical occupancy geometry and idempotence behavior.
+                    footprint_masks = ([FloorSlots.reservation_mask(
+                        centered_source, candidate.rotation, candidate.translation)
+                        for candidate in candidates] if shared else [])
+                    self._slot_pending.append((request.observation_header, slot_key, candidates,
+                                               diagnostics.slot_candidate_cells,
+                                               diagnostics.heightmap_base_m, shared,
+                                               footprint_masks, centered_source))
+                    self._publish_floor_slots(request.observation_header, diagnostics.slot_layout,
+                                              diagnostics.slot_blocked_cells,
+                                              z=diagnostics.heightmap_base_m)
             response.diagnostics_json = diagnostics_json(diagnostics)
             response.search_seconds = diagnostics.elapsed_seconds
             for index, candidate in enumerate(candidates):
@@ -1271,9 +1561,35 @@ class PlacementNode(Node):
                 displayed_object_centered.min(axis=0),
                 0.002)
             packing_diagnostics = None
+            support_mode = request.support_mode or str(self.get_parameter('layout_support_mode').value)
+            stack_top = None
+            if support_mode not in ('auto', 'edge', 'stack', 'floor_slots'):
+                raise RuntimeError('INVALID_SUPPORT_MODE')
+            if backend != 'heightmap' and support_mode != 'auto':
+                raise RuntimeError('SUPPORT_POLICY_REQUIRES_HEIGHTMAP')
+            scene_points = organized.reshape(-1, 3)
+            additional_obstacle_count = 0
+            extra = request.additional_obstacles
+            if extra.width or extra.data:
+                xyz_fields = {field.name for field in extra.fields
+                              if field.datatype == PointField.FLOAT32 and field.count == 1
+                              and field.offset + 4 <= extra.point_step}
+                if (backend != 'heightmap' or extra.header.frame_id != 'base_link'
+                        or extra.is_bigendian or extra.height < 1 or extra.point_step < 12
+                        or extra.row_step != extra.width * extra.point_step
+                        or len(extra.data) != extra.row_step * extra.height
+                        or len(extra.data) > 8 * 1024 * 1024
+                        or not {'x', 'y', 'z'} <= xyz_fields):
+                    raise RuntimeError('INVALID_ADDITIONAL_OBSTACLES')
+                extra_points = self._cloud_xyz(extra)
+                extra_points = extra_points[np.isfinite(extra_points).all(axis=1)]
+                if not len(extra_points):
+                    raise RuntimeError('EMPTY_ADDITIONAL_OBSTACLES')
+                additional_obstacle_count = len(extra_points)
+                scene_points = np.vstack((scene_points, extra_points))
             if backend == "heightmap":
                 candidates, packing_diagnostics = self._search_placements_api(cloud.header, request.object_name,
-                    object_points, organized.reshape(-1, 3), destination,
+                    object_points, scene_points, destination,
                     policy,
                     int(self.get_parameter("candidate_count").value),
                     float(self.get_parameter("packing_grid_resolution_m").value),
@@ -1292,6 +1608,13 @@ class PlacementNode(Node):
                     float(self.get_parameter(
                         "packing_maximum_pile_height_m").value),
                     bottom_points=bottom_points,
+                    support_mode=support_mode, stack_support_points=stack_top,
+                    floor_slot_adaptive=bool(self.get_parameter('floor_slot_adaptive').value),
+                    floor_slot_max_size_m=float(self.get_parameter('floor_slot_max_size_m').value),
+                    floor_slot_min_size_m=float(self.get_parameter('floor_slot_min_size_m').value),
+
+                    stack_minimum_coverage=float(self.get_parameter(
+                        "packing_stack_minimum_coverage").value),
                     adjacency_weight=float(self.get_parameter(
                         "packing_adjacency_weight").value),
                     timing_sink=lambda seconds, success, status: publish_timing(
@@ -1316,6 +1639,8 @@ class PlacementNode(Node):
                         f" tested={packing_diagnostics.tested} "
                         f"contained={packing_diagnostics.contained} "
                         f"stable={packing_diagnostics.stable} "
+                        f"stack_maximum_coverage="
+                        f"{packing_diagnostics.stack_maximum_coverage:.3f} "
                         f"support_tilt_deg="
                         f"{packing_diagnostics.support_tilt_deg:.1f} "
                         f"support_rejected={{contacts:"
@@ -1373,7 +1698,9 @@ class PlacementNode(Node):
             status = (
                 f"OK backend={backend} policy={policy} object={request.object_name} "
                 f"destination={request.destination_name} "
+                f"support_mode={support_mode} "
                 f"candidates={len(candidates)} object_points={len(object_points)} "
+                f"additional_obstacles={additional_obstacle_count} "
                 f"bottom_completion={'yes' if completed_object is not None else 'no'} "
                 f"{support_status} "
                 f"destination_points={len(destination)} "
@@ -1423,11 +1750,8 @@ class PlacementNode(Node):
         return response
 
     def _infer_callback(self, _request, response):
-        with self._lock:
-            images = list(self._recent_images)
-            clouds = list(self._recent_clouds)
-            joints = list(self._recent_joints)
         try:
+            images, clouds, joints = self._capture_legacy_inputs()
             if not images or not clouds or not joints:
                 raise RuntimeError(
                     "NO_SYNCHRONIZED_OBSERVATION: waiting for RGB, registered "

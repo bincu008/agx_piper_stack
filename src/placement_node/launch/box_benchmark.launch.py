@@ -17,6 +17,7 @@ def generate_launch_description():
         'placement_validation_batch_size': ('8', int),
         'box_gap_m': ('0.04', float),
         'placement_policy': ('edge_then_stack', str),
+        'stack_minimum_coverage': ('0.6', float),
         'auto_run': ('false', bool),
         'plan_pick_place_motion': ('true', bool),
         'output_directory': ('~/box_benchmark', str),
@@ -26,9 +27,12 @@ def generate_launch_description():
         'floor_refinement_yaw_step_deg': ('5.0', float),
     }
     return LaunchDescription([
+        DeclareLaunchArgument('numeric_threads', default_value='1'),
         *[DeclareLaunchArgument(name, default_value=default)
           for name, (default, _) in arguments.items()],
         Node(package='placement_node', executable='box_benchmark',
+             additional_env={name: LaunchConfiguration('numeric_threads') for name in (
+                 'OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')},
              name='box_benchmark', output='screen', parameters=[{
                  name: ParameterValue(LaunchConfiguration(name), value_type=kind)
                  for name, (_, kind) in arguments.items()}]),

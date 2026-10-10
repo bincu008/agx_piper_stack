@@ -16,6 +16,7 @@
 #include <my_actions/srv/execute_pipeline.hpp>
 #include <my_actions/srv/find_grasp_candidates.hpp>
 #include <my_actions/srv/find_placement_candidates.hpp>
+#include <my_actions/srv/commit_floor_slots.hpp>
 #include <my_actions/srv/plan_placement.hpp>
 #include <my_actions/srv/plan_object_layout.hpp>
 #include <my_actions/srv/pin_layout_observation.hpp>
@@ -104,6 +105,7 @@ public:
             "api_server_url", "");
         this->declare_parameter<std::string>("model_name", "robobrain2.5-4b");
         this->declare_parameter<int>("request_timeout_sec", 120);
+        this->declare_parameter<std::string>("placement_support_mode", "floor_slots");
         this->declare_parameter<bool>("enable_task_dispatch", false);
         this->declare_parameter<bool>("verbose", true);
         this->declare_parameter<double>("temperature", 0.0);
@@ -146,13 +148,8 @@ public:
         std::transform(grasp_target_mask_backend_.begin(),
             grasp_target_mask_backend_.end(), grasp_target_mask_backend_.begin(),
             [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
-        if (grasp_target_mask_backend_ != "edgesam" &&
-            grasp_target_mask_backend_ != "robobrain" &&
-            grasp_target_mask_backend_ != "yolo_intersection") {
-            RCLCPP_WARN(this->get_logger(),
-                "Unknown grasp_target_mask_backend '%s'; using edgesam.",
-                grasp_target_mask_backend_.c_str());
-            grasp_target_mask_backend_ = "edgesam";
+        if (grasp_target_mask_backend_ != "edgesam") {
+            throw std::invalid_argument("grasp_target_mask_backend only supports edgesam");
         }
         edgesam_min_mask_pixels_ = std::max<int64_t>(
             1, this->get_parameter("edgesam_min_mask_pixels").as_int());
@@ -345,6 +342,9 @@ public:
             this->create_client<my_actions::srv::PlanPlacement>(
                 "/pipeline/plan_placement",
                 rclcpp::ServicesQoS(), cb_group_);
+        commit_floor_slots_client_ =
+            this->create_client<my_actions::srv::CommitFloorSlots>(
+                "/pipeline/commit_floor_slots", rclcpp::ServicesQoS(), cb_group_);
         plan_object_layout_client_ =
             this->create_client<my_actions::srv::PlanObjectLayout>(
                 "/pipeline/plan_layout",
@@ -444,6 +444,8 @@ private:
         plan_placement_client_;
     rclcpp::Client<my_actions::srv::PlanObjectLayout>::SharedPtr
         plan_object_layout_client_;
+    rclcpp::Client<my_actions::srv::CommitFloorSlots>::SharedPtr
+        commit_floor_slots_client_;
     rclcpp::Client<my_actions::srv::PinLayoutObservation>::SharedPtr
         pin_layout_observation_client_;
     rclcpp::Client<my_actions::srv::PinLayoutObservation>::SharedPtr
@@ -1082,84 +1084,7 @@ private:
         return false;
     }
 
-    bool selectYoloTargetMask(
-        const my_actions::srv::GetYoloInference::Response& result,
-        const std::string& target_class, const cv::Rect& grounding_roi,
-        int& seed_u, int& seed_v, cv::Mat& selected_mask,
-        std::string& diagnostic) const {
-        int selected_index = -1;
-        double best_score = -std::numeric_limits<double>::infinity();
-        for (size_t index = 0; index < result.classes.size() &&
-             index < result.masks.size(); ++index) {
-            if (result.classes[index] != target_class) continue;
-            try {
-                const cv::Mat mask = cv_bridge::toCvCopy(
-                    std::make_shared<sensor_msgs::msg::Image>(result.masks[index]),
-                    "mono8")->image;
-                if (mask.empty() ||
-                    mask.cols < grounding_roi.x + grounding_roi.width ||
-                    mask.rows < grounding_roi.y + grounding_roi.height) {
-                    continue;
-                }
-                const cv::Rect image_bounds(0, 0, mask.cols, mask.rows);
-                const cv::Rect overlap = grounding_roi & image_bounds;
-                const int roi_mask_pixels = overlap.empty() ? 0 :
-                    cv::countNonZero(mask(overlap));
-                const bool contains_seed = seed_u >= 0 && seed_u < mask.cols &&
-                    seed_v >= 0 && seed_v < mask.rows &&
-                    mask.at<uint8_t>(seed_v, seed_u) != 0;
-                const double confidence = index < result.confidences.size() ?
-                    result.confidences[index] : 0.0;
-                // The semantic point is the strongest association.  ROI
-                // overlap resolves multiple cups when the point is in a gap.
-                const double score = (contains_seed ? 1.0e9 : 0.0) +
-                    static_cast<double>(roi_mask_pixels) + confidence;
-                if (score > best_score) {
-                    best_score = score;
-                    selected_index = static_cast<int>(index);
-                }
-            } catch (const cv_bridge::Exception&) {
-                continue;
-            }
-        }
-        if (selected_index < 0) return false;
-        try {
-            selected_mask = cv_bridge::toCvCopy(
-                std::make_shared<sensor_msgs::msg::Image>(
-                    result.masks[static_cast<size_t>(selected_index)]),
-                "mono8")->image;
-        } catch (const cv_bridge::Exception&) {
-            return false;
-        }
-        if (seed_u < 0 || seed_u >= selected_mask.cols || seed_v < 0 ||
-            seed_v >= selected_mask.rows ||
-            selected_mask.at<uint8_t>(seed_v, seed_u) == 0) {
-            double best_distance_sq = std::numeric_limits<double>::infinity();
-            cv::Point nearest(seed_u, seed_v);
-            for (int v = 0; v < selected_mask.rows; ++v) {
-                const auto* row = selected_mask.ptr<uint8_t>(v);
-                for (int u = 0; u < selected_mask.cols; ++u) {
-                    if (row[u] == 0) continue;
-                    const double du = static_cast<double>(u - seed_u);
-                    const double dv = static_cast<double>(v - seed_v);
-                    const double distance_sq = du * du + dv * dv;
-                    if (distance_sq < best_distance_sq) {
-                        best_distance_sq = distance_sq;
-                        nearest = cv::Point(u, v);
-                    }
-                }
-            }
-            if (!std::isfinite(best_distance_sq)) return false;
-            seed_u = nearest.x;
-            seed_v = nearest.y;
-        }
-        std::ostringstream detail;
-        detail << "YOLO " << target_class << " mask index=" << selected_index
-               << " pixels=" << cv::countNonZero(selected_mask)
-               << " seed=(" << seed_u << "," << seed_v << ")";
-        diagnostic = detail.str();
-        return true;
-    }
+
 
     bool targetVisible(
         const SynchronizedObservation& observation,
@@ -1912,6 +1837,11 @@ private:
                 upright_policy ? "upright" : "free";
             placement_request->object_name = object_name;
             placement_request->destination_name = destination_name;
+            placement_request->support_mode =
+                this->get_parameter("placement_support_mode").as_string();
+            if (!upright_policy && placement_request->support_mode == "floor_slots") {
+                placement_request->support_mode = "auto";
+            }
             auto future = placement_candidates_client_->async_send_request(
                 placement_request);
             if (future.wait_for(std::chrono::seconds(request_timeout_sec_)) !=
@@ -1969,6 +1899,24 @@ private:
                 return;
             }
             const auto plan_result = plan_future.get();
+            if (plan_result->success && placement_request->support_mode == "floor_slots") {
+                if (!commit_floor_slots_client_->wait_for_service(std::chrono::seconds(3))) {
+                    response->response = "FLOOR_SLOT_COMMIT_UNAVAILABLE";
+                    return;
+                }
+                auto commit = std::make_shared<my_actions::srv::CommitFloorSlots::Request>();
+                commit->selected_pose = plan_result->selected_candidate.object_pose;
+                auto committed = commit_floor_slots_client_->async_send_request(commit);
+                if (committed.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+                    response->response = "FLOOR_SLOT_COMMIT_TIMEOUT_STATE_UNKNOWN";
+                    return;
+                }
+                const auto reservation = committed.get();
+                if (!reservation->success) {
+                    response->response = reservation->status;
+                    return;
+                }
+            }
             response->response = plan_result->success ?
                 plan_result->status : "PLACEMENT_PLAN_FAILED: " +
                 plan_result->status;
@@ -2217,10 +2165,8 @@ private:
             int u = (x1 + x2) / 2;
             int v = (y1 + y2) / 2;
 
-            cv::Mat rectangular_mask(image.rows, image.cols, CV_8UC1, cv::Scalar(0));
-            cv::rectangle(rectangular_mask, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(255), cv::FILLED);
-            cv::Mat target_mask = rectangular_mask;
-            std::string target_mask_source = "RoboBrain grounding rectangle";
+            cv::Mat target_mask;
+            std::string target_mask_source = "EdgeSAM box-prompted mask";
             if (grasp_target_mask_backend_ == "edgesam") {
                 if (!edgesam_) {
                     response->response =
@@ -2251,27 +2197,6 @@ private:
                     response->response =
                         std::string("EDGESAM_INFERENCE_FAILED: ") + error.what();
                     return;
-                }
-            } else if (grasp_target_mask_backend_ == "yolo_intersection" && !world_name.empty()) {
-                my_actions::srv::GetYoloInference::Response yolo_result;
-                std::string yolo_status;
-                const cv::Rect grounding_roi(
-                    x1, y1, std::max(1, x2 - x1 + 1),
-                    std::max(1, y2 - y1 + 1));
-                if (getYoloResultForObservation(
-                        observation, yolo_result, yolo_status) &&
-                    selectYoloTargetMask(
-                        yolo_result, world_name, grounding_roi, u, v,
-                        target_mask, target_mask_source)) {
-                    cv::bitwise_and(target_mask, rectangular_mask, target_mask);
-                    target_mask_source += " intersected with RoboBrain ROI";
-                    RCLCPP_INFO(this->get_logger(),
-                                "[GRASP] Using %s instead of the grounding rectangle.",
-                                target_mask_source.c_str());
-                } else {
-                    RCLCPP_WARN(this->get_logger(),
-                                "[GRASP] YOLO target mask unavailable (%s); using the grounding rectangle.",
-                                yolo_status.c_str());
                 }
             }
             RCLCPP_INFO(
@@ -2336,7 +2261,7 @@ private:
                         << candidate.grasp_pose.pose.position.x << ", "
                         << candidate.grasp_pose.pose.position.y << ", "
                         << candidate.grasp_pose.pose.position.z << "] width="
-                        << candidate.jaw_opening_m << "m gpd_score=" << candidate.score
+                        << candidate.jaw_opening_m << "m proposal_score=" << candidate.score
                         << " rank=" << candidate.ranking_score
                         << " ik=" << candidate.ik_valid
                         << " measured_contacts="

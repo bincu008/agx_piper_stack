@@ -59,6 +59,17 @@ def set_field(message, path, value):
         getattr(message, name)[index] = copy.deepcopy(value)
 
 
+def fingerprint(name, payload):
+    """Hash the same wire bytes without concatenating a large second buffer."""
+    digest = hashlib.sha256(name.encode())
+    try:
+        view = memoryview(payload)
+    except TypeError:
+        view = memoryview(bytes(payload))
+    digest.update(view)
+    return digest.hexdigest()
+
+
 @dataclass
 class Context:
     """Own immutable result payloads; pending tasks reference them by step ID."""
@@ -197,29 +208,68 @@ class StepStore:
         module = spec.service_type.__module__.split('.')[0]
         return f'{module}/srv/{spec.service_type.__name__}_Response'
 
-    def run_one(self, context_id, step_id, function_name, request_cdr, expected=0):
+    def run_one(self, context_id, step_id, function_name, request_cdr, expected=0, bindings=()):
         """Run a public call and retain its typed result in master memory."""
         spec = self.spec(function_name)
         request = deserialize_message(bytes(request_cdr), spec.service_type.Request)
-        digest = hashlib.sha256(function_name.encode() + bytes(request_cdr)).hexdigest()
+        if bindings:
+            # Reference names are part of idempotence. Completed results are
+            # immutable within their context; no large resolved re-encoding.
+            refs = [(b.target_field, b.source_step_id, b.source_field) for b in bindings]
+            request_cdr = bytes(request_cdr) + json.dumps(refs).encode()
+        return self._run_one(
+            context_id, step_id, spec, request, request_cdr, expected, bindings)[:3]
+
+    def _bind(self, ctx, request, bindings):
+        """Resolve immutable artifacts once per predecessor, with isolated fields."""
+        decoded = {}
+        for binding in bindings:
+            source = ctx.results.get(binding.source_step_id)
+            if source is None or not source.success:
+                raise ValueError('DEPENDENCY_FAILED: ' + binding.source_step_id)
+            if binding.source_field == '@response_cdr':
+                value = bytes(source.response_cdr)
+            else:
+                if binding.source_step_id not in decoded:
+                    source_spec = self.spec(source.function_name)
+                    decoded[binding.source_step_id] = deserialize_message(
+                        bytes(source.response_cdr), source_spec.service_type.Response)
+                value = get_field(decoded[binding.source_step_id], binding.source_field)
+            set_field(request, binding.target_field, value)
+
+    def run_typed(self, context_id, step_id, function_name, request, expected=0):
+        """Keep a local typed request without an envelope encode/decode round trip."""
+        spec = self.spec(function_name)
+        if not isinstance(request, spec.service_type.Request):
+            raise TypeError('REQUEST_TYPE_MISMATCH')
+        return self._run_one(context_id, step_id, spec, request,
+                             serialize_message(request), expected)
+
+    def _run_one(self, context_id, step_id, spec, request, request_cdr, expected, bindings=()):
+        """Share revision, idempotence and bounded storage checks for both paths."""
+        function_name = spec.name
+        digest = fingerprint(function_name, request_cdr)
         with self._lock:
-            ctx = self._context(context_id, create=True, automatic=not context_id)
+            ctx = self._context(context_id, create=not bindings, automatic=not context_id)
             self._revision(ctx, expected)
             step_id = step_id or uuid.uuid4().hex
             if step_id in ctx.results:
                 if ctx.fingerprints.get(step_id) != digest:
                     raise ValueError('STEP_ID_PAYLOAD_CONFLICT')
-                return ctx.context_id, ctx.revision, copy.deepcopy(ctx.results[step_id])
+                item = copy.deepcopy(ctx.results[step_id])
+                return ctx.context_id, ctx.revision, item, deserialize_message(
+                    bytes(item.response_cdr), spec.service_type.Response)
             if ctx.busy or ctx.pending:
                 raise RuntimeError('CONTEXT_BUSY_OR_ALREADY_QUEUED')
             if any('STATE_UNKNOWN' in item.status for item in ctx.results.values()):
                 raise RuntimeError('CONTEXT_REQUIRES_STATE_RECONCILIATION')
             if len(ctx.results) >= self._max_steps:
                 raise RuntimeError('CONTEXT_STEP_LIMIT')
+            self._bind(ctx, request, bindings)
             ctx.busy = True
         try:
-            item = self._execute(ctx, step_id, spec, request, digest)
-            return ctx.context_id, ctx.revision, copy.deepcopy(item)
+            item, response = self._execute(ctx, step_id, spec, request, digest)
+            return ctx.context_id, ctx.revision, copy.deepcopy(item), response
         finally:
             with self._lock:
                 ctx.busy = False
@@ -255,7 +305,7 @@ class StepStore:
             ctx.fingerprints[step_id] = digest
             ctx.revision += 1
             ctx.status = 'SUCCEEDED' if item.success else 'FAILED'
-        return item
+        return item, response
 
     def run_queue(self, context_id, cancelled=lambda: False, feedback=lambda *args: None):
         """Deplete each attempted task; never consume failed dependency results."""
@@ -282,22 +332,10 @@ class StepStore:
                 spec = self.spec(step.function_name)
                 request = deserialize_message(bytes(step.request_cdr), spec.service_type.Request)
                 try:
-                    for binding in step.bindings:
-                        source = ctx.results.get(binding.source_step_id)
-                        if source is None or not source.success:
-                            raise ValueError('DEPENDENCY_FAILED: ' + binding.source_step_id)
-                        if binding.source_field == '@response_cdr':
-                            value = bytes(source.response_cdr)
-                        else:
-                            source_spec = self.spec(source.function_name)
-                            source_response = deserialize_message(
-                                bytes(source.response_cdr), source_spec.service_type.Response)
-                            value = get_field(source_response, binding.source_field)
-                        set_field(request, binding.target_field, value)
-                    digest = hashlib.sha256(
-                        spec.name.encode() + serialize_message(request)).hexdigest()
+                    self._bind(ctx, request, step.bindings)
+                    digest = fingerprint(spec.name, serialize_message(request))
                     feedback(step, 'RUNNING', len(completed), len(ctx.pending))
-                    item = self._execute(ctx, step.step_id, spec, request, digest)
+                    item, _ = self._execute(ctx, step.step_id, spec, request, digest)
                 except Exception as error:
                     response = set_failure(spec.service_type.Response(), str(error))
                     item = PipelineStepResult(

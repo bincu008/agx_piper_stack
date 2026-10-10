@@ -6,6 +6,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import UnlessCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
@@ -19,6 +20,9 @@ def generate_launch_description():
     with open(profile_path, encoding='utf-8') as stream:
         profiles = yaml.safe_load(stream)
     inference_profile = LaunchConfiguration('inference_profile')
+    numeric_environment = {
+        name: LaunchConfiguration('numeric_threads')
+        for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')}
 
     def profile_default(key):
         values = {name: str(value[key]) for name, value in profiles.items()}
@@ -42,8 +46,7 @@ def generate_launch_description():
     vlm_temperature = LaunchConfiguration('vlm_temperature')
     vlm_image_max_dimension = LaunchConfiguration('vlm_image_max_dimension')
     grasp_plan_cache_ttl_sec = LaunchConfiguration('grasp_plan_cache_ttl_sec')
-    gpd_camera_frame = LaunchConfiguration('gpd_camera_frame')
-    gpd_tcp_offset_m = LaunchConfiguration('gpd_tcp_offset_m')
+    grasp_tcp_offset_m = LaunchConfiguration('grasp_tcp_offset_m')
     grasp_observation_cache_size = LaunchConfiguration(
         'grasp_observation_cache_size')
     maximum_ranking_pool_candidates = LaunchConfiguration(
@@ -54,8 +57,6 @@ def generate_launch_description():
         'enable_grasp_path_preplanning')
     grasp_path_length_weight = LaunchConfiguration(
         'grasp_path_length_weight')
-    require_gpd_full_antipodal = LaunchConfiguration(
-        'require_gpd_full_antipodal')
     require_measured_antipodal_contacts = LaunchConfiguration(
         'require_measured_antipodal_contacts')
     antipodal_normal_cosine = LaunchConfiguration(
@@ -100,30 +101,12 @@ def generate_launch_description():
     hggd_maximum_proposals = LaunchConfiguration('hggd_maximum_proposals')
     maximum_candidates_to_test = LaunchConfiguration('maximum_candidates_to_test')
     maximum_valid_candidates = LaunchConfiguration('maximum_valid_candidates')
-    gpd_visualization_limit = LaunchConfiguration('gpd_visualization_limit')
-    gpd_diversity_position_m = LaunchConfiguration('gpd_diversity_position_m')
-    gpd_diversity_approach_degrees = LaunchConfiguration('gpd_diversity_approach_degrees')
-    gpd_diversity_closing_degrees = LaunchConfiguration('gpd_diversity_closing_degrees')
+    grasp_visualization_limit = LaunchConfiguration('grasp_visualization_limit')
     hggd_diversity_position_m = LaunchConfiguration('hggd_diversity_position_m')
     hggd_diversity_approach_degrees = LaunchConfiguration(
         'hggd_diversity_approach_degrees')
     hggd_diversity_closing_degrees = LaunchConfiguration(
         'hggd_diversity_closing_degrees')
-    analytical_maximum_proposals = LaunchConfiguration('analytical_maximum_proposals')
-    analytical_voxel_size_m = LaunchConfiguration('analytical_voxel_size_m')
-    analytical_roll_step_degrees = LaunchConfiguration('analytical_roll_step_degrees')
-    analytical_normal_radius_m = LaunchConfiguration('analytical_normal_radius_m')
-    analytical_min_normal_neighbors = LaunchConfiguration('analytical_min_normal_neighbors')
-    analytical_dedup_position_m = LaunchConfiguration('analytical_dedup_position_m')
-    analytical_dedup_angle_degrees = LaunchConfiguration('analytical_dedup_angle_degrees')
-    analytical_min_contact_center_separation_m = LaunchConfiguration(
-        'analytical_min_contact_center_separation_m')
-    analytical_local_pca_searches = LaunchConfiguration('analytical_local_pca_searches')
-    analytical_global_pca_searches = LaunchConfiguration('analytical_global_pca_searches')
-    analytical_maximum_approach_variants_per_pair = LaunchConfiguration(
-        'analytical_maximum_approach_variants_per_pair')
-    analytical_accepted_candidate_separation_m = LaunchConfiguration(
-        'analytical_accepted_candidate_separation_m')
     deterministic_ik = LaunchConfiguration('deterministic_ik')
     deterministic_ik_seed_count = LaunchConfiguration('deterministic_ik_seed_count')
     final_approach_translation_step_m = LaunchConfiguration(
@@ -132,14 +115,12 @@ def generate_launch_description():
         'final_approach_max_joint_step_rad')
     final_approach_contact_phase_m = LaunchConfiguration(
         'final_approach_contact_phase_m')
-    enable_gpd_score_filter = LaunchConfiguration(
-        'enable_gpd_score_filter')
     allow_physical_grasp_execution = LaunchConfiguration(
         'allow_physical_grasp_execution')
     allow_model_based_body_grasp_execution = LaunchConfiguration(
         'allow_model_based_body_grasp_execution')
-    require_positive_gpd_score_for_grasp = LaunchConfiguration(
-        'require_positive_gpd_score_for_grasp')
+    require_positive_grasp_score_for_grasp = LaunchConfiguration(
+        'require_positive_grasp_score_for_grasp')
     require_measured_contacts_for_grasp = LaunchConfiguration(
         'require_measured_contacts_for_grasp')
     enable_view_repositioning = LaunchConfiguration(
@@ -197,16 +178,17 @@ def generate_launch_description():
                         LaunchConfiguration('placement_position_tolerance_m'),
                         value_type=float),
                     'placement_descent_orientation_tolerance_rad': ParameterValue(
-                        LaunchConfiguration('placement_descent_orientation_tolerance_rad'), value_type=float),
+                        LaunchConfiguration('placement_descent_orientation_tolerance_rad'),
+                        value_type=float),
                     'placement_descent_step_m': ParameterValue(
                         LaunchConfiguration('placement_descent_step_m'), value_type=float),
                     'placement_descent_max_joint_step_rad': ParameterValue(
-                        LaunchConfiguration('placement_descent_max_joint_step_rad'), value_type=float),
+                        LaunchConfiguration('placement_descent_max_joint_step_rad'),
+                        value_type=float),
                     'placement_contact_distance_m': ParameterValue(
                         LaunchConfiguration('placement_contact_distance_m'), value_type=float),
-                    'gpd_camera_frame': gpd_camera_frame,
-                    'gpd_tcp_offset_m': ParameterValue(
-                        gpd_tcp_offset_m, value_type=float
+                    'grasp_tcp_offset_m': ParameterValue(
+                        grasp_tcp_offset_m, value_type=float
                     ),
                     'grasp_observation_cache_size': ParameterValue(
                         grasp_observation_cache_size, value_type=int),
@@ -215,12 +197,23 @@ def generate_launch_description():
                     'natural_wide_opening_weight': ParameterValue(
                         natural_wide_opening_weight, value_type=float),
                     'pipeline_profiling': ParameterValue(pipeline_profiling, value_type=bool),
+                    'placement_allow_separating_contact_departure': ParameterValue(
+                        LaunchConfiguration('placement_allow_separating_contact_departure'),
+                        value_type=bool),
+                    'placement_bypass_attached_collision_during_lift': ParameterValue(
+                        LaunchConfiguration('placement_bypass_attached_collision_during_lift'),
+                        value_type=bool),
+                    'placement_departure_contact_tolerance_m': ParameterValue(
+                        LaunchConfiguration('placement_departure_contact_tolerance_m'),
+                        value_type=float),
+                    'placement_noise_max_points': ParameterValue(
+                        LaunchConfiguration('placement_noise_max_points'), value_type=int),
+                    'placement_noise_max_voxels': ParameterValue(
+                        LaunchConfiguration('placement_noise_max_voxels'), value_type=int),
                     'enable_grasp_path_preplanning': ParameterValue(
                         enable_grasp_path_preplanning, value_type=bool),
                     'grasp_path_length_weight': ParameterValue(
                         grasp_path_length_weight, value_type=float),
-                    'require_gpd_full_antipodal': ParameterValue(
-                        require_gpd_full_antipodal, value_type=bool),
                     'require_measured_antipodal_contacts': ParameterValue(
                         require_measured_antipodal_contacts, value_type=bool),
                     'antipodal_normal_cosine': ParameterValue(
@@ -278,44 +271,14 @@ def generate_launch_description():
                         maximum_candidates_to_test, value_type=int),
                     'maximum_valid_candidates': ParameterValue(
                         maximum_valid_candidates, value_type=int),
-                    'gpd_visualization_limit': ParameterValue(
-                        gpd_visualization_limit, value_type=int),
-                    'gpd_diversity_position_m': ParameterValue(
-                        gpd_diversity_position_m, value_type=float),
-                    'gpd_diversity_approach_degrees': ParameterValue(
-                        gpd_diversity_approach_degrees, value_type=float),
-                    'gpd_diversity_closing_degrees': ParameterValue(
-                        gpd_diversity_closing_degrees, value_type=float),
+                    'grasp_visualization_limit': ParameterValue(
+                        grasp_visualization_limit, value_type=int),
                     'hggd_diversity_position_m': ParameterValue(
                         hggd_diversity_position_m, value_type=float),
                     'hggd_diversity_approach_degrees': ParameterValue(
                         hggd_diversity_approach_degrees, value_type=float),
                     'hggd_diversity_closing_degrees': ParameterValue(
                         hggd_diversity_closing_degrees, value_type=float),
-                    'analytical_maximum_proposals': ParameterValue(
-                        analytical_maximum_proposals, value_type=int),
-                    'analytical_voxel_size_m': ParameterValue(
-                        analytical_voxel_size_m, value_type=float),
-                    'analytical_roll_step_degrees': ParameterValue(
-                        analytical_roll_step_degrees, value_type=float),
-                    'analytical_normal_radius_m': ParameterValue(
-                        analytical_normal_radius_m, value_type=float),
-                    'analytical_min_normal_neighbors': ParameterValue(
-                        analytical_min_normal_neighbors, value_type=int),
-                    'analytical_dedup_position_m': ParameterValue(
-                        analytical_dedup_position_m, value_type=float),
-                    'analytical_dedup_angle_degrees': ParameterValue(
-                        analytical_dedup_angle_degrees, value_type=float),
-                    'analytical_min_contact_center_separation_m': ParameterValue(
-                        analytical_min_contact_center_separation_m, value_type=float),
-                    'analytical_local_pca_searches': ParameterValue(
-                        analytical_local_pca_searches, value_type=int),
-                    'analytical_global_pca_searches': ParameterValue(
-                        analytical_global_pca_searches, value_type=int),
-                    'analytical_maximum_approach_variants_per_pair': ParameterValue(
-                        analytical_maximum_approach_variants_per_pair, value_type=int),
-                    'analytical_accepted_candidate_separation_m': ParameterValue(
-                        analytical_accepted_candidate_separation_m, value_type=float),
                     'deterministic_ik': ParameterValue(
                         deterministic_ik, value_type=bool),
                     'deterministic_ik_seed_count': ParameterValue(
@@ -330,8 +293,6 @@ def generate_launch_description():
                         enable_grasp_collision_check, value_type=bool),
                     'allow_pregrasp_collision_candidates': ParameterValue(
                         allow_pregrasp_collision_override, value_type=bool),
-                    'enable_gpd_score_filter': ParameterValue(
-                        enable_gpd_score_filter, value_type=bool),
                 }],
                 extra_arguments=[{'use_intra_process_comms': True}],
             ),
@@ -344,6 +305,7 @@ def generate_launch_description():
         package='vlm_node', executable='vlm_reasoning_node',
         name='vlm_reasoning_node', output='screen',
         parameters=[{
+            'placement_support_mode': LaunchConfiguration('layout_support_mode'),
             'api_server_ip': api_server_ip,
             'api_server_port': ParameterValue(
                 api_server_port, value_type=int
@@ -374,16 +336,19 @@ def generate_launch_description():
     master = Node(
         package='master_node',
         executable='piper_master_control',
+        additional_env=numeric_environment,
         name='piper_master_control',
         output='screen',
         parameters=[{
+            'api_dispatch_in_master': ParameterValue(
+                LaunchConfiguration('api_dispatch_in_master'), value_type=bool),
             'hand_eye_calibration_path': hand_eye_calibration_path,
             'allow_physical_grasp_execution': ParameterValue(
                 allow_physical_grasp_execution, value_type=bool),
             'allow_model_based_body_grasp_execution': ParameterValue(
                 allow_model_based_body_grasp_execution, value_type=bool),
-            'require_positive_gpd_score_for_grasp': ParameterValue(
-                require_positive_gpd_score_for_grasp, value_type=bool),
+            'require_positive_grasp_score_for_grasp': ParameterValue(
+                require_positive_grasp_score_for_grasp, value_type=bool),
             'require_measured_contacts_for_grasp': ParameterValue(
                 require_measured_contacts_for_grasp, value_type=bool),
             'allow_pregrasp_collision_override': ParameterValue(
@@ -409,10 +374,12 @@ def generate_launch_description():
     pipeline = Node(
         package='task_pipeline', executable='pipeline_node',
         name='pipeline_node', output='screen',
+        condition=UnlessCondition(LaunchConfiguration('api_dispatch_in_master')),
     )
     placement = Node(
         package='placement_node',
         executable='placement_node',
+        additional_env=numeric_environment,
         name='placement_node',
         output='screen',
         parameters=[{
@@ -422,8 +389,19 @@ def generate_launch_description():
             'request_timeout_sec': ParameterValue(
                 request_timeout_sec, value_type=float),
             'placement_backend': LaunchConfiguration('placement_backend'),
+            'layout_support_mode': LaunchConfiguration('layout_support_mode'),
+            'floor_slot_adaptive': ParameterValue(
+                LaunchConfiguration('floor_slot_adaptive'), value_type=bool),
+            'floor_slot_max_size_m': ParameterValue(
+                LaunchConfiguration('floor_slot_max_size_m'), value_type=float),
+            'floor_slot_min_size_m': ParameterValue(
+                LaunchConfiguration('floor_slot_min_size_m'), value_type=float),
+            'floor_slot_share_unused_space': ParameterValue(
+                LaunchConfiguration('floor_slot_share_unused_space'), value_type=bool),
             'layout_candidate_count': ParameterValue(
                 LaunchConfiguration('layout_candidate_count'), value_type=int),
+            'packing_stack_minimum_coverage': ParameterValue(
+                LaunchConfiguration('stack_minimum_coverage'), value_type=float),
             'candidate_count': ParameterValue(
                 LaunchConfiguration('anyplace_candidate_count'),
                 value_type=int),
@@ -446,6 +424,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument('pipeline_profiling', default_value='false',
                               description='Log per-request IK, collision and engine timings.'),
+        DeclareLaunchArgument('api_dispatch_in_master', default_value='true',
+                              description='Host API dispatch in the master; '
+                                          'false restores RPC proxy.'),
+        DeclareLaunchArgument('numeric_threads', default_value='1',
+                              description='BLAS/OpenMP threads per Python planning process.'),
         DeclareLaunchArgument('inference_profile', default_value='server',
                               choices=list(profiles),
                               description='Select server or lmstudio endpoint defaults.'),
@@ -465,8 +448,18 @@ def generate_launch_description():
         DeclareLaunchArgument('vlm_max_tokens', default_value='256'),
         DeclareLaunchArgument('vlm_temperature', default_value='0.0'),
         DeclareLaunchArgument('vlm_image_max_dimension', default_value='1024'),
-        DeclareLaunchArgument('anyplace_candidate_count', default_value='8'),
-        DeclareLaunchArgument('layout_candidate_count', default_value='64'),
+        DeclareLaunchArgument('stack_minimum_coverage', default_value='0.6'),
+        DeclareLaunchArgument('placement_candidate_count', default_value='16',
+                              description='Ranked single-object placement pose budget'),
+        DeclareLaunchArgument('anyplace_candidate_count',
+                              default_value=LaunchConfiguration('placement_candidate_count'),
+                              description='Legacy alias for placement_candidate_count'),
+        DeclareLaunchArgument('layout_support_mode', default_value='floor_slots'),
+        DeclareLaunchArgument('floor_slot_share_unused_space', default_value='false'),
+        DeclareLaunchArgument('floor_slot_adaptive', default_value='true'),
+        DeclareLaunchArgument('floor_slot_max_size_m', default_value='0.125'),
+        DeclareLaunchArgument('floor_slot_min_size_m', default_value='0.06'),
+        DeclareLaunchArgument('layout_candidate_count', default_value='16'),
         DeclareLaunchArgument('placement_fast_ik', default_value='true'),
         DeclareLaunchArgument('placement_position_tolerance_m', default_value='0.001'),
         DeclareLaunchArgument('placement_descent_orientation_tolerance_rad', default_value='0.01'),
@@ -508,11 +501,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'grasp_target_mask_backend',
             default_value='edgesam',
-            description=(
-                "Target-mask backend: 'edgesam' (RoboBrain box followed by "
-                "class-agnostic segmentation), 'robobrain' (box only), or "
-                "'yolo_intersection'."
-            ),
+            choices=['edgesam'],
+            description='Target mask: RoboBrain grounding followed by EdgeSAM.',
         ),
         DeclareLaunchArgument(
             'allow_physical_grasp_execution',
@@ -532,7 +522,7 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
-            'require_positive_gpd_score_for_grasp',
+            'require_positive_grasp_score_for_grasp',
             default_value='true',
             description=(
                 'Require the legacy GPD classifier decision for physical '
@@ -546,14 +536,6 @@ def generate_launch_description():
             description=(
                 'Require a measured opposing contact pair and clear finger '
                 'sweep before physical execution.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'enable_gpd_score_filter',
-            default_value='true',
-            description=(
-                'Filter candidates at the raw GPD classifier boundary. The '
-                'current Piper geometry requires false for diagnostic tuning.'
             ),
         ),
         DeclareLaunchArgument(
@@ -634,45 +616,27 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
-            'gpd_camera_frame',
-            default_value='',
-            description=(
-                'Deprecated and ignored; transformations come exclusively '
-                'from synchronized manual FK * calibrated X.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'grasp_candidate_backend', default_value='hggd',
-            description='Proposal backend: analytical, gpd, hybrid, or hggd.'),
+            'grasp_candidate_backend', default_value='hggd', choices=['hggd'],
+            description='Deployed proposal engine: HGGD.'),
         DeclareLaunchArgument('hggd_model_directory', default_value=''),
+        DeclareLaunchArgument('placement_allow_separating_contact_departure',
+                              default_value='true'),
+        DeclareLaunchArgument('placement_departure_contact_tolerance_m',
+                              default_value='0.001'),
+        DeclareLaunchArgument('placement_bypass_attached_collision_during_lift',
+                              default_value='true', description='Skip held-object '
+                              'environment collision during lift only; '
+                              'all other stages retain checks.'),
+        DeclareLaunchArgument('placement_noise_max_points', default_value='32'),
+        DeclareLaunchArgument('placement_noise_max_voxels', default_value='10'),
         DeclareLaunchArgument('hggd_cpu_threads', default_value='4'),
         DeclareLaunchArgument('hggd_maximum_proposals', default_value='100'),
         DeclareLaunchArgument('maximum_candidates_to_test', default_value='600'),
         DeclareLaunchArgument('maximum_valid_candidates', default_value='100'),
-        DeclareLaunchArgument('gpd_visualization_limit', default_value='100'),
-        DeclareLaunchArgument('gpd_diversity_position_m', default_value='0.015'),
-        DeclareLaunchArgument('gpd_diversity_approach_degrees', default_value='15.0'),
-        DeclareLaunchArgument('gpd_diversity_closing_degrees', default_value='15.0'),
+        DeclareLaunchArgument('grasp_visualization_limit', default_value='100'),
         DeclareLaunchArgument('hggd_diversity_position_m', default_value='0.030'),
         DeclareLaunchArgument('hggd_diversity_approach_degrees', default_value='20.0'),
         DeclareLaunchArgument('hggd_diversity_closing_degrees', default_value='30.0'),
-        DeclareLaunchArgument('analytical_maximum_proposals', default_value='300'),
-        DeclareLaunchArgument('analytical_voxel_size_m', default_value='0.005'),
-        DeclareLaunchArgument('analytical_roll_step_degrees', default_value='15.0'),
-        DeclareLaunchArgument('analytical_normal_radius_m', default_value='0.008'),
-        DeclareLaunchArgument('analytical_min_normal_neighbors', default_value='10'),
-        DeclareLaunchArgument('analytical_dedup_position_m', default_value='0.010'),
-        DeclareLaunchArgument('analytical_dedup_angle_degrees', default_value='10.0'),
-        DeclareLaunchArgument(
-            'analytical_min_contact_center_separation_m', default_value='0.025'),
-        DeclareLaunchArgument(
-            'analytical_local_pca_searches', default_value='50'),
-        DeclareLaunchArgument(
-            'analytical_global_pca_searches', default_value='50'),
-        DeclareLaunchArgument(
-            'analytical_maximum_approach_variants_per_pair', default_value='2'),
-        DeclareLaunchArgument(
-            'analytical_accepted_candidate_separation_m', default_value='0.025'),
         DeclareLaunchArgument('deterministic_ik', default_value='true'),
         DeclareLaunchArgument('deterministic_ik_seed_count', default_value='32'),
         DeclareLaunchArgument(
@@ -695,7 +659,7 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
-            'gpd_tcp_offset_m',
+            'grasp_tcp_offset_m',
             default_value='-0.0615',
             description=(
                 "Offset from GPD's finger-region base to Piper gripper_base "
@@ -734,13 +698,6 @@ def generate_launch_description():
             description='Penalty weight for normalized pre-grasp path length.',
         ),
         DeclareLaunchArgument(
-            'require_gpd_full_antipodal',
-            default_value='false',
-            description=(
-                'Require the legacy GPD full-antipodal label in addition to '
-                'measured contact validation. Keep false for partial single-view clouds.'),
-        ),
-        DeclareLaunchArgument(
             'require_measured_antipodal_contacts',
             default_value='true',
             description=(
@@ -771,7 +728,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'target_collision_clearance_m',
             default_value='0.050',
-            description='Radius around measured contacts where inner jaw pads may touch the segmented target.',
+            description='Radius around measured contacts where inner jaw pads may touch '
+                        'the segmented target.',
         ),
         DeclareLaunchArgument(
             'aligned_zero_pose_yaw_limit_degrees',

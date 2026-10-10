@@ -18,9 +18,8 @@ rosdep install --from-paths src --ignore-src -r -y
 python3 -m pip install --user -r python-requirements.txt
 ```
 
-`gpd_vendor` is a pinned build-time vendor for the retained legacy GPD fallback
-and downloads its upstream source during the first build. The production launch
-uses HGGD; GPD is not a separately launched node.
+The deployed grasp engine is HGGD; `vamp_node` no longer depends on GPD.
+The benchmark retains internal known-cloud geometry proposals.
 
 ## ONNX Runtime
 

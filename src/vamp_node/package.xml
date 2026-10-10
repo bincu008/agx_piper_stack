@@ -22,7 +22,6 @@
   <depend>visualization_msgs</depend>
   <depend>ament_index_cpp</depend>
   <depend>vamp</depend>
-  <depend>gpd_vendor</depend>
   <depend>libpcl-all-dev</depend>
   <depend>libopencv-dev</depend>
   <exec_depend>ament_index_python</exec_depend>

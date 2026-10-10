@@ -51,7 +51,7 @@ def test_ten_boxes_are_separated_complete_and_within_radius():
 
 
 @pytest.mark.parametrize('yaw_step', [90, 15, 5])
-def test_full_floor_rejects_edge_and_accepts_named_stack_top(yaw_step):
+def test_full_floor_rejects_edge_and_accepts_universal_stack(yaw_step):
     tray = tray_surface()
     source = box_fixture(1)[0]
     previous = box_surface([0.05, 0.05, 0.04])
@@ -63,17 +63,17 @@ def test_full_floor_rejects_edge_and_accepts_named_stack_top(yaw_step):
     assert not edge
     stacked, _ = search_heightmap_placements(
         source, scene, tray, 'upright', support_mode='stack',
-        stack_support_points=box_top(previous), **kwargs)
+        **kwargs)
     assert stacked
     assert all(candidate.translation[2] >= 0.12 for candidate in stacked)
 
 
-def test_stack_requires_explicit_support_and_respects_height_limit():
+def test_stack_needs_raised_geometry_and_respects_height_limit():
     tray = tray_surface()
     source = box_fixture(1)[0]
     previous = box_surface([0.05, 0.05, 0.04])
-    with pytest.raises(ValueError, match='explicit support'):
-        search_heightmap_placements(source, tray, tray, 'upright', support_mode='stack')
+    empty, _ = search_heightmap_placements(source, tray, tray, 'upright', support_mode='stack')
+    assert not empty
     candidates, _ = search_heightmap_placements(
         source, np.vstack((tray, previous)), tray, 'upright',
         support_mode='stack', stack_support_points=box_top(previous),
@@ -203,7 +203,7 @@ def test_run_service_waits_for_worker_and_returns_terminal_result(stage):
 
 
 @pytest.mark.parametrize('failure_phase', ['grasp', 'placement', 'cancel'])
-def test_failed_box_is_retained_and_later_stack_uses_actual_support_name(
+def test_failed_box_is_retained_and_later_stack_uses_universal_support(
         monkeypatch, tmp_path, failure_phase):
     import threading
     import time
@@ -228,7 +228,7 @@ def test_failed_box_is_retained_and_later_stack_uses_actual_support_name(
     monkeypatch.setattr(module, 'tray_floor_mask', lambda p: np.ones(len(p), bool))
     monkeypatch.setattr(module.PlacementNode, '_publish_layout_markers', lambda *a: None)
     params = dict(box_count=3, box_size_m=.08, box_gap_m=.04, source_radius_m=.5,
-                  candidate_count=128, grid_resolution_m=.005, yaw_step_deg=15.,
+                  candidate_count=128, grid_resolution_m=.005, stack_minimum_coverage=.6, yaw_step_deg=15.,
                   max_pile_height_m=.3, placement_policy='stack',
                   grasp_approach_tilts_deg=[0.], floor_refinement_candidate_count=0,
                   floor_refinement_yaw_step_deg=5., output_directory=str(tmp_path),
@@ -238,7 +238,7 @@ def test_failed_box_is_retained_and_later_stack_uses_actual_support_name(
     messages, plans = [], []
     publisher = SimpleNamespace(publish=lambda _: None)
     node = SimpleNamespace(
-        _value=params.__getitem__, _capture=lambda: (cloud, image),
+        _value=params.__getitem__,
         _cancel=threading.Event(), _bridge=bridge, _point=module.PlacementNode._point,
         _pose_matrix=lambda _: np.eye(4), _check_cancel=lambda: None,
         _cloud=lambda h, p: point_cloud2.create_cloud_xyz32(h, np.asarray(p).tolist()),
@@ -254,7 +254,16 @@ def test_failed_box_is_retained_and_later_stack_uses_actual_support_name(
     node._log_box_timing = lambda row, elapsed: module.BoxBenchmark._log_box_timing(node, row, elapsed)
     node._print_final_summary = lambda: module.BoxBenchmark._print_final_summary(node)
 
-    def call(key, request):
+    def capture():
+        node._step_ids['capture'] = 'capture'
+        return cloud, image
+
+    node._capture = capture
+
+    def call(key, request, bindings=()):
+        if key == 'scene':
+            node._step_ids['scene'] = 'scene'
+            return SimpleNamespace(success=True)
         if key == 'gate':
             return SimpleNamespace(values=[SimpleNamespace(type=1, bool_value=False)])
         if key == 'presence':
@@ -295,7 +304,7 @@ def test_failed_box_is_retained_and_later_stack_uses_actual_support_name(
     assert node._report['stage'] == 'COMPLETE_WITH_FAILURES'
     assert node._report['accepted'] == 2 and node._report['failed'] == 1
     assert node._report['objects'][0]['result'] == 'FAILED'
-    assert node._report['objects'][2]['support_object'] == 'box_02'
+    assert node._report['objects'][2]['support_object'] == 'heightmap'
     assert node._report['objects'][2]['mode'] == 'STACK'
     for name, mode, scene in plans:
         if name != 'box_01':
@@ -316,7 +325,7 @@ def test_motion_failure_is_not_accepted_as_placement(monkeypatch, tmp_path):
                                 rotation=np.eye(3))
     monkeypatch.setattr(module, 'search_heightmap_placements',
                         lambda *a, **k: ([candidate], SimpleNamespace(elapsed_seconds=.1)))
-    parameters = dict(candidate_count=1, yaw_step_deg=90., grid_resolution_m=.005,
+    parameters = dict(candidate_count=1, yaw_step_deg=90., grid_resolution_m=.005, stack_minimum_coverage=.6,
                       max_pile_height_m=.3, plan_pick_place_motion=True, optimize_pipeline=False)
     calls = []
     response = PlanPlacement.Response()
@@ -419,7 +428,7 @@ def test_motion_failure_retries_grasp_and_stops_after_full_success(
                                   rotation=np.eye(3)) for i in range(6)]
     monkeypatch.setattr(module, 'search_heightmap_placements',
                         lambda *a, **k: (candidates, SimpleNamespace(elapsed_seconds=.1)))
-    parameters = dict(candidate_count=6, yaw_step_deg=90., grid_resolution_m=.005,
+    parameters = dict(candidate_count=6, yaw_step_deg=90., grid_resolution_m=.005, stack_minimum_coverage=.6,
                       max_pile_height_m=.3, plan_pick_place_motion=True, optimize_pipeline=True,
                       placement_early_stop_count=32, placement_validation_batch_size=2)
     grasps = [GraspCandidate(id=i) for i in grasp_ids]
@@ -507,3 +516,54 @@ def test_grasp_pool_expands_incrementally_and_reuses_frozen_packing():
     assert calls == [('plan', False, None), ('plan', True, None),
                      ('expand', 5), ('plan', True, cached)]
     assert len(node._report['objects'][0]['attempts']) == 2
+
+
+def test_auto_run_waits_for_shared_step_api():
+    """Do not start merely because the two control services are ready."""
+    from types import SimpleNamespace
+    from placement_node.box_benchmark import BoxBenchmark
+
+    ready = [False]
+    started = []
+    node = SimpleNamespace(
+        _auto_pending=True,
+        _step_client=SimpleNamespace(service_is_ready=lambda: ready[0]),
+        _benchmark_clients={'gate': SimpleNamespace(service_is_ready=lambda: True)},
+        _start=lambda request, response: started.append(request))
+    BoxBenchmark._auto(node)
+    assert not started and node._auto_pending
+    ready[0] = True
+    BoxBenchmark._auto(node)
+    assert len(started) == 1 and not node._auto_pending
+    BoxBenchmark._auto(node)
+    assert len(started) == 1
+
+
+@pytest.mark.parametrize("early_stop", [0, 4])
+@pytest.mark.parametrize("mode", ["auto", "stack"])
+def test_universal_stack_combines_two_disconnected_surfaces(early_stop, mode):
+    tray = tray_surface()
+    source = box_fixture(1)[0]
+    xy = np.linspace(.01, .09, 41)
+    xx, yy = np.meshgrid(xy, xy)
+    # Two coplanar strips with a 1 cm gap: neither can hold the box alone.
+    keep = (xx < .045) | (xx > .055)
+    raised = np.column_stack((xx[keep], yy[keep], np.full(keep.sum(), .08)))
+    candidates, _ = search_heightmap_placements(
+        source, np.vstack((tray, raised)), tray, 'upright',
+        support_mode=mode, stack_minimum_coverage=.8, early_stop_candidate_count=early_stop,
+        bottom_points=source[source[:, 2] < 1e-6], upright_yaw_step_deg=90)
+    assert candidates
+    assert all(c.translation[2] >= .12 for c in candidates)
+
+
+def test_universal_stack_rejects_less_than_eighty_percent_support():
+    tray = tray_surface()
+    source = box_fixture(1)[0]
+    xy = np.linspace(.03, .07, 21)
+    xx, yy = np.meshgrid(xy, xy)
+    raised = np.column_stack((xx.ravel(), yy.ravel(), np.full(xx.size, .08)))
+    candidates, _ = search_heightmap_placements(
+        source, np.vstack((tray, raised)), tray, 'upright', support_mode='stack',
+        bottom_points=source[source[:, 2] < 1e-6], upright_yaw_step_deg=90)
+    assert not candidates

@@ -27,6 +27,7 @@ install(FILES README.md ANYPLACE_NOTICE.md LICENSE
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_box_benchmark test/test_box_benchmark.py)
+  ament_add_pytest_test(test_floor_slots test/test_floor_slots.py)
   ament_add_pytest_test(test_candidate_selection test/test_candidate_selection.py)
   ament_add_pytest_test(test_model test/test_model.py)
   ament_add_pytest_test(test_inference test/test_inference.py)

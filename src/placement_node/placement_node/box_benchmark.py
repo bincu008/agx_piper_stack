@@ -20,21 +20,22 @@ from rclpy.serialization import serialize_message, deserialize_message
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rcl_interfaces.srv import GetParameters
 from rcl_interfaces.msg import SetParametersResult
-from sensor_msgs.msg import Image, PointCloud2, PointField
+from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header, String
 from geometry_msgs.msg import Vector3
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import MarkerArray
-from my_actions.msg import PlacementCandidate
-from my_actions.srv import CaptureObservation, GroundObject, FindCloudGrasps, PinLayoutObservation, PlanPlacement, SegmentGroundedImage, SearchPlacements, RunPipelineStep, VerifyPresence
-from my_actions.srv import ClearStepContext
+from my_actions.msg import PlacementCandidate, StepBinding
+from my_actions.srv import CaptureObservation, GroundObject, FindCloudGrasps, PinLayoutObservation, PlanPlacement, SegmentGroundedImage, RunPipelineStep, VerifyPresence
+from my_actions.srv import ClearStepContext, PrepareCloudScene
 
 from .box_fixture import replace_fixture_floor_noise, box_fixture, box_top, box_contact_seeds, tray_floor_mask
 from .node import PlacementNode
 from task_pipeline.metrics import summarize
 from task_pipeline.timing import publish_timing
-from my_actions.msg import PipelineTiming
+from my_actions.msg import ApiCallTrace, PipelineTiming
+from task_pipeline.api_metrics import summarize_api_calls
 from task_pipeline.registry import endpoint, FUNCTIONS
 from task_pipeline.placement import search_placements, validate_placements
 
@@ -58,6 +59,7 @@ class BoxBenchmark(Node):
             'candidate_count': 128, 'grid_resolution_m': 0.005,
             'floor_refinement_candidate_count': 0, 'floor_refinement_yaw_step_deg': 5.0,
             'yaw_step_deg': 15.0, 'max_pile_height_m': 0.30,
+            'stack_minimum_coverage': 0.6,
             'grasp_approach_tilts_deg': [0.0, 15.0, -15.0, 30.0, -30.0,
                                          45.0, -45.0, 60.0, -60.0],
             'request_timeout_sec': 600.0, 'auto_run': False,
@@ -71,7 +73,6 @@ class BoxBenchmark(Node):
         for name, value in params.items():
             self.declare_parameter(name, value)
         self._group = ReentrantCallbackGroup()
-        self._latest = {}
         self._lock = threading.Lock()
         self._cancel = threading.Event()
         self._worker = None
@@ -80,18 +81,16 @@ class BoxBenchmark(Node):
         self._bridge = CvBridge()
         self._report = {}
         self._function_samples = deque(maxlen=2048)
+        self._api_calls = []
+        self._api_traces = {}
+        self.create_subscription(ApiCallTrace, '/pipeline/api_traces',
+                                 self._observe_api_trace, 100, callback_group=self._group)
         self.create_subscription(PipelineTiming, '/pipeline/timings',
                                  self._observe_function_timing, 100, callback_group=self._group)
         self.add_on_set_parameters_callback(self._validate_parameters)
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._qos = qos
-        for topic, kind, key in [
-                ('/active_vision/observation_cloud', PointCloud2, 'cloud'),
-                ('/active_vision/observation_image', Image, 'image')]:
-            self.create_subscription(kind, topic,
-                lambda message, k=key: self._observe(k, message), qos,
-                callback_group=self._group)
         self._fused_pub = self.create_publisher(PointCloud2,
             '/box_benchmark/fused_cloud', qos)
         self._scene_pub = self.create_publisher(PointCloud2,
@@ -107,28 +106,14 @@ class BoxBenchmark(Node):
         self._step_client = self.create_client(RunPipelineStep, endpoint('run_step'),
             callback_group=self._group)
         self._step_context = ''
+        self._step_ids = {}
         self._step_contexts = []
         self._benchmark_clients = {
             'clear_context': self.create_client(ClearStepContext, endpoint('clear_step_context'),
                 callback_group=self._group),
             'gate': self.create_client(GetParameters,
                 '/piper_master_control/get_parameters', callback_group=self._group),
-            'capture': self.create_client(CaptureObservation, '/pipeline/capture_observation',
-                callback_group=self._group),
-            'pin': self.create_client(PinLayoutObservation,
-                endpoint('pin_grasp_observation'), callback_group=self._group),
-            'presence': self.create_client(VerifyPresence, endpoint('verify_presence'),
-                callback_group=self._group),
-            'ground': self.create_client(GroundObject, endpoint('ground_object'),
-                callback_group=self._group),
-            'segment': self.create_client(SegmentGroundedImage,
-                endpoint('segment_object'), callback_group=self._group),
-            'grasp': self.create_client(FindCloudGrasps,
-                endpoint('calculate_cloud_grasps'), callback_group=self._group),
-            'search': self.create_client(SearchPlacements, endpoint('search_placements'),
-                callback_group=self._group),
-            'place': self.create_client(PlanPlacement,
-                endpoint('validate_placements'), callback_group=self._group),
+
         }
         self.create_service(Trigger, '/box_benchmark/run', self._start,
                             callback_group=self._group)
@@ -145,6 +130,12 @@ class BoxBenchmark(Node):
             if self._worker is not None and self._worker.is_alive():
                 self._function_samples.append(sample)
 
+    def _observe_api_trace(self, sample):
+        with self._lock:
+            if self._worker is not None and self._worker.is_alive():
+                if len(self._api_traces) < 2048 or sample.operation_id in self._api_traces:
+                    self._api_traces.setdefault(sample.operation_id, {})[sample.component] = sample
+
     def _validate_parameters(self, parameters):
         _ = parameters
         busy = self._worker is not None and self._worker.is_alive()
@@ -154,12 +145,9 @@ class BoxBenchmark(Node):
     def _value(self, key):
         return self.get_parameter(key).value
 
-    def _observe(self, key, message):
-        with self._lock:
-            self._latest[key] = message
-
     def _auto(self):
-        if self._auto_pending and all(c.service_is_ready() for c in self._benchmark_clients.values()):
+        if (self._auto_pending and self._step_client.service_is_ready() and
+                all(c.service_is_ready() for c in self._benchmark_clients.values())):
             self._auto_pending = False
             self._start(Trigger.Request(), Trigger.Response())
 
@@ -173,6 +161,8 @@ class BoxBenchmark(Node):
             self._cancel.clear()
             if hasattr(self, '_function_samples'):
                 self._function_samples.clear()
+            self._api_calls = []
+            self._api_traces = {}
             self._run_service_active = True
             self._report = {}
             worker = threading.Thread(target=self._run, daemon=True)
@@ -217,38 +207,68 @@ class BoxBenchmark(Node):
         if self._cancel.is_set():
             raise RuntimeError('BENCHMARK_CANCELLED')
 
-    def _call(self, key, request):
+    def _call(self, key, request, bindings=()):
+        started_ns = time.monotonic_ns()
         self._check_cancel()
         names = {'capture': 'capture_observation', 'pin': 'pin_grasp_observation',
                  'ground': 'ground_object', 'presence': 'verify_presence', 'segment': 'segment_object',
                  'grasp': 'calculate_cloud_grasps', 'place': 'validate_placements',
                  'search': 'search_placements'}
+        names['scene'] = 'prepare_cloud_scene'
         function = names.get(key)
         client = self._step_client if function else self._benchmark_clients[key]
         if function:
             request = RunPipelineStep.Request(
                 context_id=self._step_context, function_name=function,
-                step_id=uuid.uuid4().hex, request_cdr=serialize_message(request))
-        if not client.wait_for_service(timeout_sec=10):
-            raise RuntimeError(f'SERVICE_UNAVAILABLE: {key}')
-        future = client.call_async(request)
-        done = threading.Event()
-        future.add_done_callback(lambda _: done.set())
-        deadline = time.monotonic() + float(self._value('request_timeout_sec'))
-        while not done.wait(0.1):
+                step_id=uuid.uuid4().hex, request_cdr=serialize_message(request),
+                bindings=list(bindings))
+        call = {'operation_id': request.step_id, 'function': function,
+                'started_ns': started_ns, 'success': False} if function else None
+        try:
+            if not client.wait_for_service(timeout_sec=10):
+                raise RuntimeError(f'SERVICE_UNAVAILABLE: {key}')
+            if call is not None:
+                call['sent_ns'] = time.monotonic_ns()
+            future = client.call_async(request)
+            done = threading.Event()
+
+            def received(_):
+                if call is not None:
+                    call['response_received_ns'] = time.monotonic_ns()
+                done.set()
+
+            future.add_done_callback(received)
+            deadline = time.monotonic() + float(self._value('request_timeout_sec'))
+            while not done.wait(0.1):
+                self._check_cancel()
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f'SERVICE_TIMEOUT: {key}')
             self._check_cancel()
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f'SERVICE_TIMEOUT: {key}')
-        self._check_cancel()
-        if future.exception() is not None:
-            raise RuntimeError(f'SERVICE_FAILED: {key}: {future.exception()}')
-        result = future.result()
-        if function:
-            if not result.result.response_cdr:
-                raise RuntimeError(result.status)
-            return deserialize_message(bytes(result.result.response_cdr),
-                                       FUNCTIONS[function].service_type.Response)
-        return result
+            if future.exception() is not None:
+                raise RuntimeError(f'SERVICE_FAILED: {key}: {future.exception()}')
+            result = future.result()
+            if function:
+                if not result.result.response_cdr:
+                    raise RuntimeError(result.status)
+                decoded = deserialize_message(bytes(result.result.response_cdr),
+                                              FUNCTIONS[function].service_type.Response)
+                call['success'] = result.result.success
+                call['status'] = result.result.status
+                self._step_ids[key] = request.step_id
+                return decoded
+            return result
+        except Exception as error:
+            if call is not None:
+                call['status'] = str(error)
+            raise
+        finally:
+            if call is not None:
+                call['finished_ns'] = time.monotonic_ns()
+                # Missing delivery stamps denote an unavailable/timed-out service.
+                call.setdefault('sent_ns', call['finished_ns'])
+                call.setdefault('response_received_ns', call['finished_ns'])
+                with self._lock:
+                    self._api_calls.append(call)
 
     def _status(self, stage, **data):
         self._report.update(data)
@@ -275,14 +295,17 @@ class BoxBenchmark(Node):
         raise RuntimeError('OBSERVATION_PIN_FAILED')
 
     def _cloud(self, header, points):
-        return point_cloud2.create_cloud_xyz32(header, np.asarray(points).tolist())
+        return point_cloud2.create_cloud_xyz32(header, np.asarray(points, dtype=np.float32).reshape(-1, 3))
 
     def _scene_cloud(self, header, points, flags):
         fields = [PointField(name=n, offset=i*4, datatype=PointField.FLOAT32, count=1)
                   for i, n in enumerate(['x', 'y', 'z'])]
         fields.append(PointField(name='support', offset=12,
                                  datatype=PointField.UINT8, count=1))
-        rows = [(*p, int(f)) for p, f in zip(points, flags)]
+        rows = np.empty(len(points), dtype=point_cloud2.dtype_from_fields(fields))
+        for axis, field in enumerate(('x', 'y', 'z')):
+            rows[field] = np.asarray(points)[:, axis]
+        rows['support'] = np.asarray(flags, dtype=np.uint8)
         return point_cloud2.create_cloud(header, fields, rows)
 
     def _finish_placement_timing(self, name, attempt, started):
@@ -310,6 +333,17 @@ class BoxBenchmark(Node):
         samples = [sample for sample in samples if header is not None and
                    sample.observation_header.stamp == header.stamp]
         self._report['function_summary'] = summarize(samples)
+        with getattr(self, '_lock', nullcontext()):
+            self._report['api_timing'] = summarize_api_calls(
+                list(getattr(self, '_api_calls', [])), dict(getattr(self, '_api_traces', {})))
+        self._report['api_timing']['non_api_seconds'] = (
+            self._report.get('elapsed_seconds', 0.0) -
+            self._report['api_timing']['total_api_seconds'])
+        for entry in self._report['api_timing']['functions']:
+            phases = entry['median_phases_seconds']
+            self.get_logger().info(
+                f"[API END-TO-END] {entry['function']} calls={entry['calls']} "
+                f"total={entry['median_total_seconds']:.4f}s phases=" + json.dumps(phases))
         self._report['timing_scope_note'] = (
             'API and orchestration times include child operations; do not sum nested scopes. '
             'Known-cloud grasp calls omit HGGD; this is not a full deployment runtime estimate.')
@@ -413,7 +447,7 @@ class BoxBenchmark(Node):
                 upright_yaw_step_deg=yaw_step,
                 maximum_pile_height_m=float(self._value('max_pile_height_m')),
                 bottom_points=bottom, support_mode=mode,
-                stack_support_points=top if mode == 'stack' else None,
+                stack_minimum_coverage=float(self._value('stack_minimum_coverage')),
                 early_stop_candidate_count=int(self._value('placement_early_stop_count')) if fast else 0,
                 timing_sink=lambda seconds, success, status: publish_timing(
                     getattr(self, '_pipeline_timing_pub', None), 'search_placements',
@@ -526,6 +560,7 @@ class BoxBenchmark(Node):
         try:
             BoxBenchmark._release_step_contexts(self)
             self._step_context = 'benchmark_' + uuid.uuid4().hex
+            self._step_ids = {}
             self._step_contexts = [self._step_context]
             self._report['step_contexts'] = self._step_contexts
             self._directory.mkdir(parents=True, exist_ok=True)
@@ -573,17 +608,23 @@ class BoxBenchmark(Node):
                 raise RuntimeError('IMAGE_SAVE_FAILED')
             started = time.perf_counter()
             presence = self._call('presence', VerifyPresence.Request(
-                image=image, target=str(self._value('destination'))))
+                target=str(self._value('destination'))), [StepBinding(
+                    target_field='image', source_step_id=self._step_ids['capture'],
+                    source_field='image')])
             if not presence.success or not presence.present:
                 raise RuntimeError('TRAY_NOT_CONFIRMED_PRESENT: ' + presence.status)
             grounding = self._call('ground', GroundObject.Request(
-                image=image, target=str(self._value('destination')), verify_presence=False))
+                target=str(self._value('destination')), verify_presence=False), [StepBinding(
+                    target_field='image', source_step_id=self._step_ids['capture'],
+                    source_field='image')])
             if not grounding.success:
                 raise RuntimeError('TRAY_GROUNDING_FAILED: ' + grounding.status)
             reply = grounding.text
             bbox = parse_grounding_box(reply, image.width, image.height)
             segmentation = self._call('segment', SegmentGroundedImage.Request(
-                image=image, bbox=list(bbox)))
+                bbox=list(bbox)), [StepBinding(
+                    target_field='image', source_step_id=self._step_ids['capture'],
+                    source_field='image')])
             if not segmentation.success:
                 raise RuntimeError('TRAY_SEGMENTATION_FAILED: ' + segmentation.status)
             if segmentation.mask.header != image.header:
@@ -641,12 +682,17 @@ class BoxBenchmark(Node):
                         for wall_seeds in pending_groups:
                             row['grasp_service_calls'] = row.get('grasp_service_calls', 0) + 1
                             grasp = self._call('grasp', FindCloudGrasps.Request(
-                                observation_header=header, object_cloud=object_message,
-                                scene_cloud=scene_message, object_name=name,
+                                observation_header=header, object_name=name,
                                 contact_left=[self._point(l) for l, _, _ in wall_seeds],
                                 contact_right=[self._point(r) for _, r, _ in wall_seeds],
                                 approaches=[Vector3(x=float(a[0]), y=float(a[1]), z=float(a[2]))
-                                            for _, _, a in wall_seeds]))
+                                            for _, _, a in wall_seeds]), [
+                                StepBinding(target_field='object_cloud',
+                                            source_step_id=self._scene_step,
+                                            source_field='object_cloud'),
+                                StepBinding(target_field='scene_cloud',
+                                            source_step_id=self._scene_step,
+                                            source_field='scene_cloud')])
                             if grasp.success:
                                 for candidate in grasp.candidates[:2]:
                                     if not any(np.allclose(self._pose_matrix(candidate.grasp_pose.pose),
@@ -666,6 +712,12 @@ class BoxBenchmark(Node):
                         row['grasp_count'] = len(grasp_candidates)
                     object_message = self._cloud(header, source)
                     scene_message = self._cloud(header, scene)
+                    prepared = self._call('scene', PrepareCloudScene.Request(
+                        observation_header=header, object_cloud=object_message,
+                        scene_cloud=scene_message))
+                    if not prepared.success:
+                        raise RuntimeError(prepared.status)
+                    self._scene_step = self._step_ids['scene']
                     self._expand_grasps = lambda limit=0: collect_grasps(limit)
                     collect_grasps(int(self._value('grasp_early_stop_count')) if bool(
                         self._value('optimize_pipeline')) else 0)
@@ -692,20 +744,18 @@ class BoxBenchmark(Node):
                         self._status('STACK_SEARCH', fallback_reason=row['attempts'][-1].get('failure')
                                      if row['attempts'] else 'STACK_ONLY')
                         mode = 'STACK'
+                        # All exposed tops contribute; no per-object support selection.
+                        selected_flags = flags.copy()
                         offset = len(original) + sum(len(box) for box in (*failed_boxes, *boxes[index+1:]))
-                        for previous, (points, top) in enumerate(zip(placed, tops)):
-                            selected_flags = flags.copy()
-                            # Label only the selected transformed TOP, never its sides.
-                            source_top_mask = placed_sources[previous][:, 2] >= placed_sources[previous][:, 2].max()-0.0001
-                            selected_flags[offset:offset+len(points)][source_top_mask] = 2
-                            accepted, attempt = self._plan(source, grasp_candidates, scene,
-                                selected_flags, tray, top, 'stack', header, name)
-                            attempt['support_object'] = placed_names[previous]
-                            row['attempts'].append(attempt)
-                            if accepted is not None:
-                                support_name = attempt['support_object']
-                                break
+                        for points, source_points in zip(placed, placed_sources):
+                            top_mask = source_points[:, 2] >= source_points[:, 2].max() - 0.0001
+                            selected_flags[offset:offset+len(points)][top_mask] = 2
                             offset += len(points)
+                        support_top = np.vstack(tops) if tops else tray_floor[:0]
+                        accepted, attempt = self._plan(source, grasp_candidates, scene,
+                            selected_flags, tray, support_top, 'stack', header, name)
+                        row['attempts'].append(attempt)
+                        support_name = 'heightmap'
                     if accepted is None:
                         raise RuntimeError(f'NO_VALID_PLACEMENT: {name}: {row["attempts"]}')
                     result, delta, candidate = accepted

@@ -103,6 +103,15 @@ def _validate_placements(request, call_backend, check_cancel, timing_sink):
     result.validation_seconds = time.monotonic() - started
     result.validated_candidate_count = submitted
     result.blocked_lift_grasp_ids = sorted(blocked)
+    if not result.success:
+        motion_failures = list(dict.fromkeys(
+            call['motion_status'] for call in calls
+            if not call['success'] and call['motion_status']))
+        if motion_failures and not result.motion_status:
+            # A later IK-only rejection must not hide why an earlier feasible
+            # placement could not complete its held-object motion.
+            result.status += '; earlier_motion_failures=' + '|'.join(
+                failure[:240] for failure in motion_failures[:6])
     import json
     result.validation_calls_json = json.dumps(calls)
     if timing_sink:

@@ -4,6 +4,11 @@ server:
   api_server_port: '18091'
   model_name: 'robobrain2.5-4b'
   request_timeout_sec: '120'
+insid3:
+  api_server_ip: '127.0.0.1'
+  api_server_port: '18092'
+  model_name: 'insid3-grounding'
+  request_timeout_sec: '120'
 lmstudio:
   api_server_ip: '10.211.55.2'
   api_server_port: '1234'

@@ -1,0 +1,16 @@
+[insid3] encoder load_state_dict: missing=0 unexpected=0
+[insid3] model loaded in 15.1s (backbone=vit-s, image_size=1024, tau=0.9)
+[insid3] serving on http://127.0.0.1:18092 (POST /v1/chat/completions, GET /health)
+[http] "GET /health HTTP/1.1" 200 -
+[insid3] req=1 target='the cup' ref=whole brown cup infer_s=28.46 total_s=28.50 box=[203, 15, 405, 279] mask_px=11178
+[http] "POST /v1/chat/completions HTTP/1.1" 200 -
+[insid3] req=2 target='the cup' ref=whole brown cup infer_s=27.85 total_s=27.86 box=[203, 15, 405, 279] mask_px=11178
+[http] "POST /v1/chat/completions HTTP/1.1" 200 -
+[insid3] req=3 target='the cup' ref=whole brown cup infer_s=28.01 total_s=28.02 box=[203, 15, 405, 279] mask_px=11178
+[http] "POST /v1/chat/completions HTTP/1.1" 200 -
+[insid3] req=4 target='cup handle' ref=cup handle only infer_s=27.80 total_s=27.81 box=[344, 77, 405, 200] mask_px=940
+[http] "POST /v1/chat/completions HTTP/1.1" 200 -
+[insid3] req=5 target='cup handle' ref=cup handle only infer_s=28.60 total_s=28.61 box=[344, 77, 405, 200] mask_px=940
+[http] "POST /v1/chat/completions HTTP/1.1" 200 -
+[insid3] req=6 target='cup handle' ref=cup handle only infer_s=28.27 total_s=28.27 box=[344, 77, 405, 200] mask_px=940
+[http] "POST /v1/chat/completions HTTP/1.1" 200 -

@@ -1,0 +1,123 @@
+{
+  "cases": {
+    "caseA_whole_cup": {
+      "target": "the cup",
+      "runs": [
+        {
+          "wall_s": 31.125,
+          "inference_s": 28.465,
+          "normalized_box": [
+            203,
+            15,
+            405,
+            279
+          ],
+          "pixel_box": [
+            130,
+            7,
+            259,
+            134
+          ],
+          "mask_pixels": 11178,
+          "request_id": 1
+        },
+        {
+          "wall_s": 29.009,
+          "inference_s": 27.853,
+          "normalized_box": [
+            203,
+            15,
+            405,
+            279
+          ],
+          "pixel_box": [
+            130,
+            7,
+            259,
+            134
+          ],
+          "mask_pixels": 11178,
+          "request_id": 2
+        },
+        {
+          "wall_s": 29.134,
+          "inference_s": 28.014,
+          "normalized_box": [
+            203,
+            15,
+            405,
+            279
+          ],
+          "pixel_box": [
+            130,
+            7,
+            259,
+            134
+          ],
+          "mask_pixels": 11178,
+          "request_id": 3
+        }
+      ]
+    },
+    "caseB_handle": {
+      "target": "cup handle",
+      "runs": [
+        {
+          "wall_s": 28.904,
+          "inference_s": 27.801,
+          "normalized_box": [
+            344,
+            77,
+            405,
+            200
+          ],
+          "pixel_box": [
+            220,
+            37,
+            259,
+            96
+          ],
+          "mask_pixels": 940,
+          "request_id": 4
+        },
+        {
+          "wall_s": 29.698,
+          "inference_s": 28.605,
+          "normalized_box": [
+            344,
+            77,
+            405,
+            200
+          ],
+          "pixel_box": [
+            220,
+            37,
+            259,
+            96
+          ],
+          "mask_pixels": 940,
+          "request_id": 5
+        },
+        {
+          "wall_s": 29.671,
+          "inference_s": 28.27,
+          "normalized_box": [
+            344,
+            77,
+            405,
+            200
+          ],
+          "pixel_box": [
+            220,
+            37,
+            259,
+            96
+          ],
+          "mask_pixels": 940,
+          "request_id": 6
+        }
+      ]
+    }
+  },
+  "model_load_s": 15.1
+}

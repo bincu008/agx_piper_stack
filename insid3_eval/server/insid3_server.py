@@ -510,6 +510,9 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[insid3] req={rid} target={target!r} template={template_key!r} ref={desc} "
               f"infer_s={infer_s:.2f} total_s={total_s:.2f} "
               f"box={content} mask_px={int(mask.sum())}", flush=True)
+        _mask_buf = io.BytesIO()
+        Image.fromarray((mask.astype("uint8")) * 255).save(_mask_buf, format="PNG")
+        _mask_b64 = base64.b64encode(_mask_buf.getvalue()).decode()
         self._json(200, {
             "id": f"chatcmpl-insid3-{rid}",
             "object": "chat.completion",
@@ -531,6 +534,9 @@ class Handler(BaseHTTPRequestHandler):
                 "normalized_box": norm_box,
                 "pixel_box": list(pixel_box),
                 "image_size": [image.width, image.height],
+                # Raw INSID3 mask as base64 PNG (consumed by the
+                # /insid3 ROS bridge and the MCP demo transport).
+                "mask_png_b64": _mask_b64,
             },
         })
 

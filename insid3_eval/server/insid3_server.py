@@ -108,6 +108,11 @@ def parse_args() -> argparse.Namespace:
                         help="DINOv3 weights .bin (default: <INSID3_DIR>/pretrain/<backbone>.bin)")
     parser.add_argument("--ref-dir", default=str(here.parent / "ref"),
                         help="reference image/mask directory")
+    parser.add_argument("--template-dir", default=None,
+                        help="directory holding manifest.json of extra "
+                             "reference templates (name -> ref.jpg/mask.png); "
+                             "a template is selected per-request with the "
+                             "'insid3_template' payload field")
     parser.add_argument("--debug-dir", default=None,
                         help="write per-request target/mask/overlay PNGs here")
     return parser.parse_args()
@@ -178,9 +183,32 @@ REQUEST_ID = 0
 REQUEST_ID_LOCK = threading.Lock()
 
 REF_DIR = Path(ARGS.ref_dir)
+
+
+def _resolve(p: str | Path) -> Path:
+    """Resolve a reference path: absolute stays, relative joins REF_DIR."""
+    p = Path(p)
+    return p if p.is_absolute() else REF_DIR / p
+
+
+if ARGS.template_dir:
+    # Extra reference templates (e.g. the kitchen container/food pairs):
+    # <template-dir>/manifest.json maps name -> {ref_image, ref_mask,
+    # description}; names become selectable via the 'insid3_template'
+    # request field and are precomputed into the ref-cache like the
+    # built-in cup/handle references.
+    _tdir = Path(ARGS.template_dir)
+    _manifest = json.loads((_tdir / "manifest.json").read_text())
+    for _name, _entry in _manifest.items():
+        REFS[_name] = (str(_tdir / _entry["ref_image"]),
+                       str(_tdir / _entry["ref_mask"]),
+                       _entry.get("description", _name))
+    print(f"[insid3] loaded {len(_manifest)} templates from {_tdir}",
+          flush=True)
+
 for _key, (img, msk, _desc) in REFS.items():
-    assert (REF_DIR / img).exists(), f"missing reference image {REF_DIR / img}"
-    assert (REF_DIR / msk).exists(), f"missing reference mask {REF_DIR / msk}"
+    assert _resolve(img).exists(), f"missing reference image {_resolve(img)}"
+    assert _resolve(msk).exists(), f"missing reference mask {_resolve(msk)}"
 
 # Reference-feature cache: one encoder pass per registered reference at
 # startup; per-request inference then only encodes the target image.
@@ -330,26 +358,42 @@ def mask_to_boxes(mask: np.ndarray, width: int, height: int):
 if not ARGS.no_ref_cache:
     for _key, (img, msk, _desc) in REFS.items():
         t0 = time.time()
-        REF_CACHES[_key] = precompute_ref(MODEL, str(REF_DIR / img), str(REF_DIR / msk))
+        REF_CACHES[_key] = precompute_ref(MODEL, str(_resolve(img)), str(_resolve(msk)))
         print(f"[insid3] ref-cache[{_key}] precomputed in {time.time() - t0:.1f}s",
               flush=True)
 
 
-def run_grounding(image: Image.Image, target: str):
-    """Per-request path: reference lookup + INSID3 segment (cached or full)."""
-    key = "handle" if "handle" in target.lower() else "cup" if "cup" in target.lower() else None
-    ref = pick_reference(target)
-    if ref is None:
-        raise ValueError(
-            f"unsupported grounding target {target!r}: no INSID3 reference registered "
-            f"(supported: targets containing 'cup' or 'handle')")
+def run_grounding(image: Image.Image, target: str | None = None,
+                  template_key: str | None = None):
+    """Per-request path: reference lookup + INSID3 segment (cached or full).
+
+    template_key selects a registered reference directly (used by the
+    /insid3 ROS bridge); otherwise the target string is matched against
+    the built-in cup/handle references (RoboBrain prompt path).
+    """
+    if template_key is not None:
+        ref = REFS.get(template_key)
+        if ref is None:
+            raise ValueError(
+                f"unknown INSID3 template {template_key!r} "
+                f"(registered: {sorted(REFS)})")
+        key = template_key
+    else:
+        key = ("handle" if "handle" in target.lower()
+               else "cup" if "cup" in target.lower() else None)
+        ref = pick_reference(target)
+        if ref is None:
+            raise ValueError(
+                f"unsupported grounding target {target!r}: no INSID3 reference registered "
+                f"(supported: targets containing 'cup' or 'handle', "
+                f"or insid3_template in {sorted(REFS)})")
     ref_img, ref_mask, desc = ref
     t0 = time.time()
     with INFER_LOCK:  # serialize: one request at a time, like the C++ client's policy
         if key is not None and key in REF_CACHES:
             pred = segment_cached(MODEL, REF_CACHES[key], image)
         else:  # --no-ref-cache fallback: original set_reference/set_target/segment
-            MODEL.set_reference(str(REF_DIR / ref_img), str(REF_DIR / ref_mask))
+            MODEL.set_reference(str(_resolve(ref_img)), str(_resolve(ref_mask)))
             MODEL.set_target(image)
             pred = MODEL.segment()
     dt = time.time() - t0
@@ -358,7 +402,7 @@ def run_grounding(image: Image.Image, target: str):
     boxes = mask_to_boxes(mask, image.width, image.height)
     if boxes is None:
         raise RuntimeError(f"INSID3 predicted an empty mask for target {target!r}")
-    return desc, dt, mask, boxes
+    return key, desc, dt, mask, boxes
 
 
 # ----------------------------------------------------------------------------
@@ -420,7 +464,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": {"message": "no base64 data-URL image in request"}})
             return
         target = extract_target(prompt)
-        if not target:
+        template_key = payload.get("insid3_template")
+        if template_key is None and not target:
             self._json(400, {"error": {"message": "could not parse grounding target from prompt"}})
             return
 
@@ -435,7 +480,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": {"message": f"could not decode image: {exc}"}})
             return
         try:
-            desc, infer_s, mask, (norm_box, pixel_box) = run_grounding(image, target)
+            key, desc, infer_s, mask, (norm_box, pixel_box) = run_grounding(
+                image, target, template_key)
         except ValueError as exc:  # unsupported target -> 400
             self._json(400, {"error": {"message": str(exc)}})
             return
@@ -445,22 +491,23 @@ class Handler(BaseHTTPRequestHandler):
         total_s = time.time() - t_req
 
         if DEBUG_DIR:
-            tag = re.sub(r"[^a-z0-9]+", "_", target.lower()).strip("_") or "target"
+            tag = re.sub(r"[^a-z0-9]+", "_", (template_key or target or "").lower()).strip("_") or "target"
             stem = DEBUG_DIR / f"req{rid:03d}_{tag}"
             image.save(str(stem.with_suffix(".jpg")))
             Image.fromarray((mask.astype("uint8")) * 255).save(str(stem.with_name(stem.name + "_mask.png")))
             try:
                 from utils.visualization import visualize_prediction
+                ref_img_p, ref_mask_p, _ = REFS[key]
                 visualize_prediction(
-                    str(REF_DIR / REFS["cup" if desc.startswith("whole") else "handle"][0]),
-                    str(REF_DIR / REFS["cup" if desc.startswith("whole") else "handle"][1]),
+                    str(_resolve(ref_img_p)),
+                    str(_resolve(ref_mask_p)),
                     image, mask, str(stem.with_name(stem.name + "_overlay.png")))
             except Exception as exc:
                 print(f"[insid3] debug overlay failed: {exc}", flush=True)
 
         x1, y1, x2, y2 = norm_box
         content = f"[{x1}, {y1}, {x2}, {y2}]"
-        print(f"[insid3] req={rid} target={target!r} ref={desc} "
+        print(f"[insid3] req={rid} target={target!r} template={template_key!r} ref={desc} "
               f"infer_s={infer_s:.2f} total_s={total_s:.2f} "
               f"box={content} mask_px={int(mask.sum())}", flush=True)
         self._json(200, {

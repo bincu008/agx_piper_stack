@@ -1,0 +1,13 @@
+# Request INSID3 in-context segmentation of the input image.
+# template_name selects a reference pair from the server's template registry
+# (see templates/manifest.json), e.g. "egg_container".
+string template_name
+sensor_msgs/Image image
+---
+bool success
+string message
+# Raw INSID3 output: mono8 binary mask at the input image resolution.
+sensor_msgs/Image mask
+# Pixel-space bounding box of the mask: [x1, y1, x2, y2]. Empty when no mask.
+float32[] bbox_xyxy
+float32 infer_time_s

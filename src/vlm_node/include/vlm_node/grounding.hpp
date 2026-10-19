@@ -32,6 +32,33 @@ inline bool parseGroundingBox(const std::string &reply, std::smatch &match)
     return x1 < x2 && y1 < y2 && x2 <= 1000 && y2 <= 1000;
 }
 
+// Lenient fallback for agent-style replies (e.g. nanobot): finds the first
+// "[x1,y1,x2,y2]" bracket group embedded in surrounding text and rounds
+// fractional coordinates. The strict parse above stays the primary path.
+// The rebuilt string lives in thread-local storage so the returned smatch
+// stays valid until the next call on the same thread.
+inline bool parseGroundingBoxLenient(const std::string &reply, std::smatch &match)
+{
+    if (parseGroundingBox(reply, match)) return true;
+    static const std::regex loose(
+        R"(\[\s*([0-9]{1,4}(?:\.[0-9]+)?)\s*,\s*([0-9]{1,4}(?:\.[0-9]+)?)\s*,\s*([0-9]{1,4}(?:\.[0-9]+)?)\s*,\s*([0-9]{1,4}(?:\.[0-9]+)?)\s*\])");
+    static thread_local std::string rebuilt;
+    std::smatch found;
+    if (!std::regex_search(reply, found, loose)) return false;
+    const int coords[4] = {
+        static_cast<int>(std::lround(std::stod(found[1].str()))),
+        static_cast<int>(std::lround(std::stod(found[2].str()))),
+        static_cast<int>(std::lround(std::stod(found[3].str()))),
+        static_cast<int>(std::lround(std::stod(found[4].str())))};
+    for (int c : coords) {
+        if (c < 0 || c > 1000) return false;
+    }
+    if (!(coords[0] < coords[2] && coords[1] < coords[3])) return false;
+    rebuilt = "[" + std::to_string(coords[0]) + "," + std::to_string(coords[1]) +
+        "," + std::to_string(coords[2]) + "," + std::to_string(coords[3]) + "]";
+    return parseGroundingBox(rebuilt, match);
+}
+
 // Preserve the existing inclusive pixel-coordinate convention used by EdgeSAM.
 inline int groundingPixel(double coordinate, int dimension)
 {

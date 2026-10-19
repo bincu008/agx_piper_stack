@@ -1,0 +1,10 @@
+# Draw a binary mask onto an image for human review.
+sensor_msgs/Image image
+sensor_msgs/Image mask
+---
+bool success
+string message
+# RGB overlay: input image with the mask blended in green.
+sensor_msgs/Image overlay
+# Same overlay encoded as base64 PNG, convenient for chat/API consumers.
+string overlay_png_b64

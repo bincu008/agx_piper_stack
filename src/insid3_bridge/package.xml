@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>insid3_bridge</name>
+  <version>0.1.0</version>
+  <description>ROS2 bridge node exposing INSID3 grounding as /insid3/* services.</description>
+  <maintainer email="muse@agent.local">Muse</maintainer>
+  <license>MIT</license>
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>insid3_bridge_msgs</depend>
+  <exec_depend>python3-pil</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

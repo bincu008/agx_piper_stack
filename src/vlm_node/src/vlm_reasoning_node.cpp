@@ -249,7 +249,7 @@ public:
                     response->text = callVLMBackend("", prepareOfficialPrompt("GROUNDING", vlm_node::wholeObjectGroundingTarget(request->target)),
                         48, image, request->sent_image_path);
                     std::smatch match;
-                    if (!vlm_node::parseGroundingBox(response->text, match)) {
+                    if (!vlm_node::parseGroundingBoxLenient(response->text, match)) {
                         response->status = "GROUNDING_PARSE_FAILED: " + response->text;
                         return;
                     }
@@ -2423,7 +2423,7 @@ private:
             }
             if (parsed.mode == "GROUNDING") {
                 std::smatch box;
-                if (!vlm_node::parseGroundingBox(reply, box)) {
+                if (!vlm_node::parseGroundingBoxLenient(reply, box)) {
                     response->response = "GROUNDING_PARSE_FAILED: " + reply;
                     return;
                 }

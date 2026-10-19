@@ -9,6 +9,11 @@ insid3:
   api_server_port: '18092'
   model_name: 'insid3-grounding'
   request_timeout_sec: '120'
+nanobot:
+  api_server_ip: '127.0.0.1'
+  api_server_port: '18093'
+  model_name: 'nanobot-agent'
+  request_timeout_sec: '600'
 lmstudio:
   api_server_ip: '10.211.55.2'
   api_server_port: '1234'

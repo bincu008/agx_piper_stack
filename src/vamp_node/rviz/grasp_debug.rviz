@@ -6,6 +6,24 @@ Panels:
 Visualization Manager:
   Class: ""
   Displays:
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: false
+      Name: Trial Placement Candidates - Proposed Only
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /placement/trial_candidates
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Live Arm Collision Spheres and Indices
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /vamp_debug/current_collision_spheres
     - Alpha: 0.35
       Cell Size: 0.1
       Class: rviz_default_plugins/Grid
@@ -14,6 +32,15 @@ Visualization Manager:
       Name: Ground Grid
       Plane: XY
       Reference Frame: base_link
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Prepared Grasp and Pregrasp
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /pipeline/prepared_grasp
     - Class: rviz_default_plugins/TF
       Enabled: true
       Frame Timeout: 15
@@ -111,8 +138,8 @@ Visualization Manager:
         Value: /placement/artificial_bottom_cloud
       Use Fixed Frame: true
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: Accepted Grasp Candidate
+      Enabled: false
+      Name: Valid Grasp Candidate Pool
       Namespaces:
         {}
       Queue Size: 10
@@ -123,7 +150,7 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /vamp_planner/grasp_candidates_markers
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
+      Enabled: false
       Name: Valid Grasps Before Ranking
       Namespaces:
         {}

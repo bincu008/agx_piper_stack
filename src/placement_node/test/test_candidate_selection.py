@@ -156,3 +156,23 @@ def test_coverage_measures_projected_area_not_contact_fraction():
     *_, support, valid = _heightmap_trial_block(*args, stack_minimum_coverage=1.0)
     assert valid[0]
     assert support.sum() == 8
+
+
+def test_grid_shortlist_keeps_fine_yaws_and_broad_coverage_within_budget():
+    candidates = []
+    for degrees in [0, -5, -10, 5, 10, -15, 15, -20, 20, 45, 90, 135, 180, -135, -90, -45]:
+        angle = math.radians(degrees)
+        rotation = np.array([[math.cos(angle), -math.sin(angle), 0],
+                             [math.sin(angle), math.cos(angle), 0], [0, 0, 1]])
+        for x in (.3, .35, .4):
+            candidates.append(PlacementCandidate(
+                rotation, np.array([x, .1, .02]), -float(len(candidates))))
+    selected = _select_diverse_candidates(candidates, 16, preserve_yaw=True)
+    assert len(selected) == 16
+    angles = [round(math.degrees(math.atan2(c.rotation[1, 0], c.rotation[0, 0])))
+              for c in selected]
+    assert -10 in angles and -5 in angles
+    assert any(abs(angle) >= 90 for angle in angles)
+    assert max(c.translation[0] for c in selected) == .4
+    assert len({id(c) for c in selected}) == 16
+    assert [c.score for c in selected] == sorted([c.score for c in selected], reverse=True)

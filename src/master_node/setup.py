@@ -16,7 +16,7 @@ setup(
         ('share/' + package_name + '/config/inference',
             glob('config/inference/*.yaml')),
         ('share/' + package_name + '/config/calibration',
-            glob('config/calibration/*.yaml')),
+            glob('config/calibration/*.yaml') + glob('config/calibration/*.json')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -32,6 +32,7 @@ setup(
     entry_points={
         'console_scripts': [
             'piper_master_control = master_node.piper_master_control:main',
+            'calibrate_plate = master_node.calibrate_plate:main',
         ],
     },
 )

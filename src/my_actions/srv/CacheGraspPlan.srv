@@ -2,6 +2,10 @@ string object_name
 std_msgs/Header observation_header
 my_actions/GraspCandidate[] candidates
 uint32 ttl_seconds
+sensor_msgs/PointCloud2 observation_cloud
+sensor_msgs/Image source_mask
+# Original semantic mask bounds source seam recovery; neighbors stay blocking.
+sensor_msgs/Image semantic_mask
 ---
 bool success
 string status

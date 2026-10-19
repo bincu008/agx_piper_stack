@@ -12,6 +12,7 @@
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
   <depend>sensor_msgs</depend>
+  <depend>agx_arm_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>my_actions</depend>

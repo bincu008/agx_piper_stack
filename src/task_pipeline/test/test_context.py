@@ -282,3 +282,84 @@ def test_fingerprint_preserves_wire_digest_for_buffer_and_sequence_inputs():
     expected = hashlib.sha256(b'ground_object' + payload).hexdigest()
     for value in (payload, bytearray(payload), array.array('B', payload), list(payload)):
         assert fingerprint('ground_object', value) == expected
+
+
+def test_pause_keeps_physical_tasks_pending_and_resume_uses_bound_results():
+    """A successful planning prefix leaves genuine queued actuator tasks untouched."""
+    from my_actions.srv import ExecutePlan, PreparedGraspLift
+    calls = []
+
+    def backend(name, request):
+        calls.append(name)
+        if name == 'prepare_grasp_lift':
+            return PreparedGraspLift.Response(success=True, plan_revision=17)
+        assert request.plan_revision == 17 and request.segment == 'lift'
+        return ExecutePlan.Response(success=True, motion_completed=True)
+
+    store = StepStore(backend)
+    context, _ = store.submit('', [
+        step('prepare', 'prepare_grasp_lift', PreparedGraspLift.Request()),
+        step('lift', 'execute_plan', ExecutePlan.Request(segment='lift'),
+             [('plan_revision', 'prepare', 'plan_revision')]),
+    ])
+    status, results = store.run_queue(context, stop_before_step_id='lift')
+    assert status == 'PAUSED_AT_STEP_BOUNDARY' and len(results) == 1
+    state = json.loads(store.snapshot(context)[0])[0]
+    assert state['pending'] == [{'step_id': 'lift', 'function': 'execute_plan'}]
+    assert calls == ['prepare_grasp_lift']
+    status, results = store.run_queue(context)
+    assert status == 'COMPLETE' and len(results) == 1
+    assert calls == ['prepare_grasp_lift', 'execute_plan']
+
+
+def test_invalid_pause_boundary_does_not_execute_or_lock_context():
+    """Reject misspelled pause boundaries before any work starts."""
+    store = StepStore(lambda *_: pytest.fail('Must not execute'))
+    context, _ = store.submit('', [step('observe', 'capture_observation',
+                                       CaptureObservation.Request())])
+    with pytest.raises(ValueError, match='UNKNOWN_PAUSE_BOUNDARY'):
+        store.run_queue(context, stop_before_step_id='missing')
+    assert not json.loads(store.snapshot(context)[0])[0]['busy']
+
+
+def test_failure_flush_only_discards_idle_queues_for_matching_object():
+    """Recovery cannot erase another object's tasks or a busy owner."""
+    from my_actions.srv import ExecutePlan
+    store = StepStore(lambda *_: None)
+    ids = []
+    for name in ('bowl', 'cup', 'bowl'):
+        context, _ = store.submit('', [step('lift', 'execute_plan', ExecutePlan.Request(
+            object_name=name, segment='lift'))])
+        ids.append(context)
+    store._contexts[ids[2]].busy = True
+    store.flush_execution_queues('bowl')
+    states = {s['context_id']: s for s in json.loads(store.snapshot()[0])}
+    assert not states[ids[0]]['pending']
+    assert states[ids[1]]['pending'] and states[ids[2]]['pending']
+
+
+def test_failed_queue_flush_retains_completed_results_and_other_contexts():
+    """Planning rejection also discards future physical tasks without global erasure."""
+    from my_actions.srv import ExecutePlan
+    store = StepStore(lambda *_: CaptureObservation.Response(success=True))
+    context, _ = store.submit('', [
+        step('observe', 'capture_observation', CaptureObservation.Request()),
+        step('lift', 'execute_plan', ExecutePlan.Request(object_name='bowl', segment='lift'))])
+    other, _ = store.submit('', [step('observe', 'capture_observation', CaptureObservation.Request())])
+    store.run_queue(context, stop_before_step_id='lift')
+    store.flush_failed_queue(context)
+    states = {s['context_id']: s for s in json.loads(store.snapshot()[0])}
+    assert not states[context]['pending'] and len(states[context]['results']) == 1
+    assert states[other]['pending']
+
+
+def test_typed_fingerprint_ignores_cdr_padding_and_detects_semantic_changes():
+    from task_pipeline.context import request_fingerprint
+    first=GroundObject.Request(target='cup')
+    same=GroundObject.Request(target='cup')
+    assert request_fingerprint('ground_object',first)==request_fingerprint('ground_object',same)
+    same.target='bowl'
+    assert request_fingerprint('ground_object',first)!=request_fingerprint('ground_object',same)
+    first.image.data=bytes([1,2,3,4])
+    same.target='cup';same.image.data=bytes([1,2,3,5])
+    assert request_fingerprint('ground_object',first)!=request_fingerprint('ground_object',same)

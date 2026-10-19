@@ -19,18 +19,19 @@ def search_placements(search, *args, timing_sink=None, **kwargs):
     return result
 
 
-def validate_placements(request, call_backend, check_cancel=lambda: None, timing_sink=None):
+def validate_placements(request, call_backend, check_cancel=lambda: None, timing_sink=None,
+                        validate_selected=None):
     """Validate through one shared policy and measure exceptional exits too."""
     started = time.monotonic()
     try:
-        return _validate_placements(request, call_backend, check_cancel, timing_sink)
+        return _validate_placements(request, call_backend, check_cancel, timing_sink, validate_selected)
     except Exception as error:
         if timing_sink:
             timing_sink(time.monotonic() - started, False, str(error))
         raise
 
 
-def _validate_placements(request, call_backend, check_cancel, timing_sink):
+def _validate_placements(request, call_backend, check_cancel, timing_sink, validate_selected):
     """Stop on full success, preserving alternatives after motion failures."""
     from my_actions.srv import PlanPlacement
 
@@ -43,16 +44,17 @@ def _validate_placements(request, call_backend, check_cancel, timing_sink):
     submitted = 0
     result = PlanPlacement.Response(status='NO_LIFT_FEASIBLE_GRASP')
     for index in range(0, len(candidates), batch_size):
-        pending = [(candidates[index:index + batch_size], grasps)]
+        pending = [(candidates[index:index + batch_size], grasps, request.lift_distance_m)]
         while pending:
             check_cancel()
-            goals, active = pending.pop(0)
+            goals, active, lift_distance = pending.pop(0)
             if request.retry_motion_failures:
                 active = [g for g in active if g.id not in blocked]
             if not active:
                 continue
             query = copy.copy(request)
             query.candidates = goals
+            query.lift_distance_m = lift_distance
             query.grasp_candidate = active[0]
             query.alternative_grasps = active[1:]
             # Downstream API dispatch is a single backend operation. The outer
@@ -74,11 +76,17 @@ def _validate_placements(request, call_backend, check_cancel, timing_sink):
                       not result.motion_success):
                     result.success = False
                     result.status = 'PLACEMENT_MOTION_NOT_VALIDATED'
+            if result.success and validate_selected is not None:
+                checked = validate_selected(result)
+                if not checked.success:
+                    result.success = result.motion_success = False
+                    result.status = result.motion_status = 'PLACEMENT_SLOT_REJECTED: '+checked.status
             calls.append({
                 'success': result.success, 'status': result.status,
                 'motion_status': result.motion_status,
                 'grasp_id': result.selected_grasp_candidate.id,
                 'candidate_id': result.selected_candidate.id,
+                'lift_distance_m': float(lift_distance or .10),
                 'pose_validation_seconds': result.pose_validation_seconds,
                 'descent_search_seconds': result.descent_search_seconds,
                 'lift_seconds': result.lift_seconds,
@@ -89,15 +97,25 @@ def _validate_placements(request, call_backend, check_cancel, timing_sink):
             if not result.motion_status:
                 continue
             rejected = result.selected_grasp_candidate.id
+            nominal_lift = float(request.lift_distance_m or .10)
+            current_lift = float(lift_distance or .10)
+            if (request.plan_pick_place_motion and
+                    result.motion_status.startswith('TRANSFER_LIFT_ENDPOINT_REJECTED:') and
+                    current_lift < nominal_lift+.02-1e-6):
+                # Calculation-only recovery: the lifted endpoint must clear
+                # the full transfer checker before RRT can start. Keep all
+                # ordinary checks and never retry an actuator command here.
+                pending.insert(0, (goals, active, min(current_lift+.01, nominal_lift+.02)))
+                continue
             remaining = [g for g in active if g.id != rejected]
             if remaining:
-                pending.insert(0, (goals, remaining))
+                pending.insert(0, (goals, remaining, lift_distance))
             if result.motion_status.startswith('LIFT_'):
                 blocked.add(rejected)
             else:
                 other_goals = [g for g in goals if g.id != result.selected_candidate.id]
                 if other_goals:
-                    pending.append((other_goals, [g for g in active if g.id == rejected]))
+                    pending.append((other_goals, [g for g in active if g.id == rejected], lift_distance))
         if result.success:
             break
     result.validation_seconds = time.monotonic() - started

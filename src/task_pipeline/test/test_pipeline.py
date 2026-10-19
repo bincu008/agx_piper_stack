@@ -17,7 +17,7 @@ from sensor_msgs.msg import Image, PointCloud2
 from task_pipeline.metrics import summarize
 from task_pipeline.node import PipelineNode
 from task_pipeline.placement import search_placements, validate_placements
-from task_pipeline.registry import catalog
+from task_pipeline.registry import FUNCTIONS, catalog
 
 
 def request(grasp_ids=(1, 2)):
@@ -228,3 +228,120 @@ def test_metrics_keep_input_modes_and_nested_scopes_separate():
                     row['scope'] == 'api_inclusive')
     assert full_api['calls'] == 2 and full_api['failed_calls'] == 1
     assert full_api['median_seconds'] == 3.0
+
+
+def test_achieved_slot_rejection_tries_next_goal_without_actuation():
+    """A full motion result outside its reserved cells must not end the search."""
+    query = request((1,))
+    calls = []
+
+    def backend(item):
+        calls.append(item.candidates[0].id)
+        return PlanPlacement.Response(success=True, motion_success=True,
+                                      selected_grasp_candidate=item.grasp_candidate,
+                                      selected_candidate=item.candidates[0])
+
+    def slot_check(result):
+        return SimpleNamespace(success=result.selected_candidate.id != 1,
+                               status='FLOOR_SLOT_SOURCE_OR_POSE_MISMATCH')
+
+    result = validate_placements(query, backend, validate_selected=slot_check)
+    assert result.success and calls == [1, 2]
+    assert result.selected_candidate.id == 2
+
+
+def test_blocked_transfer_start_retries_bounded_higher_lift():
+    """Require a fully checked transfer handoff without actuator retries."""
+    query = request((1,))
+    query.lift_distance_m = .05
+    heights = []
+
+    def backend(item):
+        heights.append(item.lift_distance_m)
+        success = item.lift_distance_m > .055
+        return PlanPlacement.Response(success=success, motion_success=success,
+                                      selected_grasp_candidate=item.grasp_candidate,
+                                      selected_candidate=item.candidates[0],
+                                      motion_status='OK' if success else
+                                      'TRANSFER_LIFT_ENDPOINT_REJECTED:ATTACHED_OBJECT')
+
+    result = validate_placements(query, backend)
+    assert result.success and heights == pytest.approx([.05, .06])
+    assert query.lift_distance_m == pytest.approx(.05)
+
+
+def test_transfer_start_recovery_is_bounded():
+    """Exhaust clearance alternatives without relaxing collision checks."""
+    query = request((1,))
+    query.candidates = query.candidates[:1]
+    query.lift_distance_m = .05
+    heights = []
+
+    def backend(item):
+        heights.append(item.lift_distance_m)
+        return PlanPlacement.Response(selected_grasp_candidate=item.grasp_candidate,
+                                      selected_candidate=item.candidates[0],
+                                      motion_status='TRANSFER_LIFT_ENDPOINT_REJECTED:ATTACHED_OBJECT')
+
+    result = validate_placements(query, backend)
+    assert not result.success
+    assert heights == pytest.approx([.05, .06, .07])
+
+
+@pytest.mark.parametrize('height', [.001, .15, .30])
+def test_lift_recipes_accept_positive_heights_without_ten_cm_cap(height):
+    """Both public recipes preserve requests outside the former fixed range."""
+    from rclpy.serialization import deserialize_message
+    from task_pipeline.recipes import prepare_grasp_lift, prepare_pick_place
+    from my_actions.srv import PreparedGraspLift, PreparePickPlace
+    for build, schema in ((prepare_grasp_lift, PreparedGraspLift),
+                          (prepare_pick_place, PreparePickPlace)):
+        steps = build('bowl', lift_distance_m=height)
+        motion = next(s for s in steps if s.step_id == 'prepare_motion')
+        request_data = deserialize_message(bytes(motion.request_cdr), schema.Request)
+        assert request_data.lift_distance_m == pytest.approx(height)
+
+
+@pytest.mark.parametrize('height', [-.1, 0., float('nan'), float('inf')])
+def test_lift_recipes_reject_invalid_physical_distances(height):
+    """Removing the height ceiling must not admit invalid numeric requests."""
+    from task_pipeline.recipes import prepare_grasp_lift, prepare_pick_place
+    for build in (prepare_grasp_lift, prepare_pick_place):
+        with pytest.raises(ValueError, match='finite and positive'):
+            build('bowl', lift_distance_m=height)
+
+
+def test_transfer_clearance_recovery_also_works_above_ten_cm():
+    """Recovery stays bounded relative to the requested height, without clipping."""
+    query = request((1,))
+    query.candidates = query.candidates[:1]
+    query.lift_distance_m = .15
+    heights = []
+
+    def backend(item):
+        heights.append(item.lift_distance_m)
+        success = item.lift_distance_m > .155
+        return PlanPlacement.Response(success=success, motion_success=success,
+                                      selected_grasp_candidate=item.grasp_candidate,
+                                      selected_candidate=item.candidates[0],
+                                      motion_status='OK' if success else
+                                      'TRANSFER_LIFT_ENDPOINT_REJECTED:ATTACHED_OBJECT')
+
+    assert validate_placements(query, backend).success
+    assert heights == pytest.approx([.15, .16])
+
+
+def test_active_recipe_uses_shared_memory_and_valid_predecessors():
+    from task_pipeline.recipes import with_active_memory, prepare_pick_place
+    from task_pipeline.context import get_field
+    recipe = with_active_memory(prepare_pick_place('bowl','tray'),'bowl','tray')
+    seen = {}
+    for item in recipe:
+        schema = FUNCTIONS[item.function_name].service_type
+        for binding in item.bindings:
+            assert binding.source_step_id in seen
+            get_field(seen[binding.source_step_id].Response(),binding.source_field)
+        seen[item.step_id] = schema
+    assert next(s for s in recipe if s.step_id=='segment_cup').function_name=='resolve_target'
+    assert next(s for s in recipe if s.step_id=='placements').function_name=='find_active_placements'
+    assert all(s.function_name!='ground_object' for s in recipe)

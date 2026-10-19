@@ -27,6 +27,8 @@ class FloorSlots:
     gap: float = .005
     bounds: np.ndarray | None = None
     cell_gaps: np.ndarray | None = None
+    large_cell: tuple[int, int] | None = None
+    working_bounds: np.ndarray | None = None
 
     @classmethod
     def build(cls, boundary, clearance=.002, size=.125, gap=.005):
@@ -61,6 +63,9 @@ class FloorSlots:
         """Serialize immutable geometry through shared search diagnostics."""
         return {'origin': self.origin.tolist(), 'axes': self.axes.tolist(),
                 'cells': self.cells.tolist(), 'size': self.size, 'gap': self.gap,
+                **({'large_cell': list(self.large_cell)} if self.large_cell is not None else {}),
+                **({'working_bounds': self.working_bounds.tolist()}
+                   if self.working_bounds is not None else {}),
                 **({'bounds': self.bounds.tolist(),
                     'cell_gaps': self.cell_gaps.tolist() if self.cell_gaps is not None else None}
                    if self.bounds is not None else {})}
@@ -72,7 +77,9 @@ class FloorSlots:
                    np.asarray(data['cells'], np.int32).reshape(-1, 2),
                    data['size'], data['gap'],
                    np.asarray(data['bounds']) if 'bounds' in data else None,
-                   np.asarray(data['cell_gaps']) if data.get('cell_gaps') is not None else None)
+                   np.asarray(data['cell_gaps']) if data.get('cell_gaps') is not None else None,
+                   tuple(data['large_cell']) if data.get('large_cell') is not None else None,
+                   np.asarray(data['working_bounds']) if 'working_bounds' in data else None)
 
     def vertices(self, cell):
         """Return cell corners in the destination XY frame."""
@@ -111,10 +118,56 @@ class FloorSlots:
         return {(x+dx, y+dy) for x, y in mask
                 for dx in (-1, 0, 1) for dy in (-1, 0, 1)}
 
+    def contains_in_cells(self, centered_source, rotation, translation, cells):
+        """Check achieved geometry against its slot group, not the ideal pose."""
+        xyz = np.asarray(centered_source) @ rotation.T + translation
+        if not len(xyz) or not np.isfinite(xyz).all():
+            return False
+        local = (xyz[:, :2]-self.origin) @ self.axes.T
+        used = set(map(tuple, cells))
+        if len(used) == 1:
+            cell = next(iter(used))
+            if self.bounds is not None:
+                index = np.flatnonzero(np.all(self.cells == cell, axis=1))
+                if not len(index):
+                    return False
+                low, high = self.bounds[index[0], :2], self.bounds[index[0], 2:]
+            else:
+                low = np.asarray(cell)*(self.size+self.gap)
+                high = low+self.size
+            return bool(np.all(local.min(axis=0) >= low-1e-8) and
+                        np.all(local.max(axis=0) <= high+1e-8))
+        # Sample the completed projected interior too, so a boundary cannot
+        # surround an unavailable cell without reserving it.
+        hull = cv2.convexHull(local.astype(np.float32)).reshape(-1, 2)
+        low, high = hull.min(axis=0), hull.max(axis=0)
+        x, y = np.meshgrid(np.arange(low[0], high[0]+.001, .002),
+                           np.arange(low[1], high[1]+.001, .002))
+        samples = np.column_stack((x.ravel(), y.ravel()))
+        inside = np.array([cv2.pointPolygonTest(hull, tuple(map(float, p)), False) >= 0
+                           for p in samples])
+        touched = self._touched_local(np.vstack((local, samples[inside])), 0)
+        return bool(touched and touched <= used and (-1, -1) not in touched)
+
     def touched(self, footprint, clearance=0):
         """Rasterize the footprint into pitch cells, reserving intervening gaps."""
         local = (np.asarray(footprint)-self.origin) @ self.axes.T
+        return self._touched_local(local, clearance)
+
+    def _touched_local(self, local, clearance, extents=None):
+        """Reuse grid coordinates while preserving point-level gap membership."""
+        if not len(local):
+            return set()
         if self.bounds is not None:
+            # A footprint wholly inside a physical slot belongs to that slot.
+            # Wide gap territories beside irregular leftovers must not steal
+            # space from an adjacent square or inflate its reservation.
+            low, high = extents if extents is not None else (
+                local.min(axis=0)-clearance, local.max(axis=0)+clearance)
+            for cell, bounds in zip(self.cells, self.bounds):
+                if (np.all(low >= bounds[:2]-1e-8) and
+                        np.all(high <= bounds[2:]+1e-8)):
+                    return {tuple(map(int, cell))}
             points = np.vstack([local + d for d in ((0, 0), (-clearance, -clearance),
                                (-clearance, clearance), (clearance, -clearance),
                                (clearance, clearance))]) if clearance else local
@@ -122,8 +175,10 @@ class FloorSlots:
             covered = np.zeros(len(points), bool)
             for index, (cell, bounds) in enumerate(zip(self.cells, self.bounds)):
                 gap = self.cell_gaps[index] if self.cell_gaps is not None else self.gap
-                inside = np.all(points >= bounds[:2]-gap/2-1e-8, axis=1) & np.all(
-                    points <= bounds[2:]+gap/2+1e-8, axis=1)
+                lower, upper = bounds[:2]-gap/2-1e-8, bounds[2:]+gap/2+1e-8
+                # Scalar columns avoid four large Nx2 reduction temporaries.
+                inside = ((points[:, 0] >= lower[0]) & (points[:, 1] >= lower[1]) &
+                          (points[:, 0] <= upper[0]) & (points[:, 1] <= upper[1]))
                 if inside.any():
                     found.add(tuple(map(int, cell)))
                     covered |= inside
@@ -141,10 +196,12 @@ class FloorSlots:
                                              (clearance, clearance))] + [index])
         return self.unique_pairs(index)
 
-    def trials(self, footprint, reserved=(), clearance=.002, phase_offsets=(0.,)):
+    def trials(self, footprint, reserved=(), clearance=.002, phase_offsets=(0.,),
+               single_only=False):
         """Slide a footprint stencil over available groups, smallest group first."""
         if self.bounds is not None:
-            return self._rectangle_trials(footprint, reserved, clearance, phase_offsets)
+            return self._rectangle_trials(footprint, reserved, clearance, phase_offsets,
+                                          single_only)
         available = set(map(tuple, self.cells)) - set(map(tuple, reserved))
         if not available:
             return []
@@ -178,7 +235,19 @@ class FloorSlots:
             len(item[1]), min(x+y for x, y in item[1]), float(np.linalg.norm(item[0]))))
         return results
 
-    def _rectangle_trials(self, footprint, reserved, clearance, phase_offsets):
+    def fit_priority(self, cells):
+        """Prefer fewer occupied slots, breaking count ties by reserved area."""
+        used = set(map(tuple, cells))
+        if self.bounds is None:
+            area = len(used)*self.size*self.size
+        else:
+            indices = np.array([tuple(cell) in used for cell in self.cells])
+            dimensions = self.bounds[indices, 2:]-self.bounds[indices, :2]
+            area = float(np.sum(np.prod(dimensions, axis=1)))
+        return len(used), round(area, 8)
+
+    def _rectangle_trials(self, footprint, reserved, clearance, phase_offsets,
+                          single_only=False):
         """Match rectangular cell groups without moving established boundaries."""
         available = set(map(tuple, self.cells))-set(map(tuple, reserved))
         local = np.asarray(footprint) @ self.axes.T
@@ -190,6 +259,7 @@ class FloorSlots:
             gaps = gaps[:, None]
         territory_low = self.bounds[:, :2]-gaps/2
         territory_high = self.bounds[:, 2:]+gaps/2
+        territory_min, territory_max = territory_low.min(axis=0), territory_high.max(axis=0)
         indices = {tuple(cell): i for i, cell in enumerate(self.cells)}
         result, seen = [], set()
         for index, (cell, bounds) in enumerate(zip(self.cells, self.bounds)):
@@ -211,6 +281,15 @@ class FloorSlots:
                     world = translated @ self.axes+self.origin
                     footprint_low = low+translated-clearance
                     footprint_high = high+translated+clearance
+                    if single_only and not np.any(
+                            np.all(footprint_low >= self.bounds[:, :2]-1e-8, axis=1) &
+                            np.all(footprint_high <= self.bounds[:, 2:]+1e-8, axis=1)):
+                        continue
+                    # Any extremum outside all cell territories necessarily
+                    # yields the outside sentinel; reject before scanning points.
+                    if (np.any(footprint_low < territory_min-1e-8) or
+                            np.any(footprint_high > territory_max+1e-8)):
+                        continue
                     overlaps = (np.all(footprint_high >= territory_low-1e-8, axis=1) &
                                 np.all(footprint_low <= territory_high+1e-8, axis=1))
                     overlaps[index] = False
@@ -222,7 +301,8 @@ class FloorSlots:
                             not overlaps.any()):
                         used = {tuple(cell)}
                     else:
-                        used = self.touched(footprint+world, clearance)
+                        used = self._touched_local(local+translated, clearance,
+                                                   (footprint_low, footprint_high))
                     if not used or not used <= available:
                         continue
                     if len(used) == 1:
@@ -231,7 +311,8 @@ class FloorSlots:
                                 high+translated > box[2:]-clearance+1e-8):
                             continue
                     result.append((world, used))
-        result.sort(key=lambda item: (len(item[1]), float(np.linalg.norm(item[0]))))
+        result.sort(key=lambda item: (self.fit_priority(item[1]),
+                                      float(np.linalg.norm(item[0]))))
         return result
 
     @staticmethod
@@ -259,9 +340,9 @@ class FloorSlots:
         if min(length, depth) < minimum-1e-8:
             return [], 0, 0, 0
         full_rows = int(np.floor(depth/maximum+1e-8))
-        rows = (full_rows if full_rows >= 3 else
+        rows = (full_rows if full_rows >= 3 and length >= maximum-1e-8 else
                 2 if depth >= 2*minimum-1e-8 else 1)
-        size = min(maximum, depth/rows)
+        size = min(maximum, depth/rows, length)
         row_gap = (depth-rows*size)/(rows-1) if rows > 1 else 0
         columns = max(1, int(np.floor(length/size+1e-8)))
         remainder = max(0, length-columns*size)
@@ -279,17 +360,21 @@ class FloorSlots:
     @classmethod
     def build_adaptive(cls, boundary, clearance=.002, maximum=.125,
                        minimum=.06, resolution=.002,
-                       surface_mask=None, surface_origin=None, surface_resolution=None):
+                       surface_mask=None, surface_origin=None, surface_resolution=None,
+                       large_square_scale=1.5):
         """
         Cover the largest inscribed rectangle and non-overlapping extensions.
 
         Rows follow the long axis. Geometry is frozen for later occupancy updates.
         The inscribed-rectangle calculation is conservative at raster resolution.
         """
-        if (not np.isfinite([minimum, maximum, clearance, resolution]).all() or
+        if (not np.isfinite([minimum, maximum, clearance, resolution,
+                             large_square_scale]).all() or
                 resolution <= 0 or clearance < 0 or
                 not (0 < minimum <= maximum)):
             raise ValueError('INVALID_ADAPTIVE_SLOT_DIMENSIONS')
+        if large_square_scale != 0 and large_square_scale <= 1:
+            raise ValueError('LARGE_SQUARE_SCALE_MUST_EXCEED_ONE_OR_BE_ZERO')
         polygon = np.ascontiguousarray(boundary, np.float32)
         corners = cv2.boxPoints(cv2.minAreaRect(polygon))
         edges = np.roll(corners, -1, axis=0)-corners
@@ -331,13 +416,28 @@ class FloorSlots:
                 continue
             regions.append((np.array([x0, y0])*resolution,
                             np.array([x1-1, y1-1])*resolution))
-        cells, boxes, gaps, row_id = [], [], [], 0
-        for lo, hi in regions:
+        working_bounds = np.asarray([np.r_[lo, hi] for lo, hi in regions]).reshape(-1, 4)
+        cells, boxes, gaps, row_id, large_cell = [], [], [], 0, None
+        while regions:
+            lo, hi = regions.pop(0)
             widths, rows, size, region_gaps = cls._square_region(
                 hi[0]-lo[0], hi[1]-lo[1], maximum, minimum)
             if not widths:
                 continue
             gap_x, gap_y = region_gaps
+            large_size = size*large_square_scale
+            make_large = (large_cell is None and large_square_scale > 1 and rows >= 2 and
+                          hi[0]-lo[0]-size >= large_size-1e-8 and
+                          hi[1]-lo[1] >= large_size-1e-8)
+            if make_large:
+                # Keep the first column's ordinary squares, including two rows.
+                # Reserve one square at the spare end before dividing leftovers.
+                large_low = hi-large_size
+                regions[:0] = [
+                    (np.array([lo[0]+size, lo[1]]), np.array([hi[0], large_low[1]])),
+                    (np.array([lo[0]+size, large_low[1]]),
+                     np.array([large_low[0], hi[1]]))]
+                widths, gap_x = [size], 0
             y = lo[1]
             for _ in range(rows):
                 x = lo[0]
@@ -348,6 +448,13 @@ class FloorSlots:
                     x += width+gap_x
                 row_id += 1
                 y += size+gap_y
+            if make_large:
+                large_cell = (0, row_id)
+                cells.append(large_cell)
+                boxes.append((*large_low, *hi))
+                gaps.append((0, 0))
+                row_id += 1
         return cls(low @ axes, axes, np.asarray(cells, np.int32).reshape(-1, 2),
                    maximum, float(np.max(gaps)) if gaps else 0,
-                   np.asarray(boxes, np.float64).reshape(-1, 4), np.asarray(gaps))
+                   np.asarray(boxes, np.float64).reshape(-1, 4), np.asarray(gaps), large_cell,
+                   working_bounds)

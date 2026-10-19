@@ -1,0 +1,9 @@
+string object_name
+uint64 plan_revision
+# pregrasp, approach, lift; only complete validated segments
+string segment
+---
+bool success
+bool motion_completed
+string phase
+string status

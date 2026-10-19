@@ -1,4 +1,6 @@
 string context_id
+# Empty runs all remaining tasks; otherwise pause before this queued step.
+string stop_before_step_id
 ---
 bool success
 string status

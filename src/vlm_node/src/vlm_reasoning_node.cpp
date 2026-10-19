@@ -2,6 +2,7 @@
 #include <my_actions/srv/cache_grasp_plan.hpp>
 #include <my_actions/srv/get_cached_grasp.hpp>
 #include <my_actions/srv/ground_object.hpp>
+#include <my_actions/srv/resolve_manipulation_target.hpp>
 #include <my_actions/srv/vision_inference.hpp>
 #include <my_actions/srv/capture_observation.hpp>
 #include "vlm_node/layout_prompt.hpp"
@@ -33,6 +34,7 @@
 #include "vlm_node/httplib.h"
 #include "vlm_node/edge_sam_onnx.hpp"
 #include "vlm_node/grounding.hpp"
+#include "vlm_node/inference_capture.hpp"
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -81,6 +83,8 @@ struct PromptRequest {
 struct SynchronizedObservation {
     cv::Mat image;
     std_msgs::msg::Header header;
+    sensor_msgs::msg::PointCloud2 cloud;
+    geometry_msgs::msg::TransformStamped camera_transform;
 };
 
 const std::vector<std::string> COCO_CLASSES = {
@@ -221,6 +225,8 @@ public:
                     response->status = response->present ? "PRESENT" : "NOT_CONFIRMED_PRESENT";
                 } catch (const std::exception &error) { response->status = error.what(); }
             }, rclcpp::ServicesQoS(), cb_group_);
+        active_target_client_ = this->create_client<my_actions::srv::ResolveManipulationTarget>(
+            "/pipeline/resolve_target", rclcpp::ServicesQoS(), cb_group_);
         ground_object_client_ = this->create_client<my_actions::srv::GroundObject>(
             "/pipeline/ground_object", rclcpp::ServicesQoS(), cb_group_);
         ground_object_srv_ = this->create_service<my_actions::srv::GroundObject>(
@@ -240,7 +246,7 @@ public:
                             return;
                         }
                     }
-                    response->text = callVLMBackend("", prepareOfficialPrompt("GROUNDING", request->target),
+                    response->text = callVLMBackend("", prepareOfficialPrompt("GROUNDING", vlm_node::wholeObjectGroundingTarget(request->target)),
                         48, image, request->sent_image_path);
                     std::smatch match;
                     if (!vlm_node::parseGroundingBox(response->text, match)) {
@@ -254,6 +260,19 @@ public:
                     }
                     response->success = true;
                     response->status = "GROUNDING_READY";
+                    {
+                        std::lock_guard<std::mutex> lock(capture_mutex_);
+                        const auto role=vlm_node::captureRole(request->target);
+                        capture_associations_.remember(captureFrame(request->image),response->pixel_box,role);
+                        const auto directory=graspCaptureDirectory();
+                        if (!directory.empty()) {
+                            saveCaptureImage(directory/(role+"_input.png"),image);
+                            auto boxed=image.clone();
+                            const auto &b=response->pixel_box;
+                            cv::rectangle(boxed,cv::Point(b[0],b[1]),cv::Point(b[2],b[3]),cv::Scalar(0,255,0),2);
+                            saveCaptureImage(directory/(role+"_bounding_box.png"),boxed);
+                        }
+                    }
                 } catch (const std::exception &error) {
                     response->status = error.what();
                 }
@@ -314,6 +333,17 @@ public:
                     response->decoder_ms = result.decoder_ms;
                     response->success = true;
                     response->status = "OK";
+                    {
+                        std::lock_guard<std::mutex> lock(capture_mutex_);
+                        const auto role=capture_associations_.find(captureFrame(request->image),request->bbox);
+                        const auto directory=graspCaptureDirectory();
+                        if (!role.empty() && !directory.empty()) {
+                            cv::Mat segmented=cv::Mat::zeros(image.size(),image.type());
+                            image.copyTo(segmented,result.mask);
+                            saveCaptureImage(directory/(role+"_segmented.png"),segmented);
+                            saveCaptureImage(directory/(role+"_mask.png"),result.mask);
+                        }
+                    }
                 } catch (const std::exception &error) {
                     response->success = false;
                     response->status = error.what();
@@ -333,7 +363,7 @@ public:
         trigger_scan_client_ = this->create_client<std_srvs::srv::Trigger>(
             "/pipeline/request_scan", rclcpp::ServicesQoS(), cb_group_);
         grasp_candidates_client_ = this->create_client<my_actions::srv::FindGraspCandidates>(
-            "/pipeline/calculate_grasps", rclcpp::ServicesQoS(), cb_group_);
+            "/pipeline/calculate_active_grasps", rclcpp::ServicesQoS(), cb_group_);
         placement_candidates_client_ =
             this->create_client<my_actions::srv::FindPlacementCandidates>(
                 "/pipeline/find_placements",
@@ -400,6 +430,7 @@ private:
     int max_tokens_;
     int image_max_dimension_ = 1024;
     rclcpp::Client<my_actions::srv::GroundObject>::SharedPtr ground_object_client_;
+    rclcpp::Client<my_actions::srv::ResolveManipulationTarget>::SharedPtr active_target_client_;
     rclcpp::Service<my_actions::srv::GroundObject>::SharedPtr ground_object_srv_;
     rclcpp::Client<my_actions::srv::VisionInference>::SharedPtr vision_inference_client_;
     rclcpp::Client<my_actions::srv::CaptureObservation>::SharedPtr capture_observation_client_;
@@ -489,7 +520,29 @@ private:
         }
         observation.image = cv_bridge::toCvCopy(result->image, "bgr8")->image;
         observation.header = result->image.header;
+        observation.cloud = result->cloud;
+        observation.camera_transform = result->camera_transform;
         return true;
+    }
+
+    my_actions::srv::ResolveManipulationTarget::Response::SharedPtr resolveActiveTarget(
+        const SynchronizedObservation &observation, const std::string &name, bool destination) {
+        if (!active_target_client_->wait_for_service(std::chrono::seconds(3)))
+            throw std::runtime_error("ACTIVE_MEMORY_UNAVAILABLE");
+        auto request=std::make_shared<my_actions::srv::ResolveManipulationTarget::Request>();
+        request->name=name;
+        request->role=destination ? "destination" : "object";
+        request->image=*cv_bridge::CvImage(observation.header,"bgr8",observation.image).toImageMsg();
+        request->observation_cloud=observation.cloud;
+        request->camera_transform=observation.camera_transform;
+        auto future=active_target_client_->async_send_request(request);
+        if (future.wait_for(std::chrono::seconds(request_timeout_sec_))!=std::future_status::ready)
+            throw std::runtime_error("ACTIVE_MEMORY_TIMEOUT_STATE_UNKNOWN");
+        auto result=future.get();
+        if (!result->success) throw std::runtime_error(result->status);
+        RCLCPP_INFO(this->get_logger(),"[ACTIVE TARGET] name=%s reused=%s position=[%.4f %.4f %.4f]",
+            name.c_str(),result->reused ? "true" : "false",result->position.x,result->position.y,result->position.z);
+        return result;
     }
 
     void imageCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
@@ -1149,6 +1202,14 @@ private:
         return true;
     }
 
+    std::mutex capture_mutex_;
+    vlm_node::CaptureAssociations capture_associations_;
+
+    static std::string captureFrame(const sensor_msgs::msg::Image &image) {
+        return image.header.frame_id+":"+std::to_string(image.header.stamp.sec)+":"+
+            std::to_string(image.header.stamp.nanosec)+":"+std::to_string(image.width)+":"+std::to_string(image.height);
+    }
+
     static std::filesystem::path graspCaptureDirectory() {
         const char* home = std::getenv("HOME");
         if (home == nullptr || *home == '\0') return {};
@@ -1535,69 +1596,23 @@ private:
                 const std::string &name, bool destination,
                 sensor_msgs::msg::Image &mask_message,
                 std::string &error) {
-                const std::string target = destination ?
-                    "the complete visible placement surface of the " + name +
-                    ". Return one tight bounding box around the entire named destination" :
-                    "the complete visible object " + name +
-                    ". Return one tight bounding box around only that object";
-                const std::string reply = groundObject(
-                    observation.image, target, observation.header);
-                std::smatch match;
-                if (!vlm_node::parseGroundingBox(reply, match)) {
-                    error = "grounding parse failed for " + name + ": " + reply;
-                    return false;
-                }
-                int x1 = normalizedToPixel(
-                    std::stod(match[1]), observation.image.cols);
-                int y1 = normalizedToPixel(
-                    std::stod(match[2]), observation.image.rows);
-                int x2 = normalizedToPixel(
-                    std::stod(match[3]), observation.image.cols);
-                int y2 = normalizedToPixel(
-                    std::stod(match[4]), observation.image.rows);
-                if (x1 > x2) std::swap(x1, x2);
-                if (y1 > y2) std::swap(y1, y2);
-                expandGroundingBox(
-                    x1, y1, x2, y2, observation.image.cols,
-                    observation.image.rows);
-                if (destination && !capture_dir.empty()) {
-                    cv::Mat boxed_image = observation.image.clone();
-                    cv::rectangle(boxed_image, cv::Point(x1, y1),
-                                  cv::Point(x2, y2), cv::Scalar(0, 255, 0), 2);
-                    saveCaptureImage(
-                        capture_dir / "destination_bounding_box.png",
-                        boxed_image);
-                }
                 try {
-                    const auto result = segmentObject(
-                        observation.image,
-                        cv::Rect(x1, y1, std::max(1, x2 - x1 + 1),
-                                 std::max(1, y2 - y1 + 1)), observation.header);
-                    if (result.mask_pixels < edgesam_min_mask_pixels_) {
-                        error = "mask too small for " + name + ": " +
-                            std::to_string(result.mask_pixels);
-                        return false;
-                    }
+                    const auto target=resolveActiveTarget(observation,name,destination);
+                    mask_message=target->mask;
                     if (destination && !capture_dir.empty()) {
-                        saveCaptureImage(capture_dir / "destination_mask.png",
-                                         result.mask);
-                        cv::Mat segmented_image = cv::Mat::zeros(
-                            observation.image.size(), observation.image.type());
-                        observation.image.copyTo(segmented_image, result.mask);
-                        saveCaptureImage(
-                            capture_dir / "destination_segmented.png",
-                            segmented_image);
-                        RCLCPP_INFO(
-                            this->get_logger(),
-                            "[LAYOUT DESTINATION IMAGE] %s",
-                            (capture_dir / "destination_segmented.png").c_str());
+                        const auto mask=cv_bridge::toCvCopy(mask_message,"mono8")->image;
+                        saveCaptureImage(capture_dir / "destination_mask.png",mask);
+                        auto boxed=observation.image.clone();
+                        cv::rectangle(boxed,cv::Point(target->pixel_box[0],target->pixel_box[1]),
+                            cv::Point(target->pixel_box[2],target->pixel_box[3]),cv::Scalar(0,255,0),2);
+                        saveCaptureImage(capture_dir / "destination_bounding_box.png",boxed);
+                        cv::Mat segmented=cv::Mat::zeros(observation.image.size(),observation.image.type());
+                        observation.image.copyTo(segmented,mask);
+                        saveCaptureImage(capture_dir / "destination_segmented.png",segmented);
                     }
-                    mask_message = *cv_bridge::CvImage(
-                        observation.header, "mono8", result.mask).toImageMsg();
                     return true;
                 } catch (const std::exception &exception) {
-                    error = "EdgeSAM failed for " + name + ": " + exception.what();
-                    return false;
+                    error=exception.what();return false;
                 }
             };
 
@@ -1752,47 +1767,21 @@ private:
                 }
                 saveCaptureImage(capture_dir / "placement_raw.png", image);
             }
-            const std::string grounding_target =
-                "the complete visible placement surface of the " +
-                destination_name +
-                ". Use one tight bounding box enclosing the entire named "
-                "destination surface";
-            const std::string grounding_reply = groundObject(
-                image, grounding_target, observation.header,
-                capture_dir.empty() ? std::filesystem::path{} :
-                    capture_dir / "placement_robobrain_input.jpg");
-            std::smatch box_match;
-            if (!vlm_node::parseGroundingBox(grounding_reply, box_match)) {
-                response->response =
-                    "PLACEMENT_GROUNDING_PARSE_FAILED: " + grounding_reply;
-                return;
-            }
-            int x1 = normalizedToPixel(std::stod(box_match[1]), image.cols);
-            int y1 = normalizedToPixel(std::stod(box_match[2]), image.rows);
-            int x2 = normalizedToPixel(std::stod(box_match[3]), image.cols);
-            int y2 = normalizedToPixel(std::stod(box_match[4]), image.rows);
-            if (x1 > x2) std::swap(x1, x2);
-            if (y1 > y2) std::swap(y1, y2);
-            expandGroundingBox(x1, y1, x2, y2, image.cols, image.rows);
-            if (!capture_dir.empty()) {
-                cv::Mat boxed_image = image.clone();
-                cv::rectangle(boxed_image, cv::Point(x1, y1), cv::Point(x2, y2),
-                              cv::Scalar(0, 255, 0), 2);
-                saveCaptureImage(capture_dir / "placement_bounding_box.png",
-                                 boxed_image);
-                saveCaptureImage(capture_dir / "destination_bounding_box.png",
-                                 boxed_image);
-            }
             vlm_node::EdgeSamResult segmentation;
             try {
-                segmentation = segmentObject(
-                    image, cv::Rect(
-                        x1, y1, std::max(1, x2 - x1 + 1),
-                        std::max(1, y2 - y1 + 1)), observation.header);
+                const auto target=resolveActiveTarget(observation,destination_name,true);
+                segmentation.mask=cv_bridge::toCvCopy(target->mask,"mono8")->image;
+                segmentation.mask_pixels=cv::countNonZero(segmentation.mask);
+                segmentation.score=0.F;  // Resolver does not claim a new segmentation confidence.
+                if (!capture_dir.empty()) {
+                    auto boxed=image.clone();
+                    cv::rectangle(boxed,cv::Point(target->pixel_box[0],target->pixel_box[1]),
+                        cv::Point(target->pixel_box[2],target->pixel_box[3]),cv::Scalar(0,255,0),2);
+                    saveCaptureImage(capture_dir / "placement_bounding_box.png",boxed);
+                    saveCaptureImage(capture_dir / "destination_bounding_box.png",boxed);
+                }
             } catch (const std::exception &error) {
-                response->response =
-                    std::string("PLACEMENT_EDGESAM_FAILED: ") + error.what();
-                return;
+                response->response=std::string("PLACEMENT_TARGET_FAILED: ")+error.what();return;
             }
             if (!capture_dir.empty()) {
                 saveCaptureImage(capture_dir / "placement_target_mask.png",
@@ -2134,24 +2123,11 @@ private:
                 }
                 saveCaptureImage(capture_dir / "raw.png", image);
             }
-            const std::string grounding_reply = groundObject(
-                image, grounding_target, observation.header,
-                capture_dir.empty() ? std::filesystem::path{} :
-                    capture_dir / "robobrain_input.jpg");
-            std::smatch box_match;
-            if (!vlm_node::parseGroundingBox(grounding_reply, box_match)) {
-                response->response =
-                    "VLM_GROUNDING_PARSE_FAILED: expected normalized [x1, y1, x2, y2], got: " +
-                    grounding_reply;
-                return;
-            }
-            int x1 = normalizedToPixel(std::stod(box_match[1]), image.cols);
-            int y1 = normalizedToPixel(std::stod(box_match[2]), image.rows);
-            int x2 = normalizedToPixel(std::stod(box_match[3]), image.cols);
-            int y2 = normalizedToPixel(std::stod(box_match[4]), image.rows);
-            if (x1 > x2) std::swap(x1, x2);
-            if (y1 > y2) std::swap(y1, y2);
-            expandGroundingBox(x1, y1, x2, y2, image.cols, image.rows);
+            my_actions::srv::ResolveManipulationTarget::Response::SharedPtr active_target;
+            try { active_target=resolveActiveTarget(observation,object_name,false); }
+            catch (const std::exception &error) {response->response=error.what();return;}
+            int x1=active_target->pixel_box[0],y1=active_target->pixel_box[1];
+            int x2=active_target->pixel_box[2],y2=active_target->pixel_box[3];
             cv::Mat boxed_image = image.clone();
             cv::rectangle(boxed_image, cv::Point(x1, y1), cv::Point(x2, y2),
                           cv::Scalar(0, 255, 0), 2);
@@ -2165,9 +2141,9 @@ private:
             int u = (x1 + x2) / 2;
             int v = (y1 + y2) / 2;
 
-            cv::Mat target_mask;
-            std::string target_mask_source = "EdgeSAM box-prompted mask";
-            if (grasp_target_mask_backend_ == "edgesam") {
+            cv::Mat target_mask=cv_bridge::toCvCopy(active_target->mask,"mono8")->image;
+            std::string target_mask_source = active_target->reused ? "active memory" : "EdgeSAM box-prompted mask";
+            if (target_mask.empty() && grasp_target_mask_backend_ == "edgesam") {
                 if (!edgesam_) {
                     response->response =
                         "EDGESAM_UNAVAILABLE: " + edgesam_initialization_error_;
@@ -2223,7 +2199,7 @@ private:
             grasp_request->image_width = image.cols; grasp_request->image_height = image.rows;
             grasp_request->target_mask = *cv_bridge::CvImage(
                 observation.header, "mono8", target_mask).toImageMsg();
-            grasp_request->target_description = parsed.prompt;
+            grasp_request->target_description = object_name;
             grasp_request->affordance_type = lower_prompt.find("handle") != std::string::npos ? "HANDLE" :
                 (lower_prompt.find("rim") != std::string::npos ||
                  lower_prompt.find("lip") != std::string::npos ||

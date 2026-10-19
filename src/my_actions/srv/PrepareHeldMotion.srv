@@ -1,0 +1,10 @@
+string object_name
+bool lift_only
+float32 lift_distance_m
+my_actions/PlacementCandidate[] candidates
+sensor_msgs/Image destination_mask
+---
+bool success
+string status
+uint64 plan_revision
+uint8[] plan_cdr

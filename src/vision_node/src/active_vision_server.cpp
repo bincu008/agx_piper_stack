@@ -1,4 +1,8 @@
 #include <onnxruntime_cxx_api.h>
+#include "vision_node/metric_scale.hpp"
+#include "vision_node/voxel_neighbors.hpp"
+#include "vision_node/perception_translation.hpp"
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "my_actions/srv/get_yolo_inference.hpp"
 #include "my_actions/srv/update_object_observation.hpp"
@@ -83,6 +87,24 @@ public:
     hand_eye_calibration_path_ = this->declare_parameter<std::string>(
       "hand_eye_calibration_path", "");
     load_calibration();
+    rcl_interfaces::msg::ParameterDescriptor scale_descriptor;
+    scale_descriptor.read_only = true;  // Restart to avoid mixing pinned observations.
+    perception_measurement_ratio_ = this->declare_parameter<double>(
+      "perception_measurement_ratio", 1.0, scale_descriptor);
+    if (!std::isfinite(perception_measurement_ratio_) || perception_measurement_ratio_ <= 0.) {
+      throw std::invalid_argument("perception_measurement_ratio must be finite and positive");
+    }
+    const auto offset = this->declare_parameter<std::vector<double>>(
+      "perception_position_offset_base_m", std::vector<double>{0., 0., 0.}, scale_descriptor);
+    if (offset.size() != 3 || !std::all_of(offset.begin(), offset.end(),
+        [](double v) {return std::isfinite(v);})) {
+      throw std::invalid_argument("perception_position_offset_base_m requires three finite metres");
+    }
+    perception_position_offset_base_m_ = Eigen::Vector3f(offset[0], offset[1], offset[2]);
+    corrected_depth_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
+      "/active_vision/corrected_registered_depth", rclcpp::SensorDataQoS());
+    RCLCPP_INFO(this->get_logger(), "[METRIC SCALE] measured/real=%.6f correction=%.6f before FK*X",
+      perception_measurement_ratio_, 1. / perception_measurement_ratio_);
 
     obstacle_voxel_size_ = this->declare_parameter<double>("obstacle_voxel_size_m", 0.05);
     // Reject transient depth noise: a coarse obstacle voxel is occupied only
@@ -1044,7 +1066,9 @@ private:
     T56.block<3,3>(0,0) = urdf_rot(1.5707963f, 0, 0) * Eigen::AngleAxisf(q_joints[5], Eigen::Vector3f::UnitZ()).toRotationMatrix();
 
     Eigen::Matrix4f T06 = T01 * T12 * T23 * T34 * T45 * T56;
-    return T06 * X_matrix_;
+    // Translate in base_link after synchronized manual FK*X, once for all
+    // observation, segmentation, obstacle and visualization consumers.
+    return translatedPerceptionTransform(T06 * X_matrix_, perception_position_offset_base_m_);
   }
 
   void publishBaseObservationCloud(const sensor_msgs::msg::PointCloud2 &cloud,
@@ -1341,6 +1365,21 @@ private:
           global_cloud->points.push_back(pcl::PointXYZ(it.getX(), it.getY(), it.getZ()));
         }
       }
+      // Simultaneous one-pass pruning: neighbor counts use the original world,
+      // so this never recursively erodes surfaces. Object observations are untouched.
+      std::vector<VoxelCell> cells;
+      cells.reserve(global_cloud->points.size());
+      for (const auto &point : global_cloud->points) {
+        cells.push_back({static_cast<int>(std::floor(point.x/v_size)),
+          static_cast<int>(std::floor(point.y/v_size)),
+          static_cast<int>(std::floor(point.z/v_size))});
+      }
+      const auto keep = supportedVoxels(cells);
+      size_t destination = 0;
+      for (size_t index = 0; index < keep.size(); ++index) {
+        if (keep[index]) global_cloud->points[destination++] = global_cloud->points[index];
+      }
+      global_cloud->points.resize(destination);
       global_cloud->width = global_cloud->points.size();
       global_cloud->height = 1;
       global_cloud->is_dense = true;
@@ -1362,8 +1401,16 @@ private:
     }
   }
 
-  void camCountCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
+  void camCountCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& raw_msg)
   {
+    // Correct once at ingress, around the optical origin, before manual FK*X.
+    // Both the obstacle world and every synchronized grasp/placement frame use it.
+    const auto msg = perception_measurement_ratio_ == 1. ? raw_msg :
+      std::make_shared<const sensor_msgs::msg::PointCloud2>(
+        correct_camera_measurements(*raw_msg, perception_measurement_ratio_));
+    if (corrected_depth_pub_->get_subscription_count() > 0) {
+      corrected_depth_pub_->publish(corrected_registered_depth(*msg));
+    }
     if (collision_monitor_active_) {
         sensor_msgs::PointCloud2ConstIterator<float> iter_x(*msg, "x");
         sensor_msgs::PointCloud2ConstIterator<float> iter_y(*msg, "y");
@@ -1494,6 +1541,9 @@ private:
   rclcpp::Client<my_actions::srv::UpdateObjectObservation>::SharedPtr
     update_object_client_;
 
+  Eigen::Vector3f perception_position_offset_base_m_ = Eigen::Vector3f::Zero();
+  double perception_measurement_ratio_ = 1.;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr corrected_depth_pub_;
   sensor_msgs::msg::PointCloud2::ConstSharedPtr latest_pcd_;
   sensor_msgs::msg::JointState::ConstSharedPtr latest_pose_;
   sensor_msgs::msg::PointCloud2::ConstSharedPtr observation_pcd_;

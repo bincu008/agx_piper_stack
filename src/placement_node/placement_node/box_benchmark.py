@@ -68,7 +68,7 @@ class BoxBenchmark(Node):
             'grasp_early_stop_count': 4,
             'placement_early_stop_count': 32, 'placement_validation_batch_size': 8,
             'destination': 'the complete visible placement surface of the tray',
-            'output_directory': str(Path.home() / 'box_benchmark'),
+            'output_directory': str(Path.home() / 'agx_piper_data' / 'reports' / 'box_benchmark'),
         }
         for name, value in params.items():
             self.declare_parameter(name, value)

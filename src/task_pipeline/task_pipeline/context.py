@@ -70,6 +70,35 @@ def fingerprint(name, payload):
     return digest.hexdigest()
 
 
+def request_fingerprint(name, request, bindings=()):
+    """Hash typed values, excluding unspecified CDR alignment padding bytes."""
+    digest = hashlib.sha256(name.encode())
+
+    def update(value):
+        if hasattr(value, 'get_fields_and_field_types'):
+            for field_name in value.get_fields_and_field_types():
+                digest.update(field_name.encode() + b'\0')
+                update(getattr(value, field_name))
+        elif isinstance(value, (str, int, float, bool)):
+            encoded = repr(value).encode()
+            digest.update(len(encoded).to_bytes(8, 'little'))
+            digest.update(encoded)
+        else:
+            try:
+                view = memoryview(value)
+            except TypeError:
+                digest.update(len(value).to_bytes(8, 'little'))
+                for item in value:
+                    update(item)
+            else:
+                digest.update(view.nbytes.to_bytes(8, 'little'))
+                digest.update(view.cast('B'))
+
+    update(request)
+    update([(b.target_field, b.source_step_id, b.source_field) for b in bindings])
+    return digest.hexdigest()
+
+
 @dataclass
 class Context:
     """Own immutable result payloads; pending tasks reference them by step ID."""
@@ -212,13 +241,10 @@ class StepStore:
         """Run a public call and retain its typed result in master memory."""
         spec = self.spec(function_name)
         request = deserialize_message(bytes(request_cdr), spec.service_type.Request)
-        if bindings:
-            # Reference names are part of idempotence. Completed results are
-            # immutable within their context; no large resolved re-encoding.
-            refs = [(b.target_field, b.source_step_id, b.source_field) for b in bindings]
-            request_cdr = bytes(request_cdr) + json.dumps(refs).encode()
+        # Typed fingerprints include binding references without concatenating
+        # or reserializing large observation payloads.
         return self._run_one(
-            context_id, step_id, spec, request, request_cdr, expected, bindings)[:3]
+            context_id, step_id, spec, request, expected, bindings)[:3]
 
     def _bind(self, ctx, request, bindings):
         """Resolve immutable artifacts once per predecessor, with isolated fields."""
@@ -242,13 +268,12 @@ class StepStore:
         spec = self.spec(function_name)
         if not isinstance(request, spec.service_type.Request):
             raise TypeError('REQUEST_TYPE_MISMATCH')
-        return self._run_one(context_id, step_id, spec, request,
-                             serialize_message(request), expected)
+        return self._run_one(context_id, step_id, spec, request, expected)
 
-    def _run_one(self, context_id, step_id, spec, request, request_cdr, expected, bindings=()):
+    def _run_one(self, context_id, step_id, spec, request, expected, bindings=()):
         """Share revision, idempotence and bounded storage checks for both paths."""
         function_name = spec.name
-        digest = fingerprint(function_name, request_cdr)
+        digest = request_fingerprint(function_name, request, bindings)
         with self._lock:
             ctx = self._context(context_id, create=not bindings, automatic=not context_id)
             self._revision(ctx, expected)
@@ -307,7 +332,8 @@ class StepStore:
             ctx.status = 'SUCCEEDED' if item.success else 'FAILED'
         return item, response
 
-    def run_queue(self, context_id, cancelled=lambda: False, feedback=lambda *args: None):
+    def run_queue(self, context_id, cancelled=lambda: False, feedback=lambda *args: None,
+                  stop_before_step_id=''):
         """Deplete each attempted task; never consume failed dependency results."""
         with self._lock:
             ctx = self._context(context_id)
@@ -315,6 +341,9 @@ class StepStore:
                 raise RuntimeError('CONTEXT_BUSY')
             if any('STATE_UNKNOWN' in item.status for item in ctx.results.values()):
                 raise RuntimeError('CONTEXT_REQUIRES_STATE_RECONCILIATION')
+            if stop_before_step_id and not any(
+                    step.step_id == stop_before_step_id for step in ctx.pending):
+                raise ValueError('UNKNOWN_PAUSE_BOUNDARY')
             ctx.busy = True
             ctx.status = 'RUNNING'
         completed = []
@@ -329,11 +358,14 @@ class StepStore:
                             'COMPLETE' if all(item.success for item in completed) else 'PARTIAL')
                         break
                     step = ctx.pending[0]
+                    if step.step_id == stop_before_step_id:
+                        ctx.status = 'PAUSED_AT_STEP_BOUNDARY'
+                        break
                 spec = self.spec(step.function_name)
                 request = deserialize_message(bytes(step.request_cdr), spec.service_type.Request)
                 try:
                     self._bind(ctx, request, step.bindings)
-                    digest = fingerprint(spec.name, serialize_message(request))
+                    digest = request_fingerprint(spec.name, request)
                     feedback(step, 'RUNNING', len(completed), len(ctx.pending))
                     item, _ = self._execute(ctx, step.step_id, spec, request, digest)
                 except Exception as error:
@@ -357,6 +389,35 @@ class StepStore:
         finally:
             with self._lock:
                 ctx.busy = False
+
+    def flush_failed_queue(self, context_id):
+        """Discard a failed owner's remaining tasks without erasing its results."""
+        with self._lock:
+            ctx = self._context(context_id)
+            if ctx.busy:
+                raise RuntimeError('CONTEXT_BUSY')
+            ctx.pending.clear()
+            ctx.revision += 1
+            ctx.status = 'FLUSHED_AFTER_EXECUTION_FAILURE'
+
+    def flush_execution_queues(self, object_name):
+        """Discard idle queues for the failed object; preserve results and other owners."""
+        names = {'execute_plan', 'gripper_open', 'gripper_close',
+                 'execute_prepared_grasp_lift'}
+        with self._lock:
+            for ctx in self._contexts.values():
+                if ctx.busy:
+                    continue
+                for step in ctx.pending:
+                    if step.function_name not in names:
+                        continue
+                    spec = self.spec(step.function_name)
+                    request = deserialize_message(bytes(step.request_cdr), spec.service_type.Request)
+                    if request.object_name.casefold() == object_name:
+                        ctx.pending.clear()
+                        ctx.revision += 1
+                        ctx.status = 'FLUSHED_AFTER_EXECUTION_FAILURE'
+                        break
 
     def clear(self, context_id, expected=0):
         """Release completed artifacts explicitly; reject clearing an active call."""

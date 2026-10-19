@@ -3,6 +3,9 @@
 # Standard Library
 import os
 import time
+from master_node.contact_evidence import SettledContact
+from master_node.gripper_widths import grasp_gripper_widths
+import math
 import json
 import threading
 import uuid
@@ -49,6 +52,10 @@ from my_actions.srv import CaptureObservation, CacheGraspRefinement, GraspStage
 
 from master_node.step_runtime import MasterStepRuntime
 from master_node.execution_api import ExecutionAPI
+from master_node.manipulation_memory import ManipulationMemory
+from master_node.joint_command_calibration import (
+    command_pose_reference, driver_joint_target, feedback_reference, load_command_offset,
+)
 
 class BaseTask(Task):
     def __init__(self, node_ref, task_type, target_name, coordinates):
@@ -240,6 +247,13 @@ class PiperMasterControl(Node):
 
     def __init__(self):
         super().__init__('piper_master_control')
+        calibration_path = os.path.join(get_package_share_directory('master_node'),
+                                        'config', 'calibration', 'joint_command_offset.json')
+        self.joint6_command_offset_rad = load_command_offset(calibration_path)
+        self._last_nominal_arm_command = self._last_sent_arm_command = None
+        self.get_logger().info(
+            f'[JOINT6 COMMAND OFFSET] {self.joint6_command_offset_rad:.17g} rad; '
+            'nominal limits/planning and feedback remain raw')
         self.get_logger().info("Initializing Piper Master Control Node (Director)...")
 
         self.world_state = WorldStateManager()
@@ -407,6 +421,7 @@ class PiperMasterControl(Node):
 
         self.step_runtime = MasterStepRuntime(self)
         self.execution_api = ExecutionAPI(self)
+        self.manipulation_memory = ManipulationMemory(self)
 
         self.calibration_poses = [
             [-0.08, 0.0, 0.0, 0.0, 0.04, 0.0],
@@ -492,7 +507,13 @@ class PiperMasterControl(Node):
             self.get_logger().warn("NO HAND-EYE CALIBRATION FOUND!")
 
     def load_joint_limits(self):
+        self.declare_parameter('joint_limit_tolerance_degrees', 2.0)
+        tolerance_degrees = float(self.get_parameter('joint_limit_tolerance_degrees').value)
+        if not math.isfinite(tolerance_degrees) or not 0.0 <= tolerance_degrees <= 2.0:
+            raise ValueError('joint_limit_tolerance_degrees must be between 0 and 2')
+        tolerance = math.radians(tolerance_degrees)
         self.joint_limits = []
+        self.command_joint_limits = []
         urdf_path = os.path.join(
             get_package_share_directory('agx_arm_description'),
             'agx_arm_urdf', 'piper', 'urdf', 'piper_description.urdf')
@@ -509,7 +530,8 @@ class PiperMasterControl(Node):
                             lower = float(limit_tag.get('lower', lower))
                             upper = float(limit_tag.get('upper', upper))
                         break
-                self.joint_limits.append((lower, upper))
+                self.command_joint_limits.append((lower, upper))
+                self.joint_limits.append((lower-tolerance, upper+tolerance))
             self.get_logger().info(f"Loaded joint limits from URDF: {self.joint_limits}")
         except Exception as e:
             self.get_logger().error(f"Failed to load URDF joint limits from {urdf_path}: {e}. Using default limits.")
@@ -521,6 +543,9 @@ class PiperMasterControl(Node):
                 (-1.2217304, 1.2217304),
                 (-2.0943951, 2.0943951)
             ]
+            self.command_joint_limits = list(self.joint_limits)
+            self.joint_limits = [(lower-tolerance, upper+tolerance)
+                                 for lower, upper in self.joint_limits]
 
     def scan_routine_loop(self):
         while rclpy.ok():
@@ -576,7 +601,7 @@ class PiperMasterControl(Node):
             # Slam brakes
             if self.current_joint_states:
                 self._publish_joint_state_command(
-                    arm_positions=self.current_joint_states.position[:6])
+                    arm_positions=self.current_joint_states.position[:6], apply_joint6_offset=False)
                 self.get_logger().info("[COLLISION ALERT] Brakes applied at joints: %s" % [round(x, 3) for x in self.current_joint_states.position[:6]])
                 
             # Disable collision monitor to prevent spam
@@ -592,6 +617,7 @@ class PiperMasterControl(Node):
 
     def joint_callback(self, msg):
         self.current_joint_states = msg
+        self.joint_feedback_time = time.monotonic()
         
         # Test routine: Physical collision awareness via effort
         # (DISABLED AS REQUESTED)
@@ -621,9 +647,11 @@ class PiperMasterControl(Node):
 
     def pose_callback(self, msg):
         self.current_tcp_pose = msg
+        self.pose_feedback_time = time.monotonic()
 
     def gripper_callback(self, msg):
         self.current_gripper_status = msg
+        self.gripper_feedback_time = time.monotonic()
 
     def arm_status_callback(self, msg):
         self.current_arm_status = msg
@@ -680,7 +708,7 @@ class PiperMasterControl(Node):
 
     def _publish_joint_state_command(
             self, arm_positions=None, gripper_width=None,
-            gripper_force=None):
+            gripper_force=None, apply_joint6_offset=True):
         """Publish a driver-compliant partial or combined joint command."""
         command = JointState()
         command.header.stamp = self.get_clock().now().to_msg()
@@ -689,7 +717,10 @@ class PiperMasterControl(Node):
             if len(arm_positions) != len(self.ARM_JOINT_NAMES):
                 raise ValueError('arm command must contain exactly 6 joints')
             command.name.extend(self.ARM_JOINT_NAMES)
-            command.position.extend(float(value) for value in arm_positions)
+            nominal = [float(value) for value in arm_positions]
+            offset = getattr(self, 'joint6_command_offset_rad', 0.) if apply_joint6_offset else 0.
+            sent = driver_joint_target(nominal, offset)
+            command.position.extend(sent)
 
         if gripper_width is not None:
             force = 1.0 if gripper_force is None else float(gripper_force)
@@ -706,6 +737,9 @@ class PiperMasterControl(Node):
         if not command.name:
             return False
         self.joint_pub.publish(command)
+        if arm_positions is not None:
+            self._last_nominal_arm_command = nominal
+            self._last_sent_arm_command = sent
         return True
 
     def move_arm_to(self, pose, disable_collision_monitor=False, tolerance=0.02):
@@ -748,7 +782,10 @@ class PiperMasterControl(Node):
             # self.get_logger().info(f"[ARM MOTION DEBUG] Moving to joint target: {[round(x, 3) for x in clamped_pose]}")
 
             arrived = False
-            self._publish_joint_state_command(arm_positions=clamped_pose)
+            if not self._publish_joint_state_command(arm_positions=clamped_pose):
+                self.last_motion_failure = 'COMMAND_PUBLICATION_REJECTED'
+                return False
+            sent_pose = list(self._last_sent_arm_command)
             for _ in range(100):
                 if monitor_camera_collision and (self.collision_detected or self.physical_collision_detected):
                     self.get_logger().warn("[ARM MOTION DEBUG] Collision detected during movement! Aborting.")
@@ -757,7 +794,7 @@ class PiperMasterControl(Node):
                 time.sleep(self.joint_state_check_delay)
                 if self.current_joint_states is not None:
                     if len(self.current_joint_states.position) >= len(clamped_pose):
-                        errors = [abs(curr - target) for curr, target in zip(self.current_joint_states.position, clamped_pose)]
+                        errors = [abs(curr - target) for curr, target in zip(self.current_joint_states.position, sent_pose)]
                         if all(e <= tolerance for e in errors):
                             arrived = True
                             break
@@ -765,6 +802,19 @@ class PiperMasterControl(Node):
             #     self.get_logger().info(f"[ARM MOTION DEBUG] Successfully reached target: {[round(x, 3) for x in clamped_pose]}")
             # else:
             #     self.get_logger().warn(f"[ARM MOTION DEBUG] Motion loop ended before reaching exact tolerance: {[round(x, 3) for x in clamped_pose]}")
+            self.last_motion_failure = ''
+            if not arrived:
+                feedback = self.current_joint_states
+                if feedback is None or len(feedback.position) < len(clamped_pose):
+                    self.last_motion_failure = 'JOINT_FEEDBACK_UNAVAILABLE'
+                else:
+                    errors = [abs(a-b) for a, b in zip(feedback.position, sent_pose)]
+                    worst = max(range(len(errors)), key=errors.__getitem__)
+                    self.last_motion_failure = (
+                        f'ARRIVAL_NOT_CONFIRMED joint{worst+1} '
+                        f'target={sent_pose[worst]:.6f} actual={feedback.position[worst]:.6f} '
+                        f'error={errors[worst]:.6f}rad tolerance={tolerance:.6f}rad')
+                self.get_logger().error('[MOVE_ARM] '+self.last_motion_failure)
             return arrived
         finally:
             if monitor_camera_collision:
@@ -1098,6 +1148,7 @@ class PiperMasterControl(Node):
         accepted = self._publish_joint_state_command(
             gripper_width=width, gripper_force=force)
         if accepted:
+            self.gripper_command_time = time.monotonic()
             self.get_logger().info(
                 f'[GRIPPER] Commanded width={width:.3f}m force={force:.1f}N '
                 'via /control/joint_states')
@@ -1114,6 +1165,8 @@ class PiperMasterControl(Node):
             # remain closed after the opening command, not that it reached the
             # requested geometric aperture.
             if (status is not None and
+                    getattr(self, 'gripper_feedback_time', 0) >
+                    getattr(self, 'gripper_command_time', float('inf')) and
                     status.width > self.gripper_min_open_feedback_m):
                 return True
             time.sleep(0.05)
@@ -1133,14 +1186,33 @@ class PiperMasterControl(Node):
         return False
 
     def _wait_for_gripper_contact(self, timeout_sec=2.0):
-        """Require feedback evidence after closing; a command is not contact."""
+        """Require settled fresh contact after closing, not a transient motor load."""
+        deadline = time.monotonic() + timeout_sec
+        evidence = SettledContact()
+        while rclpy.ok() and time.monotonic() < deadline:
+            stamp = getattr(self, 'gripper_feedback_time', 0)
+            if (stamp > getattr(self, 'gripper_command_time', float('inf')) and
+                    evidence.update(self.current_gripper_status, stamp, time.monotonic())):
+                return True
+            time.sleep(.02)
+        status = self.current_gripper_status
+        detail = ('feedback unavailable' if status is None else
+                  f'width={status.width:.6f}m force={status.force:.6f}N')
+        self.get_logger().error('[GRIPPER] Settled contact unconfirmed: '+detail)
+        return False
+
+    def _wait_for_gripper_release(self, initial_width, timeout_sec=4.0):
+        """Confirm opening movement and loss of contact after a release command."""
         deadline = time.monotonic() + timeout_sec
         while rclpy.ok() and time.monotonic() < deadline:
             status = self.current_gripper_status
-            if (status is not None and status.width > 0.001 and
-                    status.force >= 0.2):
+            if (status is not None and
+                    getattr(self, 'gripper_feedback_time', 0) >
+                    getattr(self, 'gripper_command_time', float('inf')) and
+                    math.isfinite(status.width) and math.isfinite(status.force) and
+                    status.width >= initial_width + .004 and abs(status.force) < .2):
                 return True
-            time.sleep(0.05)
+            time.sleep(.05)
         return False
 
     @staticmethod
@@ -1177,13 +1249,14 @@ class PiperMasterControl(Node):
         pregrasp_error = max(abs(float(current) - float(expected))
                              for current, expected in zip(
                                  self.current_joint_states.position[:6],
-                                 refined_plan['pregrasp_joints']))
+                                 feedback_reference(self, refined_plan['pregrasp_joints'])))
         if pregrasp_error > 0.08:
             return False, (
                 'NOT_AT_REFINED_PREGRASP: maximum joint error='
                 f'{pregrasp_error:.3f}rad; run [PRE_GRASP] again')
         pose_error = self._pose_error(
-            refined_plan.get('pregrasp_pose'), self.current_tcp_pose)
+            command_pose_reference(refined_plan.get('pregrasp_pose'),
+                                   getattr(self, 'joint6_command_offset_rad', 0.)), self.current_tcp_pose)
         if pose_error is None:
             return False, 'CURRENT_TCP_POSE_UNAVAILABLE_OR_INVALID'
         position_error, orientation_error = pose_error
@@ -1234,7 +1307,7 @@ class PiperMasterControl(Node):
         restore_speed_required = True
         restore_speed_failed = False
         try:
-            opening = min(0.10, max(0.0, float(refined_width) + 0.01))
+            opening = grasp_gripper_widths(float(refined_width))[0]
             if not self._command_gripper(opening, self.gripper_open_force_n):
                 status = 'FINAL_APPROACH_GRIPPER_OPEN_COMMAND_FAILED'
             elif not self._wait_for_gripper_opening(opening):
@@ -1249,7 +1322,7 @@ class PiperMasterControl(Node):
                         status = path_status
                     else:
                         motion_completed = True
-                        if not self._command_gripper(0.0, 1.0):
+                        if not self._command_gripper(grasp_gripper_widths(float(refined_width))[1], 1.0):
                             status = 'FINAL_APPROACH_GRIPPER_CLOSE_COMMAND_FAILED'
                         elif not self._wait_for_gripper_contact():
                             status = (
@@ -1347,6 +1420,7 @@ class PiperMasterControl(Node):
             request.current_joints = list(
                 self.current_joint_states.position[:6])
             request.remaining_path_flat = list(target_joints)
+            request.grasp_motion = True
             request.allow_target_contact = True
             request.allowed_contact_center = contact_center
             request.allowed_contact_radius_m = float(contact_radius_m)

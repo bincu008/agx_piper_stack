@@ -1,3 +1,5 @@
+import math
+
 from master_node.piper_master_control import PiperMasterControl
 
 
@@ -48,9 +50,11 @@ def test_final_approach_command_ordering_and_contact_feedback():
     assert [event[0] for event in target.events] == [
         'gripper', 'open_feedback', 'speed', 'move', 'gripper',
         'contact_feedback', 'speed']
-    assert target.events[0] == ('gripper', 0.05, 1.0)
+    assert target.events[0] == ('gripper', 0.06, 1.0)
     assert target.events[2] == ('speed', 5)
-    assert target.events[4] == ('gripper', 0.0, 1.0)
+    assert target.events[4][0] == 'gripper'
+    assert math.isclose(target.events[4][1], 0.02, abs_tol=1e-9)
+    assert target.events[4][2] == 1.0
     assert target.events[-1] == ('speed', 20)
 
 

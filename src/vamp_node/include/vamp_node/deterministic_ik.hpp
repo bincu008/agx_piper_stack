@@ -33,10 +33,39 @@ private:
 };
 
 
-inline constexpr PiperJointArray kPiperJointLower{
+inline constexpr PiperJointArray kPiperNominalJointLower{
   -2.6179938F, 0.0F, -2.9670597F, -1.7453292F, -1.2217304F, -2.0943951F};
-inline constexpr PiperJointArray kPiperJointUpper{
+inline constexpr PiperJointArray kPiperNominalJointUpper{
    2.6179938F, 3.1415926F, 0.0F, 1.7453292F, 1.2217304F, 2.0943951F};
+inline PiperJointArray kPiperJointLower = kPiperNominalJointLower;
+inline PiperJointArray kPiperJointUpper = kPiperNominalJointUpper;
+
+// Keep measured feedback unchanged; return a separate nominal planning entry.
+// Callers must collision-check the complete measured-to-entry segment before
+// using it, and may never issue the out-of-bounds measured state as a target.
+inline std::optional<PiperJointArray> nominalFeedbackEntry(
+  const std::vector<float> &feedback, float tolerance)
+{
+  if (feedback.size() != 6 || !std::isfinite(tolerance) || tolerance < 0.F ||
+      tolerance > 2.F * 3.14159265358979323846F / 180.F + 1.e-6F) return std::nullopt;
+  PiperJointArray entry{};
+  for (size_t j = 0; j < 6; ++j) {
+    if (!std::isfinite(feedback[j]) ||
+        feedback[j] < kPiperJointLower[j]-tolerance-1.e-5F ||
+        feedback[j] > kPiperJointUpper[j]+tolerance+1.e-5F) return std::nullopt;
+    entry[j] = std::clamp(feedback[j], kPiperJointLower[j], kPiperJointUpper[j]);
+  }
+  return entry;
+}
+
+// Set once at node startup, before callbacks or planning threads run.
+inline void configurePiperJointLimitTolerance(float radians)
+{
+  for (std::size_t joint = 0; joint < 6; ++joint) {
+    kPiperJointLower[joint] = kPiperNominalJointLower[joint] - radians;
+    kPiperJointUpper[joint] = kPiperNominalJointUpper[joint] + radians;
+  }
+}
 
 inline float haltonValue(const int index, const int base)
 {

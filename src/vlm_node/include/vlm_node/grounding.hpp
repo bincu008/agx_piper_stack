@@ -8,6 +8,13 @@
 
 namespace vlm_node
 {
+
+inline std::string wholeObjectGroundingTarget(const std::string &description)
+{
+    static const std::regex directive(R"(\s*,\s*grasp\s+its\s+(body|rim|handle|side|edge|lip)\s*$)", std::regex::icase);
+    return std::regex_replace(description, directive, "");
+}
+
 inline std::string groundingPrompt(const std::string &target)
 {
     return "Please provide the bounding box coordinate of the region this sentence describes: " +

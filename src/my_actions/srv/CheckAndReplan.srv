@@ -1,5 +1,7 @@
 float32[] current_joints
 float32[] remaining_path_flat
+# Grasp-only environment scope; ordinary/held transfer retains full geometry.
+bool grasp_motion
 # Optional, narrowly scoped allowed-contact volume for a grasp approach.
 # Ordinary motion leaves this false and receives the original behavior.
 bool allow_target_contact

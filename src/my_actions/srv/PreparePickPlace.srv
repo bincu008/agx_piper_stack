@@ -1,0 +1,13 @@
+string object_name
+string destination_name
+string support_mode
+float32 lift_distance_m
+std_msgs/Header observation_header
+geometry_msgs/Point source_object_center
+my_actions/PlacementCandidate[] candidates
+sensor_msgs/Image destination_mask
+---
+bool success
+string status
+uint64 plan_revision
+geometry_msgs/PoseStamped selected_pose

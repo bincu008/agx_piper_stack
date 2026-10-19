@@ -1,0 +1,6 @@
+---
+bool success
+string status
+# Names/locations, bounded geometry handles/revisions and actual task queues;
+# never serialize point arrays or image data into this JSON.
+string state_json

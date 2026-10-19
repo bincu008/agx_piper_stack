@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <Eigen/Geometry>
 
@@ -79,6 +81,38 @@ inline bool fingerBodiesClear(const std::vector<Eigen::Vector3f> &environment,
 // samples. Multiple support tops may permit bottom contact; other geometry blocks.
 class AttachedObjectScene {
 public:
+    // Immutable geometry only: no collision decision is cached. Preserve source
+    // ordering so support labels, first-hit diagnostics and noise budgets agree.
+    class SourceBounds {
+        friend class AttachedObjectScene;
+        struct Box { Eigen::Vector3f low, high; };
+        static constexpr size_t block_size = 128;
+        std::vector<Eigen::Vector3f> snapshot_;
+        std::vector<Box> blocks_;
+        Box whole_;
+        bool valid_ = true;
+        bool matches(const std::vector<Eigen::Vector3f> &source) const {
+            return valid_ && source.size() == snapshot_.size() &&
+                (source.empty() || std::memcmp(source.data(), snapshot_.data(),
+                    source.size()*sizeof(Eigen::Vector3f)) == 0);
+        }
+    public:
+        explicit SourceBounds(const std::vector<Eigen::Vector3f> &source) : snapshot_(source) {
+            if (source.empty()) { valid_ = false; return; }
+            whole_ = {source.front(), source.front()};
+            for (size_t begin = 0; begin < source.size(); begin += block_size) {
+                Box box{source[begin], source[begin]};
+                for (size_t i = begin; i < std::min(source.size(), begin+block_size); ++i) {
+                    valid_ = valid_ && source[i].allFinite();
+                    box.low = box.low.cwiseMin(source[i]);
+                    box.high = box.high.cwiseMax(source[i]);
+                }
+                blocks_.push_back(box);
+                whole_.low = whole_.low.cwiseMin(box.low);
+                whole_.high = whole_.high.cwiseMax(box.high);
+            }
+        }
+    };
     // A segment-wide budget, not a fresh allowance at every waypoint. Count
     // unique obstacle samples (never source/sample pairs) and bound their
     // occupied cells. Separate sparse clusters have no distance restriction.
@@ -139,7 +173,10 @@ public:
         return result;
     }
     void add(const Eigen::Vector3f &point, bool support) {
-        if (point.allFinite()) cells_[cellOf(point)].push_back({point, support});
+        if (point.allFinite()) {
+            cells_[cellOf(point)].push_back({point, support});
+            coarse_cells_.insert(coarseCellOf(point));
+        }
     }
     bool clear(const std::vector<Eigen::Vector3f> &source,
         const Eigen::Isometry3f &delta, float bottom_z, bool final_contact,
@@ -148,11 +185,19 @@ public:
         float support_penetration_m = 0.001F,
         const std::vector<InitialContact> *departure_contacts = nullptr,
         float departure_slack_m = 0.0F,
-        NoiseBudget *noise_budget = nullptr) const {
+        NoiseBudget *noise_budget = nullptr,
+        const SourceBounds *bounds = nullptr) const {
         const float slack = std::clamp(departure_slack_m, 0.0F, 0.002F);
         NoiseBudget proposed;
         if (noise_budget) proposed = *noise_budget;
+        const bool indexed = bounds && bounds->matches(source) && delta.matrix().allFinite();
+        if (indexed && !boundsMayCollide(bounds->whole_, delta)) return true;
         for (size_t source_index = 0; source_index < source.size(); ++source_index) {
+            if (indexed && source_index % SourceBounds::block_size == 0 &&
+                !boundsMayCollide(bounds->blocks_[source_index/SourceBounds::block_size], delta)) {
+                source_index = std::min(source.size(), source_index+SourceBounds::block_size)-1;
+                continue;
+            }
             const auto &source_point = source[source_index];
             const bool source_bottom = bottom_flags && bottom_flags->size() == source.size() ?
                 (*bottom_flags)[source_index] != 0 : source_point.z() <= bottom_z + 0.003F;
@@ -228,6 +273,23 @@ private:
     static Eigen::Vector3i cellOf(const Eigen::Vector3f &point) {
         return (point.array() / 0.005F).floor().cast<int>().matrix();
     }
+    static Eigen::Vector3i coarseCellOf(const Eigen::Vector3f &point) {
+        return (point.array() / 0.04F).floor().cast<int>().matrix();
+    }
+    bool boundsMayCollide(const SourceBounds::Box &box, const Eigen::Isometry3f &delta) const {
+        const Eigen::Vector3f center = delta*((box.low+box.high)*0.5F);
+        // Outward padding covers the unchanged 3 mm narrow-phase radius plus
+        // conservative float rounding; occupied boxes always use exact points.
+        const Eigen::Vector3f half = delta.linear().cwiseAbs()*((box.high-box.low)*0.5F)+
+            Eigen::Vector3f::Constant(0.0031F);
+        const auto low = coarseCellOf(center-half), high = coarseCellOf(center+half);
+        for (int x=low.x(); x<=high.x(); ++x)
+            for (int y=low.y(); y<=high.y(); ++y)
+                for (int z=low.z(); z<=high.z(); ++z)
+                    if (coarse_cells_.find(Eigen::Vector3i(x,y,z)) != coarse_cells_.end()) return true;
+        return false;
+    }
     std::unordered_map<Eigen::Vector3i, std::vector<Sample>, Hash, Equal> cells_;
+    std::unordered_set<Eigen::Vector3i, Hash, Equal> coarse_cells_;
 };
 }  // namespace vamp_node

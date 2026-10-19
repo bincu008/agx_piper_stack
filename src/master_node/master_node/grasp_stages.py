@@ -1,13 +1,19 @@
 """Expose ordered grasp stages while retaining strict contact and motion checks."""
 
+from master_node.gripper_widths import grasp_gripper_widths
+
 import copy
 import math
+import time
 
 from my_actions.srv import (
     CacheGraspRefinement, GraspStage, PlanCartesianGraspApproach, RefineGrasp,
 )
 
 from rclpy.serialization import deserialize_message
+
+
+from master_node.joint_command_calibration import command_pose_reference
 
 
 class GraspStages:
@@ -110,6 +116,7 @@ class GraspStages:
                 if not self.node._run_grasp_joint_target(
                         candidate.pregrasp_joints, center, radius):
                     raise RuntimeError('PREGRASP_MOTION_FAILED')
+                time.sleep(.1)  # Let the wrist camera settle before the next observation API.
                 self.phases[key] = 'AT_PREGRASP'
                 response.motion_completed = True
             else:
@@ -124,7 +131,7 @@ class GraspStages:
                     self._plan(key, source, refined)
                 elif name == 'open_grasp_gripper':
                     self._phase(key, 'PLANNED')
-                    width = min(.10, refined['width'] + .01)
+                    width = grasp_gripper_widths(refined['width'])[0]
                     if not self.node._command_gripper(width, self.node.gripper_open_force_n):
                         raise RuntimeError('GRIPPER_OPEN_COMMAND_FAILED')
                     if not self.node._wait_for_gripper_opening(width):
@@ -148,10 +155,12 @@ class GraspStages:
                 elif name == 'close_grasp_gripper':
                     self._phase(key, 'APPROACH_COMPLETE')
                     pose_error = self.node._pose_error(
-                        refined['grasp_pose'], self.node.current_tcp_pose)
+                        command_pose_reference(refined['grasp_pose'],
+                            getattr(self.node, 'joint6_command_offset_rad', 0.)),
+                        self.node.current_tcp_pose)
                     if pose_error is None or pose_error[0] > .010 or pose_error[1] > .15:
                         raise RuntimeError('NOT_AT_REFINED_FINAL_GRASP')
-                    if not self.node._command_gripper(0.0, 1.0):
+                    if not self.node._command_gripper(grasp_gripper_widths(refined['width'])[1], 1.0):
                         raise RuntimeError('GRIPPER_CLOSE_COMMAND_FAILED')
                     self.phases[key] = 'CLOSE_COMMAND_SENT'
                 elif name == 'verify_grasp_contact':
@@ -182,6 +191,7 @@ class GraspStages:
             current_pregrasp_pose=self.node.current_tcp_pose,
             current_joints=list(self.node.current_joint_states.position[:6]),
             refined_grasp_pose=refined['grasp_pose'],
+            final_grasp_joints=list(refined['grasp_joints']),
             grasp_width_m=refined['width'], target_observation_header=source['header'])
         (request.refined_contact_center.x, request.refined_contact_center.y,
          request.refined_contact_center.z) = refined['seed_base']

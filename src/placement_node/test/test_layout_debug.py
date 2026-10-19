@@ -142,6 +142,7 @@ def test_template_continues_after_failed_grasp_for_each_object(names, expected_i
     client = SimpleNamespace(wait_for_service=lambda **k: True, call_async=call)
     pub = SimpleNamespace(publish=lambda _: None)
     params = dict(layout_debug_directory='', layout_support_mode='auto',
+                  layout_debug_stop_on_failure=False,
                   minimum_destination_points=80,
                   request_timeout_sec=1.)
     node = SimpleNamespace(
@@ -210,3 +211,24 @@ def test_single_object_placement_uses_exact_pinned_frame_after_ring_eviction():
     result = PlacementNode._placement_callback(node, request, FindPlacementCandidates.Response())
     assert not result.success
     assert result.status == 'PLACEMENT_FAILED: SEARCH_REACHED_WITH_ORIGINAL_FRAME'
+
+
+def test_mapped_destination_requires_same_verified_observation():
+    from sensor_msgs.msg import PointCloud2
+    from my_actions.srv import ResolveManipulationTarget
+    from std_msgs.msg import Header
+    header=Header(frame_id='base_link')
+    header.stamp.sec=42
+    current=PointCloud2(header=header)
+    remembered=ResolveManipulationTarget.Response(success=True,observation_header=header)
+    marker=object()
+    client=SimpleNamespace(wait_for_service=lambda **k:True,
+                           call_async=lambda q:SimpleNamespace(result=lambda:remembered))
+    node=SimpleNamespace(_active_target_client=client,_wait_for_future=lambda *a:True,
+                         _cloud_xyz=lambda cloud:marker)
+    fallback=object()
+    assert PlacementNode._mapped_destination(node,'tray',current,fallback) is marker
+    remembered.observation_header.stamp.sec=41
+    # ROS messages can share assigned Header objects; replace current explicitly.
+    current.header=Header(frame_id='base_link');current.header.stamp.sec=42
+    assert PlacementNode._mapped_destination(node,'tray',current,fallback) is fallback

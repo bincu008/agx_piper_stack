@@ -1,0 +1,13 @@
+std_msgs/Header observation_header
+sensor_msgs/PointCloud2 cloud
+sensor_msgs/Image source_mask
+# Original semantic mask bounds source seam recovery; neighbors stay blocking.
+sensor_msgs/Image semantic_mask
+sensor_msgs/Image destination_mask
+---
+bool success
+string status
+sensor_msgs/PointCloud2 source_object_cloud
+sensor_msgs/PointCloud2 collision_scene
+sensor_msgs/PointCloud2 destination_support_cloud
+geometry_msgs/Point source_object_center

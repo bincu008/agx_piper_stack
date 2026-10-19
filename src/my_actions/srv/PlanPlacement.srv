@@ -23,6 +23,11 @@ bool plan_pick_place_motion
 uint32 validation_batch_size
 bool retry_motion_failures
 uint32[] blocked_lift_grasp_ids
+# Validate only the fixed-orientation lift; no destination candidates are required.
+bool lift_only
+# Zero retains the existing 10 cm default; finite positive heights have no fixed cap.
+# Reachability, path resource limits and configured collision checks still apply.
+float32 lift_distance_m
 ---
 bool success
 string status
@@ -59,3 +64,6 @@ float64 validation_seconds
 uint32 validated_candidate_count
 uint32[] blocked_lift_grasp_ids
 string validation_calls_json
+
+geometry_msgs/PoseStamped lift_ee_pose
+float32[6] lift_joints

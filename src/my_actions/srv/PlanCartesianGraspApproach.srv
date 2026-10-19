@@ -3,6 +3,8 @@ geometry_msgs/PoseStamped current_pregrasp_pose
 float32[] current_joints
 # Refined final pose produced by /vamp_planner/refine_grasp.
 geometry_msgs/PoseStamped refined_grasp_pose
+# Previously validated final joint configuration; never re-solve this endpoint.
+float32[] final_grasp_joints
 # Refined local contact geometry. The VAMP server supplies the cached target
 # region and applies the contact allowance only to the final inner-pad check.
 geometry_msgs/Point refined_contact_center
@@ -10,8 +12,16 @@ geometry_msgs/Vector3 closing_axis
 float32 grasp_width_m
 # Original FIND_GRASP observation that owns the cached local target region.
 std_msgs/Header target_observation_header
+# Optional immutable scene for planning before any movement; both clouds required.
+sensor_msgs/PointCloud2 source_object_cloud
+sensor_msgs/PointCloud2 collision_scene
 ---
 bool success
 string failure_reason
 float32[] path_flat
 uint32 waypoint_count
+# Prefix of path_flat rotates at a clear standoff; remaining waypoints approach.
+uint32 alignment_waypoint_count
+# Transfer to this relaxed starting pre-grasp before following the entire path.
+geometry_msgs/PoseStamped planned_pregrasp_pose
+float32[] planned_pregrasp_joints

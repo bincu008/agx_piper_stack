@@ -229,3 +229,50 @@ bounded grid/reservation storage and `/placement/floor_slots` visualization.
 `my_actions/srv/CommitFloorSlots.srv` defines the commit/reset contract;
 `task_pipeline/registry.py` declares `commit_floor_slots`, and `recipes.py` appends
 it after successful grid placement validation.
+
+
+Payload execution is owned by `master_node/master_node/held_motion.py`: preparation
+calls registered geometry/VAMP APIs, while four revision-bound stage services
+execute lift, transfer, descent and confirmed release. Geometry preparation is
+`placement_node/placement_node/held_scene.py`; its input semantic mask limits
+source seam recovery so neighboring objects stay blocking. Schemas are
+`PrepareHeldScene.srv`, `PrepareHeldMotion.srv`, `HeldMotionStage.srv`, with
+source cloud/masks cached through `CacheGraspPlan.srv`. The physical lift-only
+recipe lives in `task_pipeline/task_pipeline/recipes.py` (`grasp_and_lift`) and
+is invoked by `pipeline_task --execute-grasp-lift`. It never places or releases.
+
+
+`master_node/master_node/prepared_grasp_lift.py` owns the complete-plan physical
+trial. `prepare_grasp_lift` calls registered geometry, final-approach, lift and
+pre-grasp planning APIs before any command; `get_prepared_grasp_lift` checks
+readiness and `execute_prepared_grasp_lift` follows cached trajectories only.
+The two CLI recipes are in `task_pipeline/recipes.py`; `PreparedGraspLift.srv`
+returns the revision used by the existing `HeldMotionStage.srv` execution request.
+
+Prepared-stage APIs share `master_node/prepared_grasp_lift.py`: `execute_plan`,
+`gripper_open`, `gripper_close`, `get_execution_state`, and the `plan_lift`
+adapter. Their typed interfaces are `ExecutePlan.srv`,
+`PreparedGripperCommand.srv`, `GetExecutionState.srv` and `PlanPlacement.srv`.
+`task_pipeline/recipes.py` constructs the ordered tasks; `context.py` retains
+pending tasks at an explicit `RunPipelineSteps` pause boundary. The
+`pipeline_task --queue-grasp-lift` CLI reports that actual queue.
+
+- `vamp_node/src/collision_spheres_viewer.cpp`: read-only live VAMP sphere FK,
+  MarkerArray output with indices and measured gripper aperture.
+- `vamp_node/launch/grasp_debug_rviz.launch.py` and
+  `rviz/grasp_debug.rviz`: standalone sphere inspection view.
+
+### Manipulation memory ownership
+
+- `master_node/master_node/manipulation_memory.py`: bounded name/location hints,
+  active RGB-D/object geometry, verified destination reuse, grid metadata and
+  quick calculation retries. Coordinates are in `base_link`, metres.
+- `my_actions/srv/ResolveManipulationTarget.srv`: typed resolution/refresh/read/
+  forget requests; current observation and original mapped geometry provenance.
+- `my_actions/srv/GetManipulationMemory.srv`: small metadata and task-list JSON.
+- `task_pipeline/task_pipeline/registry.py`: all public memory/retry API names;
+  `recipes.py:with_active_memory` connects default CLI sequences to them.
+- `placement_node/placement_node/node.py`: owns actual grid/reservations; exposes
+  read-only `get_floor_slots` and uses verified frozen destination geometry.
+- `vlm_node/src/vlm_reasoning_node.cpp`: resolves targets through the shared
+  memory APIs. It does not own a second long-lived geometry directory.

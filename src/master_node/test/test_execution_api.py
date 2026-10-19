@@ -12,6 +12,41 @@ from my_actions.srv import CheckAndReplan, ExecuteTrajectory, GraspStage, Grippe
 import pytest
 
 
+def test_joint_limit_error_identifies_measured_joint_without_clamping():
+    """Explain the live start-state failure and preserve strict limits."""
+    api = object.__new__(ExecutionAPI)
+    api.node = SimpleNamespace(joint_limits=[(-3., 3.)]*4 + [(-1.2217304, 1.2217304)]
+                               + [(-3., 3.)])
+    joints = [0., 0., 0., 0., 1.2389568761132146, 0.]
+    with pytest.raises(ValueError, match='JOINT_LIMIT_VIOLATION: joint5=.*70.987'):
+        api._joints(joints)
+    assert joints[4] == 1.2389568761132146
+    joints[4] = 1.2217304
+    api._joints(joints)
+
+
+def test_master_loads_two_degree_margin_for_all_joints():
+    """Use unchanged measured joints and expand each model boundary equally."""
+    import math
+    from master_node.piper_master_control import PiperMasterControl
+    logger = SimpleNamespace(info=lambda *_: None, error=lambda *_: None)
+    node = SimpleNamespace(
+        declare_parameter=lambda *_: None,
+        get_parameter=lambda _: SimpleNamespace(value=2.0),
+        get_logger=lambda: logger)
+    PiperMasterControl.load_joint_limits(node)
+    nominal = [(-2.6179938, 2.6179938), (0., 3.1415926), (-2.9670597, 0.),
+               (-1.7453292, 1.7453292), (-1.2217304, 1.2217304), (-2.0943951, 2.0943951)]
+    margin = math.radians(2.)
+    for actual, (lower, upper) in zip(node.joint_limits, nominal):
+        assert actual == pytest.approx((lower-margin, upper+margin))
+    api = object.__new__(ExecutionAPI)
+    api.node = node
+    api._joints([0., -.005969, -.52, 0., 1.238956876, 0.])
+    with pytest.raises(ValueError, match='joint2'):
+        api._joints([0., -math.radians(2.1), -.52, 0., 0., 0.])
+
+
 @pytest.mark.parametrize('name,query,response', [
     ('_move', MoveTo.Request(), MoveTo.Response()),
     ('_trajectory', ExecuteTrajectory.Request(), ExecuteTrajectory.Response()),
@@ -94,7 +129,9 @@ def test_ordered_grasp_stages_confirm_contact_before_marking_object_held():
         assert stages.node._held_object is None
     result = stages._stage('verify_grasp_contact', request, GraspStage.Response())
     assert result.success and result.gripper_contact and stages.node._held_object == 'cup'
-    assert commands == [(.05, 1.), (0., 1.)] and speeds == [5, 20]
+    assert commands[0] == pytest.approx((.06, 1.))
+    assert commands[1] == pytest.approx((.02, 1.))
+    assert speeds == [5, 20]
 
 
 def test_trajectory_claims_master_state_and_restores_it_after_failure():

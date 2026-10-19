@@ -1,0 +1,7 @@
+string object_name
+uint64 plan_revision
+---
+bool success
+bool motion_completed
+bool gripper_released
+string status

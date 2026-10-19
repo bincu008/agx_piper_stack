@@ -632,14 +632,16 @@ def test_default_preserves_measured_support_height():
 
 
 def test_elevated_object_does_not_get_extruded_to_surrounding_table():
-    import pytest
     from placement_node.perception import construct_support_bottom
     axis = np.linspace(-.05, .05, 21)
     plate = np.array([[x, y, .04] for x in axis for y in axis], np.float32)
     table_axis = np.linspace(-.09, .09, 37)
     table = np.array([[x, y, 0.] for x in table_axis for y in table_axis], np.float32)
-    with pytest.raises(ValueError, match='below the observed object'):
-        construct_support_bottom(plate, table)
+    completed, contour, envelope, diagnostic = construct_support_bottom(plate, table)
+    assert diagnostic['footprint_model'] == 'elevated_planar_hull'
+    assert np.allclose(contour[:, 2], .04)
+    assert np.min(envelope[:, 2]) >= .03999
+    assert np.min(completed[:, 2]) >= .03999
 
 
 def test_boundary_recovery_preserves_depth_steps_and_other_objects():
@@ -730,3 +732,41 @@ def test_tapered_round_body_uses_consistent_outer_contour_not_rectangle():
     assert .04 < diagnostics['fitted_radius_m'] < .065
     np.testing.assert_array_equal(completed[:len(wall)], wall)
     assert np.max(np.linalg.norm(bottom[:, :2], axis=1)) < .065
+
+
+def test_elevated_tall_body_does_not_infer_underside_from_distant_table():
+    """Only a measured thin elevated body may estimate its local underside."""
+    import pytest
+    axis = np.linspace(-.05, .05, 21)
+    body = np.array([[x, y, z] for x in axis for y in axis for z in (.04, .10)], np.float32)
+    table_axis = np.linspace(-.09, .09, 37)
+    table = np.array([[x, y, 0.] for x in table_axis for y in table_axis], np.float32)
+    with pytest.raises(ValueError, match='below the observed object'):
+        construct_support_bottom(body, table)
+
+
+def test_tilted_destination_floor_is_support_but_raised_samples_block():
+    """A sloping tray floor must not become an obstacle solely because of its height."""
+    from placement_node.packing import destination_support_mask
+    x, y = np.meshgrid(np.linspace(0, .3, 40), np.linspace(0, .2, 40))
+    floor = np.stack((x, y, .03*x+.02*y), axis=-1).astype(np.float32)
+    scene = floor.copy()
+    scene[10:14, 10:14, 2] += .025
+    valid = np.ones(x.shape, bool)
+    mask = destination_support_mask(scene, valid, floor.reshape(-1, 3))
+    expected = valid.copy()
+    expected[10:14, 10:14] = False
+    np.testing.assert_array_equal(mask, expected)
+
+
+def test_gravity_footprint_keeps_xy_despite_tilted_support_fit():
+    rng = np.random.default_rng(4)
+    xy = rng.uniform(-.13, .13, (6000, 2))
+    table = np.column_stack((xy, xy[:, 1]*np.tan(np.deg2rad(10))))
+    angle = np.linspace(0, 2*np.pi, 2000, endpoint=False)
+    cylinder = np.column_stack((.055*np.cos(angle), .055*np.sin(angle),
+                                rng.uniform(.001, .08, len(angle))))
+    _, bottom, _, diagnostic = construct_support_bottom(cylinder, table)
+    assert np.ptp(bottom[:, 2]) < 1.e-6
+    assert np.allclose(diagnostic['plane_normal'], [0., 0., 1.])
+    assert np.ptp(bottom[:, 0]) > .105 and np.ptp(bottom[:, 1]) > .105

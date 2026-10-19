@@ -1,6 +1,7 @@
 #include <array>
 #include <gtest/gtest.h>
 #include "vamp_node/payload_checked_robot.hpp"
+#include <vamp/robots/piper.hh>
 
 struct TestRobot {
     static constexpr std::size_t dimension = 6;
@@ -12,6 +13,24 @@ struct TestRobot {
         const ConfigurationBlock<width> &) { return base_safe; }
 };
 using Checked = vamp_node::PayloadCheckedRobot<TestRobot>;
+
+TEST(PiperLimits, SamplingScaleIncludesAllConfiguredJointBounds) {
+    using Robot = vamp::robots::Piper;
+    const auto original_a = Robot::s_a;
+    const auto original_m = Robot::s_m;
+    const auto original_d = Robot::d_m;
+    const std::array<float, 6> lower = {-2.65F, -.035F, -3.0F, -1.78F, -1.26F, -2.13F};
+    const std::array<float, 6> upper = {2.65F, 3.18F, .035F, 1.78F, 1.26F, 2.13F};
+    Robot::configure_joint_limits(lower, upper);
+    for (std::size_t joint = 0; joint < 6; ++joint) {
+        EXPECT_FLOAT_EQ(Robot::s_a[joint], lower[joint]);
+        EXPECT_NEAR(Robot::s_a[joint]+Robot::s_m[joint], upper[joint], 1.e-6F);
+        EXPECT_NEAR(Robot::d_m[joint]*Robot::s_m[joint], 1.F, 1.e-6F);
+    }
+    Robot::s_a = original_a;
+    Robot::s_m = original_m;
+    Robot::d_m = original_d;
+}
 
 TEST(PayloadRobot, RejectsMissingValidatorAndRestoresPreviousScope) {
     vamp::collision::Environment<vamp::FloatVector<4>> environment;

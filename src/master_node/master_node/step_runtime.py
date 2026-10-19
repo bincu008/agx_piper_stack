@@ -8,7 +8,7 @@ import uuid
 from my_actions.action import RunPipelineSteps
 from my_actions.msg import ApiCallTrace, PipelineTiming
 from my_actions.srv import (
-    ClearStepContext, GetStepContext, PrepareCloudScene, RunPipelineStep,
+    ClearStepContext, CommitFloorSlots, GetStepContext, PrepareCloudScene, RunPipelineStep,
     StorePipelineResult, SubmitPipelineSteps, VerifyPresence,
 )
 
@@ -18,6 +18,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.serialization import deserialize_message, serialize_message
 
 from task_pipeline.context import StepStore
+from task_pipeline.grasp_input import calculate_grasps_with_recovery
+from task_pipeline.preparation_recovery import pin_observation_with_recovery
 from task_pipeline.node import response_status, response_success, set_failure
 from task_pipeline.placement import validate_placements
 from task_pipeline.registry import FUNCTIONS
@@ -118,14 +120,32 @@ class MasterStepRuntime:
                 query = copy.deepcopy(request)
                 query.verify_presence = False
                 response = self._native(name, query)
+            elif name == 'calculate_grasps':
+                response = calculate_grasps_with_recovery(
+                    request, lambda query: self._native(name, query))
+            elif name == 'pin_placement_observation':
+                response = pin_observation_with_recovery(
+                    request, lambda query: self._native(name, query))
             elif name in ('plan_placement', 'validate_placements') and (
                     request.validation_batch_size or request.retry_motion_failures):
-                response = validate_placements(request, lambda query: self._native(name, query))
+                check_selected = None
+                if request.support_mode == 'floor_slots':
+                    def check_selected(result):
+                        return self._call('commit_floor_slots', CommitFloorSlots.Request(
+                            selected_pose=result.selected_candidate.object_pose, validate_only=True))
+                response = validate_placements(request, lambda query: self._native(name, query),
+                                               validate_selected=check_selected)
             else:
                 response = self._native(name, request)
         except Exception as error:
             failure = str(error)
             response = set_failure(FUNCTIONS[name].service_type.Response(), str(error))
+        memory = getattr(self.node, 'manipulation_memory', None)
+        if memory is not None and failure is None:
+            try:
+                memory.observe_result(name, request, response)
+            except Exception as error:
+                self.node.get_logger().warning(f'[ACTIVE MEMORY] update requires refresh: {error}')
         if trace is not None:
             trace.backend_finished_ns = time.monotonic_ns()
             if trace.function_name == name:
@@ -260,8 +280,21 @@ class MasterStepRuntime:
     def _execute(self, handle):
         started = time.monotonic()
         result = RunPipelineSteps.Result(context_id=handle.request.context_id)
+        attempted = {}
 
         def progress(step, status, completed, remaining):
+            memory = getattr(self.node, 'manipulation_memory', None)
+            if memory is not None:
+                state, _ = self.store.snapshot(handle.request.context_id)
+                import json
+                pending = [s['step_id']+':'+s['function'] for s in json.loads(state)[0]['pending']]
+                memory.print_state(f'{step.step_id}:{step.function_name}:{status} pending={pending}')
+            if status == 'RUNNING' and 'object_name' in (
+                    FUNCTIONS[step.function_name].service_type.Request.get_fields_and_field_types()):
+                query = deserialize_message(bytes(step.request_cdr),
+                                            FUNCTIONS[step.function_name].service_type.Request)
+                attempted['object'] = getattr(query, 'object_name', '')
+                attempted['function'] = step.function_name
             handle.publish_feedback(RunPipelineSteps.Feedback(
                 context_id=handle.request.context_id, step_id=step.step_id,
                 function_name=step.function_name, status=status,
@@ -269,8 +302,28 @@ class MasterStepRuntime:
 
         try:
             result.status, result.results = self.store.run_queue(
-                handle.request.context_id, lambda: handle.is_cancel_requested, progress)
-            result.success = result.status == 'COMPLETE'
+                handle.request.context_id, lambda: handle.is_cancel_requested, progress,
+                stop_before_step_id=handle.request.stop_before_step_id)
+            result.success = result.status in ('COMPLETE', 'PAUSED_AT_STEP_BOUNDARY')
+            if result.status == 'STOPPED_ON_FAILURE':
+                relevant = {'execute_plan', 'gripper_open', 'gripper_close',
+                            'execute_prepared_grasp_lift', 'cache_grasp_plan',
+                            'prepare_grasp_lift', 'get_prepared_grasp_lift',
+                            'validate_prepared_grasp_lift'}
+                state, _ = self.store.snapshot(handle.request.context_id)
+                import json
+                prepared_waiting = any(step['function'] in relevant
+                                       for step in json.loads(state)[0]['pending'])
+                failed = next((item for item in reversed(result.results) if not item.success), None)
+                if prepared_waiting or (failed and failed.function_name in relevant):
+                    self.store.flush_failed_queue(handle.request.context_id)
+                    if (failed and attempted.get('function') == failed.function_name and
+                            attempted.get('object')):
+                        recovery = self.node.execution_api.prepared_grasp_lift.recover_after_failure(
+                            attempted['object'])
+                        if recovery:
+                            result.status += ';'+recovery
+
             if handle.is_cancel_requested:
                 result.success = False
                 result.status = 'CANCELLED_AT_STEP_BOUNDARY'

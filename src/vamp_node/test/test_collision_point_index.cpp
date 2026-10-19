@@ -57,3 +57,35 @@ TEST(CollisionPointIndex, InPlaceSceneChangeCannotReuseStaleGeometry)
   points[0][0] = 0.0F;
   EXPECT_FALSE(cache.get(points).sphereClear(Eigen::Vector3f::Zero(), 0.01F));
 }
+
+TEST(CollisionPointIndex, BoundsClippingPreservesOriginalCellPredicateSemantics)
+{
+  // The callback intentionally accepts a point outside the tiny metric box
+  // but inside its indexed cell. Point-AABB pruning would change this contract.
+  const std::vector<std::array<float,3>> points{{.0199F,0,0},{-.0199F,0,0}};
+  const vamp_node::PlacementPointIndex index(points);
+  for (float center : {-.0005F,.0005F}) {
+    EXPECT_FALSE(index.sphereClearWithPredicate(Eigen::Vector3f(center,0,0),.0001F,
+      [](size_t, const auto &) { return true; }));
+  }
+  bool called = false;
+  EXPECT_TRUE(index.sphereClearWithPredicate(Eigen::Vector3f(2,2,2),.01F,
+    [&](size_t, const auto &) { called = true; return true; }));
+  EXPECT_FALSE(called);
+}
+
+#include "vamp_node/foreground_components.hpp"
+
+TEST(ForegroundComponents, RetainsConnectedFarWallWithoutWideningDepthBand) {
+    const std::vector<Eigen::Vector3f> front{{0,0,0},{.005F,0,0},{.01F,0,0}};
+    const vamp_node::PlacementPointIndex index(front);
+    // Far component median is >30mm, but its rim connects to the front.
+    const std::vector<Eigen::Vector3f> rear{{0,0,.006F},{.005F,0,.006F},{.01F,0,.006F},
+      {0,0,.06F},{.005F,0,.06F},{.01F,0,.06F},{.015F,0,.06F}};
+    EXPECT_TRUE(vamp_node::substantialSurfaceConnected(rear,index,6,.02F));
+    auto background=rear;for(auto &p:background) p.z()+=.2F;
+    EXPECT_FALSE(vamp_node::substantialSurfaceConnected(background,index,6,.02F));
+    EXPECT_FALSE(vamp_node::substantialSurfaceConnected({rear[0]},index,6,.02F));
+    auto isolated=background;isolated[0]=rear[0];isolated[1]=rear[1];
+    EXPECT_FALSE(vamp_node::substantialSurfaceConnected(isolated,index,6,.02F));
+}

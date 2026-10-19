@@ -40,17 +40,28 @@ struct Piper
         FloatVector<rake, n_spheres> r;
     };
 
-    alignas(Configuration::S::Alignment) static constexpr std::array<float, dimension> s_m{
+    alignas(Configuration::S::Alignment) static inline std::array<float, dimension> s_m{
         4.785999774932861, 3.140000104904175, 2.9670000076293945, 3.490000009536743, 2.440000057220459, 4.188799858093262
     };
 
-    alignas(Configuration::S::Alignment) static constexpr std::array<float, dimension> s_a{
+    alignas(Configuration::S::Alignment) static inline std::array<float, dimension> s_a{
         -2.618000030517578, 0.0, -2.9670000076293945, -1.7450000047683716, -1.2200000286102295, -2.094399929046631
     };
 
-    alignas(Configuration::S::Alignment) static constexpr std::array<float, dimension> d_m{
+    alignas(Configuration::S::Alignment) static inline std::array<float, dimension> d_m{
         0.20894275605678558, 0.31847134232521057, 0.3370407819747925, 0.2865329384803772, 0.4098360538482666, 0.23873186111450195
     };
+
+    // Configured once before planning; collision geometry/FK is unchanged.
+    static inline void configure_joint_limits(const std::array<float, 6>& lower,
+                                              const std::array<float, 6>& upper) noexcept
+    {
+        for (std::size_t joint = 0; joint < dimension; ++joint) {
+            s_a[joint] = lower[joint];
+            s_m[joint] = upper[joint] - lower[joint];
+            d_m[joint] = 1.0F / s_m[joint];
+        }
+    }
 
     static inline void scale_configuration(Configuration& q) noexcept
     {
@@ -65,24 +76,18 @@ struct Piper
     template <std::size_t rake>
     static inline void scale_configuration_block(ConfigurationBlock<rake> &q) noexcept
     {
-        q[0] = -2.618000030517578 + (q[0] * 4.785999774932861);
-q[1] = 0.0 + (q[1] * 3.140000104904175);
-q[2] = -2.9670000076293945 + (q[2] * 2.9670000076293945);
-q[3] = -1.7450000047683716 + (q[3] * 3.490000009536743);
-q[4] = -1.2200000286102295 + (q[4] * 2.440000057220459);
-q[5] = -2.094399929046631 + (q[5] * 4.188799858093262);
+        for (std::size_t joint = 0; joint < dimension; ++joint) {
+            q[joint] = s_a[joint] + q[joint] * s_m[joint];
+        }
 
     }
 
     template <std::size_t rake>
     static inline void descale_configuration_block(ConfigurationBlock<rake> & q) noexcept
     {
-        q[0] = 0.20894275605678558 * (q[0] - -2.618000030517578);
-q[1] = 0.31847134232521057 * (q[1] - 0.0);
-q[2] = 0.3370407819747925 * (q[2] - -2.9670000076293945);
-q[3] = 0.2865329384803772 * (q[3] - -1.7450000047683716);
-q[4] = 0.4098360538482666 * (q[4] - -1.2200000286102295);
-q[5] = 0.23873186111450195 * (q[5] - -2.094399929046631);
+        for (std::size_t joint = 0; joint < dimension; ++joint) {
+            q[joint] = (q[joint] - s_a[joint]) * d_m[joint];
+        }
 
     }
 

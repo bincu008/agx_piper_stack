@@ -34,3 +34,12 @@ TEST(Grounding, StrictBoxAndNonSquareInclusivePixels)
         EXPECT_FALSE(vlm_node::parseGroundingBox(invalid, match)) << invalid;
     }
 }
+
+TEST(Grounding, ContactDirectiveDoesNotCropRigidObjectGeometry)
+{
+    EXPECT_EQ(vlm_node::wholeObjectGroundingTarget("beige cup, grasp its body"), "beige cup");
+    EXPECT_EQ(vlm_node::wholeObjectGroundingTarget("beige cup, grasp its rim"), "beige cup");
+    EXPECT_EQ(vlm_node::wholeObjectGroundingTarget("cup, left of tray"), "cup, left of tray");
+    EXPECT_EQ(vlm_node::wholeObjectGroundingTarget("the complete visible placement surface of the tray"),
+              "the complete visible placement surface of the tray");
+}

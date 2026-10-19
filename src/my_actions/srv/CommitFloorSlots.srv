@@ -1,8 +1,11 @@
 # Commit a candidate only after successful public placement validation.
-# Exact source header and pose must match a retained floor_slots search result.
+# Exact source header must match a retained floor_slots result.
+# Original or bounded achieved FK pose must fit that same free slot group.
 geometry_msgs/PoseStamped selected_pose
 # Explicitly clear all floor-slot reservations (does not change scene clouds).
 bool reset
+# Validate/preview availability without consuming cells.
+bool validate_only
 ---
 bool success
 string status

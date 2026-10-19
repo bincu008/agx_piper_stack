@@ -1,0 +1,25 @@
+# Explicit semantic role; only one destination is active at a time.
+string name
+string role
+bool refresh
+# Optional synchronized input. Empty inputs request a fresh shared capture.
+sensor_msgs/Image image
+sensor_msgs/PointCloud2 observation_cloud
+geometry_msgs/TransformStamped camera_transform
+---
+bool success
+string status
+string object_id
+uint64 memory_revision
+bool reused
+geometry_msgs/Point position
+# Current observation and mask belong together; computational frame is base_link.
+std_msgs/Header observation_header
+sensor_msgs/Image image
+sensor_msgs/PointCloud2 observation_cloud
+geometry_msgs/TransformStamped camera_transform
+sensor_msgs/Image mask
+int32[4] pixel_box
+# Mapped geometry retains its original capture header, even when reobserved.
+sensor_msgs/PointCloud2 object_cloud
+std_msgs/Header geometry_source_header

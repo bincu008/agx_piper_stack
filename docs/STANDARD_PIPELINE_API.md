@@ -1,5 +1,10 @@
 # Shared microstep API
 
+For the accepted, not-yet-implemented MCP and execution-session design, see
+[Agent-controlled arm API design](AGENT_CONTROL_ARCHITECTURE.md). It distinguishes
+current APIs from proposed segment/gripper/TCP controls and documents the planned
+grounding-to-lift sequence. Runtime API documentation below describes current code.
+
 The official reasoning stack hosts `pipeline_node` in the master process by default. `api_dispatch_in_master:=false` restores the separate dispatcher process for comparison. Its catalog in
 `task_pipeline/registry.py` is the common source for production controllers,
 declarative recipes and the synthetic-box benchmark. Public engine calls at
@@ -18,6 +23,7 @@ numerical engines and their solvers are retained.
 | Refine and approach | `move_pregrasp`, `refine_grasp`, `plan_grasp_approach`, `plan_final_approach` |
 | Complete grasp | `open_grasp_gripper`, `execute_grasp_approach`, `close_grasp_gripper`, `verify_grasp_contact` |
 | Place | `find_placements`, `search_placements`, `validate_placements`, `plan_placement` |
+| Held payload | `prepare_held_scene`, `prepare_held_motion`, `execute_lift`, `execute_placement_transfer`, `execute_placement_descent`, `release_placed_object` |
 | General motion | `solve_pose`, `plan_motion`, `move_to`, `execute_trajectory`, `set_gripper` |
 | Object state | `update_object`, `resolve_object`, `get_world_state` |
 | Microstep control | `run_step`, `store_step_result`, `submit_steps`, `get_step_context`, `clear_step_context` |
@@ -180,7 +186,7 @@ and docstring checks. Live actuator calls were rejected by the disabled physical
 gate; live context checks verified idempotent retry and explicit result cleanup.
 
 No physical execution was tested. Local build/test logs, per-step cup results and
-the ten-box report are under `~/microstep_pipeline_validation/`. Rebuild and source
+the ten-box report are under `~/agx_piper_data/reports/microstep_pipeline_validation/`. Rebuild and source
 the workspace before restarting clients because shared ROS interfaces changed.
 
 ## API transport performance
@@ -386,10 +392,24 @@ grid, with dynamic gaps and rectangular remainder slots, and retains the normal 
 `pipeline_task --placement-policy floor_slots` uses the same public search and
 validation functions, then appends one `commit_floor_slots` microstep.
 
+Matching prefers one fitting slot, including a large square. Combinations are
+ranked by the fewest occupied slots; equal-count alternatives use the least
+reserved area. Search and downstream candidate scores preserve this ordering.
+Measured footprint containment, support, reservation and motion validation still
+decide whether a candidate is valid.
+Exclusive adaptive grids evaluate the fully checked single-slot tier first and
+evaluate combinations only when that tier produces no valid search result.
+The candidate count remains an upper bound of 16 by default; it need not be
+filled with lower-priority groups. Shared sub-cell and legacy grids retain their
+existing exhaustive search.
+
 `commit_floor_slots` (`my_actions/srv/CommitFloorSlots`) calls
-`/placement/commit_floor_slots`. Its `selected_pose` must match a retained grid
-candidate including the exact source header. Call it only after successful
-placement validation. It commits the selected footprint's cells, rejects occupied
+`/placement/commit_floor_slots`. Its `selected_pose` uses the exact retained
+source header and either the original candidate or its bounded achieved FK pose.
+Adjusted poses must stay within 25 mm object-center displacement/12 degrees of a
+retained candidate and their full projected geometry must fit that same free
+slot group (physical bounds for one slot). These are association bounds, not IK
+acceptance tolerances. Call it only after successful placement validation. It commits the selected footprint's cells, rejects occupied
 cell conflicts or unmatched/stale results, and is idempotent for the same source
 and pose. `reset: true` clears all cached layouts, pending matches and reservations;
 use this for independent calculation trials. It does not modify scene clouds.
@@ -439,3 +459,367 @@ layout support mode. Explicit modes remain available; free-orientation VLM and
 layout calls use `auto` when the configured default is upright-only grid mode.
 Candidate-only queries never consume slots. Whole-cell exclusivity is the
 selected policy. The benchmark's explicit edge/stack sequence remains unchanged.
+
+
+## Payload execution microsteps
+
+The authoritative catalog includes `prepare_held_scene` (`PrepareHeldScene`),
+`prepare_held_motion` (`PrepareHeldMotion`) and the four `HeldMotionStage` APIs:
+`execute_lift`, `execute_placement_transfer`, `execute_placement_descent`,
+`release_placed_object`. Public endpoints are `/pipeline/<function>`; executors
+live in `master_node/held_motion.py` and geometry preparation in
+`placement_node/held_scene.py`.
+
+`CacheGraspPlan` optionally carries the original organized cloud and validated
+source mask, plus the original semantic mask for bounded seam recovery. All must match its source header/dimensions; held planning requires
+both. Refinement remains tied to the selected candidate. `PrepareHeldMotion`
+uses the authoritative cached refinement, derives immutable payload/obstacle
+geometry, and calls the existing `plan_placement` engine. Full planning additionally
+needs placement candidates and a destination mask from the same observation.
+`PlanPlacement.lift_only` validates a bounded lift without destination candidates;
+`lift_distance_m` defaults to 10 cm in the engine and 5 cm for held preparation.
+Its response adds `lift_ee_pose` and `lift_joints` alongside existing path arrays.
+
+The master keeps one revision-bound plan. No caller-supplied trajectory can bypass
+planning. A sequence is PREPARED → LIFTED → AT_PREPLACE → PLACED → RELEASED.
+Joint/TCP/gripper feedback must be newer than one second; gripper confirmation
+must follow the relevant command. Post-actuation errors become `STATE_UNKNOWN`.
+Cancellation is still between microsteps; emergency stop retains its direct path.
+The `grasp_and_lift` recipe stops at LIFTED and deliberately omits release and
+placement. Physical execution remains off unless explicitly enabled by an operator.
+
+
+## Complete grasp-and-lift preparation before movement
+
+`prepare_grasp_lift` (`PreparedGraspLift`) validates every path without commands;
+`get_prepared_grasp_lift` returns readiness/revision without recalculating; and
+`execute_prepared_grasp_lift` (`HeldMotionStage`) executes those cached paths.
+`validate_prepared_grasp_lift` (`PreparedGraspLift`) is the calculation-only
+second-prompt check: it checks freshness, revision, empty-hand idle state,
+starting feedback and the same nominal command bounds as preparation. It
+preserves `PREPARED`, returns `CACHED_HANDOFF_VALIDATED_NO_ACTUATION`, and neither
+plans nor commands hardware. `pipeline_task --check-cached-grasp-lift` calls it.
+This check does not emulate actuator tracking, contact or grasp success.
+The approach is pre-grasp -> optional near-grasp -> final grasp. Near-grasp
+is tried 2 cm then 1 cm before the final pose along the original retreat direction,
+with final grasp orientation. Its joint-space transition is sampled at <=0.005 rad
+and <=2 mm adjacent TCP displacement, with limits and collision checks; the final
+short segment is fixed-orientation Cartesian IK. If either near route fails,
+a direct joint-space transition to strict final IK is fully checked instead.
+No fixed-position rotation is required. No failed or partial path is executable.
+`NEAR_GRASP_USED` / `NEAR_GRASP_SKIPPED` identifies the selected route;
+`alignment_waypoint_count` is zero (retained for interface compatibility).
+The existing explicit approach finger-scene bypass applies to this approach;
+arm/palm/self checks and complete preplanning remain mandatory.
+A reachable endpoint alone does not guarantee a continuous
+Cartesian approach; all intermediate IK and collision checks remain mandatory.
+
+The authoritative master implementation is `prepared_grasp_lift.py`. Preparation
+uses the initial HGGD candidate, not a close-up observation requiring prior motion.
+`PlanCartesianGraspApproach` accepts optional immutable `source_object_cloud` and
+`collision_scene` from `prepare_held_scene`. With these present, it retains the
+source as blocking geometry, with only the existing final inner-pad contact
+allowance, and validates against the actual commanded open width. Both clouds
+must match the original base-frame observation stamp. The legacy refiner cache
+path remains when both clouds are absent.
+
+The first CLI command is `pipeline_task --prepare-grasp-lift --object ...`.
+It returns success only after approach, lift and pre-grasp paths are all ready.
+The second is `--execute-cached-grasp-lift` for the same object. It contains only
+`get_prepared_grasp_lift` and `execute_prepared_grasp_lift`; no motion-time planning
+calls occur. Failed preparation clears old readiness. Readiness lasts at most
+60 seconds and is tied to the exact cache version, start joints/TCP and revision.
+Live hardware faults still stop execution and mark unknown state; completing
+planning does not guarantee actuator or contact feedback success.
+
+
+The operator-selected `placement_bypass_robot_environment_during_lift` defaults
+true. It skips robot/finger versus scene checks at the planned closed-gripper
+initial state and throughout lift only; self-collision, object-arm, IK and joint
+limits remain active. Transfer and descent restore scene checks. The independent
+attached-object lift bypass remains configurable. Results expose
+`LIFT_ROBOT_ENVIRONMENT_CHECK_BYPASSED`; this is not a fully scene-collision-
+validated lift. Set both lift bypasses false for complete scene checking.
+
+
+Commanded planning and measured feedback limits are separate. The master
+`joint_limit_tolerance_degrees` defaults 2 degrees for feedback acceptance;
+`planning_joint_limit_tolerance_degrees` defaults 0 and is passed to VAMP.
+Prepared execution checks every requested waypoint against nominal URDF command
+bounds before caching. Do not enlarge actuator target bounds to accommodate
+encoder deviations: a 72-degree joint-5 target stalled at its 70-degree limit.
+Execution failures identify stage, waypoint and worst joint target/feedback error.
+
+
+Prepared grasp/lift selection retains the validated HGGD candidate pool.
+Try at most eight candidates with a 30-second between-attempt search budget;
+cache only a complete approach/lift/pre-grasp plan. Geometry and source revision
+remain shared and immutable, and runtime execution never retries candidates.
+Fixed-orientation lift routes remain first. A final bounded joint-space lift
+fallback may relax orientation by up to 20 degrees, use <=4 cm endpoint lateral
+offset (<=6 cm swept offset), and achieves the requested vertical clearance.
+It samples <=0.005 rad joint changes and <=2 mm TCP steps, retaining configured
+collision checks and nominal joint bounds. It may not descend >1 mm below the
+initial height. No all-scene/all-object success guarantee follows from one test.
+
+
+`/pipeline/prepared_grasp` publishes the actual complete prepared plan as a
+latched MarkerArray (pre-grasp blue, grasp green). The default debug RViz
+configuration includes Prepared Grasp and Pregrasp. A new preparation clears
+the previous preview; inspect this preview when an alternate candidate wins.
+
+### Public prepared grasp/lift stages (2026-10-13)
+
+`prepare_grasp_lift` calculates and freezes all paths before movement. Its
+`plan_revision` binds every subsequent command to the same observation and plan.
+`plan_lift` is a public lift-only adapter to the existing `plan_placement` solver;
+it forces `lift_only` and full-motion planning, without changing IK or VAMP.
+
+| API | Function / required session phase |
+| --- | --- |
+| `validate_prepared_grasp_lift` | Check cached paths, source and current feedback; no actuation |
+| `get_execution_state` | Read revision, source header, expiry, completed/waiting stages and physical gate |
+| `execute_plan(segment=pregrasp)` | Frozen transfer; `PREPARED` → `AT_PREGRASP` |
+| `gripper_open` | Confirm prepared jaw clearance; `AT_PREGRASP` → `OPENED` |
+| `execute_plan(segment=approach)` | Frozen near/final grasp path at 5% speed; `OPENED` → `AT_GRASP` |
+| `gripper_close` | Close at 1 N and confirm fresh contact; `AT_GRASP` → `CONTACT_CONFIRMED` |
+| `execute_plan(segment=lift)` | Frozen lift with confirmed held object; `CONTACT_CONFIRMED` → `LIFTED` |
+
+Gripper requests include object and revision. Zero width/force selects the
+prepared default; nonzero values must match it. These operations do not permit
+arbitrary gripper overrides. Near-grasp waypoints remain inside the validated
+approach segment. An actuator or feedback failure marks `STATE_UNKNOWN` and
+blocks automatic retry. Every actuated stage restores 20% speed on exit.
+`execute_prepared_grasp_lift` remains a compatibility composite using these
+same stage implementations. Older refined-grasp and held-placement services
+retain their separate protocols; they cannot execute over an active prepared
+session. Held-object placement/release and an MCP adapter are still separate
+future work.
+
+`RunPipelineSteps.Goal.stop_before_step_id` defaults to empty (run all).
+An explicit queued ID pauses before that task with `PAUSED_AT_STEP_BOUNDARY`;
+remaining tasks and predecessor bindings stay in the master store. Action
+success means the requested prefix succeeded, **not** that physical tasks ran.
+A misspelled boundary is rejected before execution. Resume the same context
+using the action after reviewing feedback and enabling physical execution;
+source/plan freshness is still required (60 seconds).
+
+For a full queued mock trial:
+
+```bash
+ros2 run task_pipeline pipeline_task \
+  --object 'small white bowl at bottom left' \
+  --queue-grasp-lift --lift-distance 0.05 \
+  --output "$HOME/bowl_queued_pipeline.json"
+```
+
+The CLI prints completed API timings and the actual master `task_pipeline`
+snapshot, including the five waiting physical tasks. Mock feedback is recorded
+replay, not actuator tracking: it cannot execute or confirm these physical tasks.
+
+### Prepared-session failure recovery (2026-10-13)
+
+The 60-second prepared/source freshness limit applies **before the first physical
+stage starts**. Once accepted, execution retains an immutable source and uses
+`prepared_execution_timeout_sec` (default 300 seconds) at stage boundaries.
+Observation/cache age cannot expire an otherwise valid active session between
+pregrasp and gripper opening. Revision, phase, feedback and collision gates
+remain active; timeouts never trigger automatic actuator retries.
+
+On an action failure involving prepared execution/caching, the master flushes
+idle pending queues for that object. A known idle empty-hand session
+(`PREPARED`, `AT_PREGRASP`, `OPENED`, `AT_GRASP`) is cleared together with its
+source/refinement caches and preview, provided hardware feedback is fresh and
+no collision is active. The failed action remains unsuccessful and returns
+`SESSION_RESET_READY_FOR_NEW_PLAN`; rerun preparation with fresh inputs.
+The arm stays at its physical position. Completed/failed results remain for
+inspection; unrelated object queues and busy contexts are preserved. Context
+owners still clear completed result storage through `clear_step_context`.
+Cancellation retains its existing between-step behavior.
+
+Public `/pipeline/reset_execution_session` (`std_srvs/srv/Trigger`) provides
+this same non-actuating reset explicitly. It does not clear held or uncertain
+state. A failed actuator/contact confirmation retains `STATE_UNKNOWN` and
+requires physical inspection. **Only after the operator confirms the arm is
+stationary and the hand is empty**, use:
+
+```bash
+ros2 service call /pipeline/reconcile_empty_hand std_srvs/srv/SetBool '{data: true}'
+```
+
+This explicit reconciliation also requires fresh feedback, low measured joint
+velocities, no active collision and no running pipeline. It clears bookkeeping,
+not physical geometry, and sends no motion/gripper/home command. Never call it
+automatically or claim empty-hand confirmation from a failed closing command.
+
+`plan_final_approach` now requires `final_grasp_joints`: six previously validated
+joints associated with `refined_grasp_pose`. It retains the supplied endpoint and
+only solves optional near-grasp poses. Missing/mismatched endpoint data is rejected;
+all consumers must rebuild against the changed my_actions schema.
+
+`plan_motion` (`CheckAndReplan`) includes `grasp_motion`, default false. Grasp
+controllers set it for 0..67 environment-sphere checks across RRT-Connect edges;
+general and held-transfer paths retain full sphere geometry. Self-collision
+remains full. Rebuild consumers and restart the reasoning stack after this change.
+
+## Complete prepared pick/place
+
+`prepare_pick_place` uses the same source-linked grasp pool and public
+`prepare_held_scene`, `plan_final_approach`, `plan_placement` (full-motion mode)
+and `plan_motion` operations. It caches only a complete pregrasp, approach,
+lift, transfer and descent plan after command-limit/continuity checks and a
+non-consuming floor-slot commit check. No actuator calls or slot reservations
+occur during preparation. `get_prepared_pick_place` and
+`validate_prepared_pick_place` expose that same revision and selected object pose.
+
+`pipeline_task --queue-pick-place --object 'striped white plate' --destination tray`
+constructs the complete master queue and pauses before `pregrasp`. Its remaining
+operations are, in order: `execute_plan(pregrasp)`, `gripper_open`,
+`execute_plan(approach)`, `gripper_close`, `execute_plan(lift)`,
+`execute_placement_transfer`, `execute_placement_descent`, `release_placed_object`,
+then `commit_floor_slots`. All physical stages share the same prepared revision
+and ordered session; they never run IK or replan. `PAUSED_AT_STEP_BOUNDARY`
+means calculation completed and pending stages were retained, not executed.
+
+`--prepare-pick-place` calculates without queuing physical stages;
+`--check-cached-pick-place` checks readiness without actuation.
+`--execute-cached-pick-place` explicitly submits the execution recipe for a
+reviewed fresh plan and requires the physical execution gate. Preparation has
+the existing 60-second pre-execution/source-cache lifetime; restarting or
+changing source geometry invalidates readiness. Active execution uses the
+existing execution-session timeout. Contact/arrival and failure/unknown-state
+checks remain automatic. A mock plan does not authorize live hardware movement.
+
+### Relaxed prepared placement and lift handoff
+
+Prepared placement defaults to 5 mm target position and 10 degree target
+orientation matching, with a 5 degree object-upright limit. Local descent keeps
+1 mm position and 0.01 rad orientation tracking around the accepted FK endpoint.
+Floor targets include 3 mm release clearance plus the target IK position allowance
+(8 mm total by default). Nominal joint limits and transfer/descent collision
+checks remain. Floor-slot dry-run checks the actual achieved pose; a failed
+slot match causes shared validation to try another candidate before caching.
+
+If the completed lift endpoint fails the full transfer checker, shared
+`plan_placement` validation can retry calculation at +1/+2 cm above the requested
+minimum, with no fixed total-height ceiling. Per-backend call records include `lift_distance_m`.
+No motion command is retried, and the transfer collision checker is never bypassed.
+
+### Multiple validated grasps for prepared motion
+
+`calculate_grasps` retains up to six diverse validated HGGD grasps for single
+objects instead of truncating to one. The existing `cache_grasp_plan` binding
+preserves the full returned array. `prepare_pick_place` / `prepare_grasp_lift`
+try ranked candidates through all required planning checks, stop at the first
+complete plan and cache only its revision-bound paths. Limits remain eight
+candidate trials and a 30-second between-attempt budget. No new API or actuator
+retry is introduced. `GRASP_CANDIDATES_TRIED` and the prepared selection log
+identify the winner; RViz prepared markers show that actual candidate. Fewer
+than six candidates may exist, and all-candidate failure remains a failure.
+
+### Lift distance and avoidance scope (2026-10-19)
+
+Lift requests have no fixed 10 cm maximum or 5 mm minimum. CLI recipes accept
+finite positive metres; the engine retains zero as its existing default sentinel
+and rejects negative/nonfinite values. Actual robot reach, nominal joint limits,
+upright policy, configured collision checks and planning budgets still apply.
+Higher-clearance recovery stays bounded to +1/+2 cm above the request, without
+clipping to 10 cm. Cartesian planning checks its 4096-waypoint resource budget
+before allocation; removing the request ceiling must not create unbounded memory.
+
+The existing `plan_apf` API plans the bare arm from joint targets. It has no
+payload attachment or object-upright input and must not be substituted directly
+for held-object departure. A payload-aware obstacle-directed departure followed
+by the existing checked VAMP transfer is a proposed extension, not implemented
+by the lift-distance change. Existing inward/retreat lift fallbacks remain.
+
+
+## Payload-aware lift and escape
+
+`/pipeline/plan_lift` (`my_actions/srv/PlanPlacement`, lift-only adapter) calculates
+the requested initial lift, then tests its predicted endpoint with full arm,
+finger and payload collision checks. If blocked, bounded upright Cartesian APF
+moves away from obstacles. It never actuates. Placement-only batching flags are
+cleared by the adapter so an empty destination list still reaches the engine.
+
+The accepted escape is appended to `lift_path_flat`; `lift_joints` and
+`lift_ee_pose` describe the escaped endpoint. `LIFT_APF_ESCAPE_VALIDATED` appears
+in `motion_status`. `lift_seconds` includes escape calculation, while shared API
+traces measure complete request-to-response time. Initial lift bypass markers
+remain explicit; escape endpoint clearance does not certify the bypassed lift.
+
+Prepared pick/place calls `plan_lift` before destination `plan_placement`, which
+revalidates its own departure, transfer and descent before a complete session can
+be cached. Ordered layout requests use the same backend and explicitly request
+5 cm lifts. Execution uses the existing prepared lift segment; no APF/IK or
+placement replanning runs after physical lifting starts. Failed escape returns
+`LIFT_APF_ESCAPE_EXHAUSTED` without an executable partial path. Contact tolerance
+is limited to escape and normal transfer/descent checks remain active. Bounds
+and geometry rules are documented in AGENTS.md.
+
+## Master-owned manipulation memory (2026-10-19)
+
+`master_node/manipulation_memory.py` owns bounded active geometry. The shared
+registry remains the API catalog; the memory is not another planner. The default
+`pipeline_task` calculation recipes use this memory; `--fresh-perception` retains
+the explicit presence/ground/segment recipe for comparison. Synthetic overlay
+recipes retain their explicit frozen-scene path.
+
+| API (`/pipeline/` prefix) | Function |
+| --- | --- |
+| `resolve_target` | Resolve a name with role `object` or `destination`; capture if no synchronized inputs supplied. Reuse verified data or separately call presence, grounding and segmentation. |
+| `refresh_active_target` | Force fresh inference for that name/role. |
+| `get_active_target` | Read the typed active snapshot, including original geometry source header. Does not refresh or authorize execution. |
+| `forget_active_target` | Drop active geometry; retain the name/location hint. |
+| `get_manipulation_memory` | Read metadata JSON: active names/XYZ, directory, grid/reservations and actual master pipeline tasks/results. No image/cloud arrays. |
+| `calculate_active_grasps` | Run the existing shared grasp API on the named active source; request another affordance after definite calculation failure. |
+| `find_active_placements` | Search using the active object and destination (or resolve the requested destination), through shared held-scene/search APIs. |
+| `get_floor_slots` | Read bounded placement grid layouts and reservation metadata. |
+
+Memory is process-local and clears on master restart. Directory entries retain
+only name and `base_link` location (metres), keyed by
+world object ID; at most 256 hints and eight active objects are retained. One
+active destination retains its source geometry and grid. Switching destinations
+releases old active geometry and unexecuted prepared/grid state, retaining its
+hint. Hints guide identity; they are not trusted manipulation geometry.
+
+Every normal resolve validates cached geometry against a fresh synchronized
+manual-FK/X observation. Unchanged destinations keep their original geometry and
+grid IDs; the current mask belongs to the current observation. Old geometry is
+explicitly mapped into the current logical planning scene, not claimed as a new
+camera capture. Depth evidence, camera viewpoint (for grasp RGB-D), calibration
+or age mismatch triggers inference. Location matching cannot prove semantic
+identity after an identical-looking replacement; use `refresh_active_target`
+when external changes are known. Reuse is bounded to five minutes since the
+last successful resolve; direct grasp/search retries require source verification
+within 60 seconds. Backend source/cache expiry can still require refresh.
+
+Calculation failures retain active geometry for another API call. Queued retry
+steps must use a new step ID/context because completed step IDs are idempotent.
+They do not automatically retry actuators, invalidate another execution, or
+turn missing IK/path results into successful actions. Held/unknown execution
+state blocks memory mutation. Only confirmed release updates the physical object
+location; a calculated/committed slot alone does not mean an object moved.
+
+Example, with the mock node and stack on the same ROS domain:
+
+```bash
+ros2 run task_pipeline pipeline_task \
+  --object 'small white bowl at bottom left' --destination 'dark rectangular tray' \
+  --queue-pick-place
+# Pauses before motion; master prints completed/current tasks, pending tasks,
+# active object names/XYZ and destination name/XYZ at each step boundary.
+ros2 service call /pipeline/get_manipulation_memory my_actions/srv/GetManipulationMemory '{}'
+# Retry geometry only, while the active observation is fresh:
+ros2 service call /pipeline/calculate_active_grasps my_actions/srv/FindGraspCandidates \
+  "{target_description: 'small white bowl at bottom left', affordance_type: 'RIM'}"
+ros2 service call /pipeline/find_active_placements my_actions/srv/FindPlacementCandidates \
+  "{object_name: 'small white bowl at bottom left', destination_name: 'dark rectangular tray', orientation_policy: upright, support_mode: floor_slots}"
+```
+
+The retry returns proposals, not an executable prepared session. Selection,
+`cache_grasp_plan` and complete motion preparation must follow before execution.
+A second CLI command for another object reuses the verified tray. VLM object and
+destination resolution uses the same public memory APIs; its legacy visibility/
+NBV behavior remains separate. Presence/ground/segment backend calls retain
+individual timing/traces even though `resolve_target` is a composite API.

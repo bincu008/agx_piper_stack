@@ -144,8 +144,8 @@ def construct_support_bottom(
         bottom_band_m: float = 0.025,
         grid_spacing_m: float = 0.004,
         maximum_bottom_points: int = 1500,
-        seed: int = 17) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Complete a supported object's unseen bottom with a measured-plane cap.
+        seed: int = 17) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+    """Complete a supported object's unseen bottom with a gravity-projected cap at measured support height.
 
     Both input clouds must already be in ``base_link``. The scene is used only
     to fit the source support plane in an XY annulus around the segmented
@@ -222,12 +222,35 @@ def construct_support_bottom(
         raise ValueError("refined source support plane exceeds tilt limit")
     offset = -float(np.dot(normal, centroid))
 
+    # Use the fitted surface only to estimate support height. Upright object
+    # footprints are gravity projections: retain measured XY, never shear the
+    # object's silhouette along a noisy tilted annulus-plane normal.
+    measured_support_normal = normal.copy()
+    source_xy = np.median(object_points[:, :2], axis=0)
+    support_z = -(float(normal[:2] @ source_xy)+offset)/float(normal[2])
+    support_z = min(support_z, low_reference)
+    centroid = np.r_[source_xy, support_z]
+    normal = np.array([0., 0., 1.])
+    offset = -float(support_z)
 
     heights = object_points @ normal + offset
     # A surrounding table is not evidence for the underside of an elevated
     # object. Completing down to it would attach its stand or empty air.
+    elevated_planar = False
     if float(np.percentile(heights, 3.0)) > float(bottom_band_m):
-        raise ValueError("source support plane is below the observed object; bottom completion refused")
+        # A thin elevated body has its own underside; the distant table must
+        # never become its base. Infer only a bounded thin-body lower plane.
+        thickness = float(np.percentile(object_points[:, 2], 97)-
+                          np.percentile(object_points[:, 2], 3))
+        extent = np.ptp(object_points[:, :2], axis=0)
+        if thickness > .035 or np.min(extent) < max(.04, 3*thickness):
+            raise ValueError("source support plane is below the observed object; bottom completion refused")
+        normal = np.array([0., 0., 1.])
+        centroid = np.r_[np.median(object_points[:, :2], axis=0),
+                         np.percentile(object_points[:, 2], 3)]
+        offset = -float(centroid[2])
+        heights = object_points[:, 2]-centroid[2]
+        elevated_planar = True
     footprint_points = object_points[
         (heights >= -plane_distance_m * 2.0) &
         (heights <= float(bottom_band_m))]
@@ -271,8 +294,8 @@ def construct_support_bottom(
     if len(body_uv) < 30:
         body_uv = side_uv
 
-    circular = _fit_circular_footprint(body_uv, spacing, rng)
-    if circular is None and len(side_uv) >= 30:
+    circular = None if elevated_planar else _fit_circular_footprint(body_uv, spacing, rng)
+    if not elevated_planar and circular is None and len(side_uv) >= 30:
         # A tapered wall spans several radii, so its dense interior samples
         # need not lie on one circle. Test the observed outer contour instead;
         # the same circle-consistency and angular-coverage gates still apply.
@@ -281,7 +304,12 @@ def construct_support_bottom(
             outer_contour = _resample_closed_contour(outer_hull, spacing)
             circular = _fit_circular_footprint(outer_contour, spacing, rng)
     footprint_model = "circle" if circular is not None else "oriented_box"
-    if circular is not None:
+    if elevated_planar:
+        hull = cv2.convexHull(projected_uv).reshape(-1, 2)
+        contour_uv = _resample_closed_contour(hull, spacing)
+        fitted_radius = 0.0
+        footprint_model = "elevated_planar_hull"
+    elif circular is not None:
         contour_uv, fitted_radius = circular
     else:
         # Conservative fallback for boxes and irregular objects. An oriented
@@ -340,6 +368,7 @@ def construct_support_bottom(
         "bottom_points": int(len(bottom_points)),
         "collision_envelope_points": int(len(collision_envelope)),
         "plane_normal": normal.astype(np.float32),
+        "measured_support_normal": measured_support_normal.astype(np.float32),
         "plane_offset": float(offset),
         "footprint_area_m2": abs(float(cv2.contourArea(hull))),
         "footprint_model": footprint_model,

@@ -5,7 +5,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import UnlessCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import ComposableNodeContainer, Node
@@ -19,6 +19,25 @@ def generate_launch_description():
                                 'config', 'inference', 'profiles.yaml')
     with open(profile_path, encoding='utf-8') as stream:
         profiles = yaml.safe_load(stream)
+    default_metric_path = os.path.join(get_package_share_directory('master_node'),
+                                       'config', 'calibration', 'perception_scale.json')
+
+    def configure_metric_scale(context):
+        from master_node.metric_calibration import load_metric_ratio
+        path = LaunchConfiguration('perception_scale_path').perform(context)
+        ratio = load_metric_ratio(path)
+        return [DeclareLaunchArgument('perception_measurement_ratio',
+                                      default_value=str(ratio))]
+
+    default_grasp_offset_path = os.path.join(get_package_share_directory('master_node'),
+                                            'config', 'calibration', 'grasp_position_offset.json')
+
+    def configure_grasp_offset(context):
+        from master_node.metric_calibration import load_grasp_offset
+        path = LaunchConfiguration('grasp_offset_path').perform(context)
+        offset = load_grasp_offset(path)
+        return [DeclareLaunchArgument('grasp_position_offset_base_m', default_value=str(offset))]
+
     inference_profile = LaunchConfiguration('inference_profile')
     numeric_environment = {
         name: LaunchConfiguration('numeric_threads')
@@ -159,6 +178,10 @@ def generate_launch_description():
                 name='active_vision_server',
                 parameters=[self_filter_config, {
                     'hand_eye_calibration_path': hand_eye_calibration_path,
+                    'perception_measurement_ratio': ParameterValue(
+                        LaunchConfiguration('perception_measurement_ratio'), value_type=float),
+                    'perception_position_offset_base_m': ParameterValue(
+                        LaunchConfiguration('grasp_position_offset_base_m')),
                     'enable_yolo_inference': ParameterValue(
                         use_yolo_world_perception, value_type=bool),
                     'publish_yolo_world_observations': ParameterValue(
@@ -172,10 +195,15 @@ def generate_launch_description():
                 plugin='vamp_node::VampPlannerServer',
                 name='vamp_planner_server',
                 parameters=[{
+                    'placement_motion_orientation_policy': LaunchConfiguration('placement_motion_orientation_policy'),
+                    'placement_motion_upright_tolerance_rad': ParameterValue(LaunchConfiguration('placement_motion_upright_tolerance_rad'), value_type=float),
                     'placement_fast_ik': ParameterValue(
                         LaunchConfiguration('placement_fast_ik'), value_type=bool),
                     'placement_position_tolerance_m': ParameterValue(
                         LaunchConfiguration('placement_position_tolerance_m'),
+                        value_type=float),
+                    'placement_target_orientation_tolerance_rad': ParameterValue(
+                        LaunchConfiguration('placement_target_orientation_tolerance_rad'),
                         value_type=float),
                     'placement_descent_orientation_tolerance_rad': ParameterValue(
                         LaunchConfiguration('placement_descent_orientation_tolerance_rad'),
@@ -187,6 +215,8 @@ def generate_launch_description():
                         value_type=float),
                     'placement_contact_distance_m': ParameterValue(
                         LaunchConfiguration('placement_contact_distance_m'), value_type=float),
+                    # Perception now owns this correction; never add it again in IK.
+                    'grasp_position_offset_base_m': [0.0, 0.0, 0.0],
                     'grasp_tcp_offset_m': ParameterValue(
                         grasp_tcp_offset_m, value_type=float
                     ),
@@ -199,6 +229,9 @@ def generate_launch_description():
                     'pipeline_profiling': ParameterValue(pipeline_profiling, value_type=bool),
                     'placement_allow_separating_contact_departure': ParameterValue(
                         LaunchConfiguration('placement_allow_separating_contact_departure'),
+                        value_type=bool),
+                    'placement_bypass_robot_environment_during_lift': ParameterValue(
+                        LaunchConfiguration('placement_bypass_robot_environment_during_lift'),
                         value_type=bool),
                     'placement_bypass_attached_collision_during_lift': ParameterValue(
                         LaunchConfiguration('placement_bypass_attached_collision_during_lift'),
@@ -271,6 +304,13 @@ def generate_launch_description():
                         maximum_candidates_to_test, value_type=int),
                     'maximum_valid_candidates': ParameterValue(
                         maximum_valid_candidates, value_type=int),
+                    'joint_limit_tolerance_degrees': ParameterValue(
+                        LaunchConfiguration('planning_joint_limit_tolerance_degrees'), value_type=float),
+                    'grasp_feedback_tolerance_degrees': ParameterValue(
+                        LaunchConfiguration('joint_limit_tolerance_degrees'), value_type=float),
+                    'final_approach_check_finger_environment': ParameterValue(
+                        LaunchConfiguration('final_approach_check_finger_environment'),
+                        value_type=bool),
                     'grasp_visualization_limit': ParameterValue(
                         grasp_visualization_limit, value_type=int),
                     'hggd_diversity_position_m': ParameterValue(
@@ -340,9 +380,13 @@ def generate_launch_description():
         name='piper_master_control',
         output='screen',
         parameters=[{
+            'prepared_execution_timeout_sec': ParameterValue(
+                LaunchConfiguration('prepared_execution_timeout_sec'), value_type=float),
             'api_dispatch_in_master': ParameterValue(
                 LaunchConfiguration('api_dispatch_in_master'), value_type=bool),
             'hand_eye_calibration_path': hand_eye_calibration_path,
+            'joint_limit_tolerance_degrees': ParameterValue(
+                LaunchConfiguration('joint_limit_tolerance_degrees'), value_type=float),
             'allow_physical_grasp_execution': ParameterValue(
                 allow_physical_grasp_execution, value_type=bool),
             'allow_model_based_body_grasp_execution': ParameterValue(
@@ -396,6 +440,8 @@ def generate_launch_description():
                 LaunchConfiguration('floor_slot_max_size_m'), value_type=float),
             'floor_slot_min_size_m': ParameterValue(
                 LaunchConfiguration('floor_slot_min_size_m'), value_type=float),
+            'floor_slot_large_square_scale': ParameterValue(
+                LaunchConfiguration('floor_slot_large_square_scale'), value_type=float),
             'floor_slot_share_unused_space': ParameterValue(
                 LaunchConfiguration('floor_slot_share_unused_space'), value_type=bool),
             'layout_candidate_count': ParameterValue(
@@ -456,12 +502,20 @@ def generate_launch_description():
                               description='Legacy alias for placement_candidate_count'),
         DeclareLaunchArgument('layout_support_mode', default_value='floor_slots'),
         DeclareLaunchArgument('floor_slot_share_unused_space', default_value='false'),
+        DeclareLaunchArgument('perception_scale_path', default_value=default_metric_path),
+        OpaqueFunction(function=configure_metric_scale),
+        DeclareLaunchArgument('grasp_offset_path', default_value=default_grasp_offset_path),
+        OpaqueFunction(function=configure_grasp_offset),
         DeclareLaunchArgument('floor_slot_adaptive', default_value='true'),
         DeclareLaunchArgument('floor_slot_max_size_m', default_value='0.125'),
         DeclareLaunchArgument('floor_slot_min_size_m', default_value='0.06'),
+        DeclareLaunchArgument('floor_slot_large_square_scale', default_value='1.5'),
         DeclareLaunchArgument('layout_candidate_count', default_value='16'),
         DeclareLaunchArgument('placement_fast_ik', default_value='true'),
-        DeclareLaunchArgument('placement_position_tolerance_m', default_value='0.001'),
+        DeclareLaunchArgument('placement_position_tolerance_m', default_value='0.005'),
+        DeclareLaunchArgument('placement_motion_orientation_policy', default_value='keep_upright', description='Held motion: keep_upright or free; separate from endpoint orientation.'),
+        DeclareLaunchArgument('placement_motion_upright_tolerance_rad', default_value='0.08726646'),
+        DeclareLaunchArgument('placement_target_orientation_tolerance_rad', default_value='0.17453293'),
         DeclareLaunchArgument('placement_descent_orientation_tolerance_rad', default_value='0.01'),
         DeclareLaunchArgument('placement_descent_step_m', default_value='0.002'),
         DeclareLaunchArgument('placement_descent_max_joint_step_rad', default_value='0.05'),
@@ -504,6 +558,7 @@ def generate_launch_description():
             choices=['edgesam'],
             description='Target mask: RoboBrain grounding followed by EdgeSAM.',
         ),
+        DeclareLaunchArgument('prepared_execution_timeout_sec', default_value='300.0'),
         DeclareLaunchArgument(
             'allow_physical_grasp_execution',
             default_value='false',
@@ -623,6 +678,10 @@ def generate_launch_description():
                               default_value='true'),
         DeclareLaunchArgument('placement_departure_contact_tolerance_m',
                               default_value='0.001'),
+        DeclareLaunchArgument('placement_bypass_robot_environment_during_lift',
+                              default_value='true', description='Skip robot/finger '
+                              'scene collisions during initial closed grasp and lift; '
+                              'retain self/object-arm and restore checks for transfer.'),
         DeclareLaunchArgument('placement_bypass_attached_collision_during_lift',
                               default_value='true', description='Skip held-object '
                               'environment collision during lift only; '
@@ -633,6 +692,10 @@ def generate_launch_description():
         DeclareLaunchArgument('hggd_maximum_proposals', default_value='100'),
         DeclareLaunchArgument('maximum_candidates_to_test', default_value='600'),
         DeclareLaunchArgument('maximum_valid_candidates', default_value='100'),
+        DeclareLaunchArgument('planning_joint_limit_tolerance_degrees', default_value='0.0',
+                              description='Commanded IK/sampling limit margin; nominal by default.'),
+        DeclareLaunchArgument('joint_limit_tolerance_degrees', default_value='2.0'),
+        DeclareLaunchArgument('final_approach_check_finger_environment', default_value='false'),
         DeclareLaunchArgument('grasp_visualization_limit', default_value='100'),
         DeclareLaunchArgument('hggd_diversity_position_m', default_value='0.030'),
         DeclareLaunchArgument('hggd_diversity_approach_degrees', default_value='20.0'),
@@ -773,10 +836,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'pregrasp_offset_m',
-            default_value='0.120',
+            default_value='0.156',
             description=(
                 'Preferred Cartesian standoff; planner falls back across '
-                'reachable, target-visible offsets from 0.05 to 0.15 m.'
+                'reachable, target-visible offsets from 0.05 to 0.195 m.'
             ),
         ),
         DeclareLaunchArgument(
@@ -788,14 +851,14 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'pregrasp_orientation_tolerance_degrees',
-            default_value='20.0',
+            default_value='16.0',
             description=(
                 'Maximum orientation relaxation used only for pre-grasp IK.'
             ),
         ),
         DeclareLaunchArgument(
             'pregrasp_opening_clearance_m',
-            default_value='0.015',
+            default_value='0.020',
             description=(
                 'Extra jaw opening used for pre-grasp and finger-sweep '
                 'validation.'

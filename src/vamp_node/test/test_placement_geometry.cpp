@@ -489,3 +489,116 @@ TEST(PiperFingerGeometry, MeshBoundsRejectOnlyEmptyJawSpace) {
     EXPECT_TRUE(vamp_node::piperFingerMeshBoundsContain(
         88, Eigen::Vector3f(0, 0, 0.12F), pose, -1.0F));
 }
+
+TEST(AttachedObject, BroadPhaseMatchesExactContactsBudgetsAndFirstHit) {
+    using Scene = vamp_node::AttachedObjectScene;
+    std::vector<Eigen::Vector3f> source;
+    for (int i=0; i<640; ++i)
+        source.emplace_back((i%20)*.004F, (i/20)*.003F, (i%3)*.001F);
+    const Scene::SourceBounds bounds(source);
+    std::vector<uint8_t> flags(source.size(), 1);
+    for (int trial=0; trial<40; ++trial) {
+        Eigen::Isometry3f delta = Eigen::Isometry3f::Identity();
+        delta.linear() = Eigen::AngleAxisf(trial*.13F, Eigen::Vector3f(1,2,3).normalized()).toRotationMatrix();
+        delta.translation() = Eigen::Vector3f(-.10F+trial*.004F, -.03F, .01F);
+        Scene scene;
+        // Include negative coordinates, coarse-cell boundaries and both sides
+        // of the exact 3 mm contact radius; no geometry may be discarded.
+        for (size_t i=0; i<source.size(); i+=17) {
+            const Eigen::Vector3f p = delta*source[i];
+            scene.add(p+Eigen::Vector3f(0,0,trial%2 ? .00301F : .00299F), i%2==0);
+        }
+        Scene::NoiseBudget exact, fast;
+        exact.maximum_points = fast.maximum_points = 32;
+        exact.maximum_voxels = fast.maximum_voxels = 10;
+        for (int step=0; step<3; ++step) {
+            Scene::CollisionInfo a{}, b{};
+            const bool contact = trial%3==0;
+            const bool expected = scene.clear(source,delta,0,contact,&a,&flags,.001F,nullptr,0,&exact);
+            const bool actual = scene.clear(source,delta,0,contact,&b,&flags,.001F,nullptr,0,&fast,&bounds);
+            ASSERT_EQ(expected,actual);
+            EXPECT_EQ(exact.observed_points,fast.observed_points);
+            EXPECT_EQ(exact.observed_voxels,fast.observed_voxels);
+            ASSERT_EQ(exact.points.size(),fast.points.size());
+            for (size_t i=0; i<exact.points.size(); ++i)
+                EXPECT_TRUE(exact.points[i].isApprox(fast.points[i],0));
+            if (!expected) {
+                EXPECT_TRUE(a.held_point.isApprox(b.held_point,0));
+                EXPECT_TRUE(a.obstacle_point.isApprox(b.obstacle_point,0));
+                EXPECT_EQ(a.named_support,b.named_support);
+                EXPECT_EQ(a.source_bottom,b.source_bottom);
+            }
+            delta.translation().z() += .0003F;
+        }
+    }
+}
+
+TEST(AttachedObject, BroadPhaseRejectsStaleSourceBoundsAndKeepsNewScenePoints) {
+    using Scene = vamp_node::AttachedObjectScene;
+    std::vector<Eigen::Vector3f> source(300,Eigen::Vector3f(.2F,.2F,.2F));
+    const Scene::SourceBounds bounds(source);
+    Scene scene;
+    auto delta=Eigen::Isometry3f::Identity();
+    EXPECT_TRUE(scene.clear(source,delta,0,false,nullptr,nullptr,.001F,nullptr,0,nullptr,&bounds));
+    scene.add(source.front(),false);
+    EXPECT_FALSE(scene.clear(source,delta,0,false,nullptr,nullptr,.001F,nullptr,0,nullptr,&bounds));
+    source.assign(300,Eigen::Vector3f(-.2F,-.2F,-.2F));
+    Scene changed;
+    changed.add(source.front(),false);
+    EXPECT_FALSE(changed.clear(source,delta,0,false,nullptr,nullptr,.001F,nullptr,0,nullptr,&bounds));
+}
+
+#include "vamp_node/payload_escape.hpp"
+
+TEST(PayloadEscape, RepelsPayloadFromWallAndImprovesClearance) {
+    std::vector<Eigen::Vector3f> wall;
+    for (int y=-4;y<=4;++y) for (int z=-4;z<=4;++z)
+        wall.emplace_back(0.F,y*.005F,z*.005F);
+    const vamp_node::PayloadEscapeField field(wall);
+    const auto initial=field.evaluate({{{.008F,0,0},.01F,{}}});
+    EXPECT_GT(initial.force.x(),0.F);
+    EXPECT_GT(initial.energy,0.F);
+    const auto clear=field.evaluate({{{.025F,0,0},.01F,{}}});
+    EXPECT_FLOAT_EQ(clear.energy,0.F);
+    EXPECT_TRUE(vamp_node::PayloadEscapeField::admissible(initial,initial,clear,initial.contacts));
+    const auto deeper=field.evaluate({{{.003F,0,0},.01F,{}}});
+    EXPECT_FALSE(vamp_node::PayloadEscapeField::admissible(initial,initial,deeper,initial.contacts));
+}
+TEST(PayloadEscape, CountsContactCellsAcrossWholeSegment) {
+    using Field=vamp_node::PayloadEscapeField;
+    Field::State initial,next;
+    std::set<Field::Cell> contacts;
+    for (int i=0;i<128;++i) contacts.insert({i,0,0});
+    next.contacts.insert({200,0,0});
+    EXPECT_FALSE(Field::admissible(initial,initial,next,contacts));
+}
+TEST(PayloadEscape, PreservesFingerMeshExclusionAndBoundsDeepContact) {
+    using Field=vamp_node::PayloadEscapeField;
+    const Field field({Eigen::Vector3f::Zero()});
+    auto excluded=field.evaluate({{{.001F,0,0},.02F,[](const auto &){return false;}}});
+    EXPECT_FLOAT_EQ(excluded.energy,0.F);
+    const auto deep=field.evaluate({{{.001F,0,0},.02F,{}}});
+    EXPECT_FALSE(Field::admissible(deep,deep,deep,{}));
+}
+TEST(PayloadEscape, ExactPointsWithinSameCellAreNotErased) {
+    using Field=vamp_node::PayloadEscapeField;
+    // The second point shares the coarse bucket with the first but is the
+    // actual closest contact; representative-only filtering misses its depth.
+    const Field field({Eigen::Vector3f(0,0,0),Eigen::Vector3f(.004F,0,0)});
+    const auto state=field.evaluate({{{.005F,0,0},.006F,{}}});
+    EXPECT_NEAR(state.penetration,.005F,1.e-6F);
+}
+TEST(PayloadEscape, ActualContactGradientWinsOverClearNearbyWall) {
+    using Field=vamp_node::PayloadEscapeField;
+    std::vector<Eigen::Vector3f> points{Eigen::Vector3f(.001F,0,0)};
+    for (int y=-5;y<=5;++y) for (int z=-5;z<=5;++z)
+        points.emplace_back(-.01F,y*.001F,z*.001F);
+    const auto state=Field(points).evaluate({{{0,0,0},.003F,{}}});
+    EXPECT_LT(state.force.x(),0.F);
+}
+TEST(PayloadEscape, PerWaypointSlackCannotAccumulateAcrossEscape) {
+    using Field=vamp_node::PayloadEscapeField;
+    Field::State initial,best,next;
+    initial.energy=.001F;best.energy=.0012F;next.energy=.0014F;
+    EXPECT_FALSE(Field::admissible(initial,best,next,{}));
+}

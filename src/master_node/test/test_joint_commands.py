@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from rclpy.time import Time
 
 from master_node.piper_master_control import PiperMasterControl
@@ -148,3 +150,63 @@ def test_physical_grasp_score_gate_remains_explicit():
 
     assert response.success is False
     assert 'grasp proposal score is not positive' in response.status
+
+
+def test_gripper_contact_requires_feedback_newer_than_close_command(monkeypatch):
+    """A stale force reading cannot authorize a payload lift."""
+    import time
+    import master_node.piper_master_control as module
+    node = SimpleNamespace(current_gripper_status=SimpleNamespace(width=.02, force=1.),
+                           gripper_command_time=time.monotonic(), gripper_feedback_time=0.)
+    node.get_logger = lambda: SimpleNamespace(error=lambda _: None)
+    monkeypatch.setattr(module.rclpy, 'ok', lambda: True)
+    assert not PiperMasterControl._wait_for_gripper_contact(node, timeout_sec=.001)
+    node.gripper_feedback_time = time.monotonic()
+    original_sleep = time.sleep
+
+    def fresh_sample(seconds):
+        original_sleep(seconds)
+        node.gripper_feedback_time = time.monotonic()
+
+    monkeypatch.setattr(module.time, 'sleep', fresh_sample)
+    assert PiperMasterControl._wait_for_gripper_contact(node, timeout_sec=.4)
+
+
+
+def test_release_requires_observed_opening_and_loss_of_force(monkeypatch):
+    """Do not clear payload state merely because old contact width is positive."""
+    import time
+    import master_node.piper_master_control as module
+    node = SimpleNamespace(current_gripper_status=SimpleNamespace(width=.04, force=1.),
+                           gripper_command_time=time.monotonic(),
+                           gripper_feedback_time=time.monotonic())
+    node.get_logger = lambda: SimpleNamespace(error=lambda _: None)
+    monkeypatch.setattr(module.rclpy, 'ok', lambda: True)
+    assert not PiperMasterControl._wait_for_gripper_release(node, .04, timeout_sec=.001)
+    node.current_gripper_status.width = .05
+    node.current_gripper_status.force = 0.
+    assert PiperMasterControl._wait_for_gripper_release(node, .04, timeout_sec=.001)
+
+
+def test_signed_force_contact_and_release(monkeypatch):
+    """Negative gripping force confirms contact but must not authorize release."""
+    import time
+    import master_node.piper_master_control as module
+    node = SimpleNamespace(current_gripper_status=SimpleNamespace(width=.0056, force=-1.043),
+                           gripper_command_time=time.monotonic()-1.,
+                           gripper_feedback_time=time.monotonic())
+    node.get_logger = lambda: SimpleNamespace(error=lambda _: None)
+    monkeypatch.setattr(module.rclpy, 'ok', lambda: True)
+    original_sleep = time.sleep
+
+    def fresh_sample(seconds):
+        original_sleep(seconds)
+        node.gripper_feedback_time = time.monotonic()
+
+    monkeypatch.setattr(module.time, 'sleep', fresh_sample)
+    assert PiperMasterControl._wait_for_gripper_contact(node, timeout_sec=.4)
+    node.current_gripper_status.width = .05
+    assert not PiperMasterControl._wait_for_gripper_release(node, .0056, timeout_sec=.001)
+    for force in (float('nan'), float('inf'), -float('inf'), -.1):
+        node.current_gripper_status.force = force
+        assert not PiperMasterControl._wait_for_gripper_contact(node, timeout_sec=.001)

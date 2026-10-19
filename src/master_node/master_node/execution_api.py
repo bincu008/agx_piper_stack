@@ -15,6 +15,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from task_pipeline.grasp_input import affordance_from_description
 
 from .grasp_stages import GraspStages
+from .held_motion import HeldMotion
+from .prepared_grasp_lift import PreparedGraspLiftExecutor
 
 
 class ExecutionAPI:
@@ -29,6 +31,8 @@ class ExecutionAPI:
         self.group = ReentrantCallbackGroup()
         self.node._held_object = None
         self.grasp_stages = GraspStages(self)
+        self.held_motion = HeldMotion(self)
+        self.prepared_grasp_lift = PreparedGraspLiftExecutor(self)
         for kind, name, callback in (
                 (PrepareGraspInput, 'prepare_grasp_input', self._prepare),
                 (MoveTo, 'move_to', self._move),
@@ -60,7 +64,11 @@ class ExecutionAPI:
         response.status = 'GRASP_INPUT_READY'
         return response
 
-    def _guard(self):
+    def _guard(self, prepared=False):
+        session = getattr(self, 'prepared_grasp_lift', None)
+        record = getattr(session, 'record', None)
+        if not prepared and record and record['phase'] not in ('PREPARED', 'RELEASED'):
+            raise RuntimeError('PREPARED_EXECUTION_SESSION_OWNS_ARM')
         if not self.node.allow_physical_grasp_execution:
             raise RuntimeError('PHYSICAL_EXECUTION_DISABLED')
         if self.node.state != 'IDLE':
@@ -68,12 +76,23 @@ class ExecutionAPI:
         if self.node.physical_collision_detected or self.node.collision_detected:
             raise RuntimeError('ACTIVE_COLLISION')
 
-    def _joints(self, values):
+    def _joints(self, values, *, command_feedback=False):
         if len(values) != 6 or not all(math.isfinite(float(v)) for v in values):
             raise ValueError('SIX_FINITE_JOINTS_REQUIRED')
-        for value, (lower, upper) in zip(values, self.node.joint_limits):
+        for index, (value, (lower, upper)) in enumerate(zip(values, self.node.joint_limits), 1):
+            if command_feedback and index == 6:
+                # Raw feedback may represent an uncorrected starting state or
+                # the command-only calibrated endpoint. Do not change stored
+                # feedback, nominal planning bounds, or driver commands here.
+                offset = getattr(self.node, 'joint6_command_offset_rad', 0.)
+                lower += min(0., offset)
+                upper += max(0., offset)
             if not lower <= float(value) <= upper:
-                raise ValueError('JOINT_LIMIT_VIOLATION')
+                raise ValueError(
+                    f'JOINT_LIMIT_VIOLATION: joint{index}={float(value):.6f} rad '
+                    f'({math.degrees(float(value)):.3f} deg), '
+                    f'allowed=[{lower:.6f}, {upper:.6f}] rad '
+                    f'([{math.degrees(lower):.3f}, {math.degrees(upper):.3f}] deg)')
 
     def _move(self, request, response):
         admitted = self._lock.acquire(blocking=False)
@@ -205,6 +224,10 @@ class ExecutionAPI:
         try:
             if not admitted:
                 raise RuntimeError('EXECUTION_API_BUSY')
+            session = getattr(self, 'prepared_grasp_lift', None)
+            record = getattr(session, 'record', None)
+            if record and record['phase'] != 'PREPARED':
+                raise RuntimeError('PREPARED_EXECUTION_SESSION_OWNS_ARM')
             if not request.object_name or not request.candidates:
                 raise ValueError('OBJECT_AND_VALID_GRASPS_REQUIRED')
             if (request.observation_header.stamp.sec == 0 and
@@ -213,8 +236,39 @@ class ExecutionAPI:
             if not all(self._safe(candidate) for candidate in request.candidates):
                 raise ValueError('UNVALIDATED_GRASP_CANNOT_BE_CACHED')
             key = request.object_name.casefold()
+            if self.node._held_object == key:
+                raise RuntimeError('CANNOT_REPLACE_HELD_ATTACHMENT')
+            cloud, mask = request.observation_cloud, request.source_mask
+            if cloud.width or mask.width:
+                if (cloud.header != request.observation_header or cloud.height < 2 or
+                        mask.header.stamp != cloud.header.stamp or
+                        mask.width != cloud.width or mask.height != cloud.height or
+                        not cloud.data or not mask.data or len(cloud.data) > 16*1024*1024):
+                    raise ValueError('PAYLOAD_OBSERVATION_ASSOCIATION_MISMATCH')
+            if request.semantic_mask.width and (
+                    request.semantic_mask.header.stamp != request.observation_header.stamp or
+                    request.semantic_mask.width != cloud.width or
+                    request.semantic_mask.height != cloud.height):
+                raise ValueError('SEMANTIC_MASK_OBSERVATION_MISMATCH')
             with self._cache_lock:
-                self._cache[key] = (time.monotonic(), copy.deepcopy(request))
+                now = time.monotonic()
+                for old_key, (created, cached_request) in list(self._cache.items()):
+                    if (now-created > min(60, cached_request.ttl_seconds or 60) and
+                            old_key != self.node._held_object):
+                        self._cache.pop(old_key)
+                        self.node.cached_grasp_plans.pop(old_key, None)
+                        self.node.refined_grasp_plans.pop(old_key, None)
+                        self.grasp_stages.invalidate(old_key)
+                if key not in self._cache and len(self._cache) >= 8:
+                    removable = [item for item in self._cache if item != self.node._held_object]
+                    if not removable:
+                        raise RuntimeError('GRASP_CACHE_FULL')
+                    oldest = min(removable, key=lambda item: self._cache[item][0])
+                    self._cache.pop(oldest)
+                    self.node.cached_grasp_plans.pop(oldest, None)
+                    self.node.refined_grasp_plans.pop(oldest, None)
+                    self.grasp_stages.invalidate(oldest)
+                self._cache[key] = (now, copy.deepcopy(request))
                 self.node.cached_grasp_plans[key] = {
                     'name': request.object_name,
                     'header': copy.deepcopy(request.observation_header),

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "perception_measurement_ratio": 0.9768192404386491,
+  "known_diameter_m": 0.174,
+  "previous_ratio": 1.036,
+  "status": "plate_in_plane_uniform_scale; absolute_depth_unverified",
+  "axis_calibration_independent": false,
+  "calibration_date": "2026-10-13",
+  "method": "rim-plane RANSAC and silhouette-ray planar Feret widths",
+  "frame_count": 5
+}

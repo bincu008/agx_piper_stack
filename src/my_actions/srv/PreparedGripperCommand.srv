@@ -1,0 +1,10 @@
+string object_name
+uint64 plan_revision
+# Zero selects the validated plan default. Nonzero must match that default.
+float64 width_m
+float64 force_n
+---
+bool success
+bool contact_confirmed
+string phase
+string status

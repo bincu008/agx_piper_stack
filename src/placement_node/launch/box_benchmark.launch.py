@@ -20,7 +20,7 @@ def generate_launch_description():
         'stack_minimum_coverage': ('0.6', float),
         'auto_run': ('false', bool),
         'plan_pick_place_motion': ('true', bool),
-        'output_directory': ('~/box_benchmark', str),
+        'output_directory': ('~/agx_piper_data/reports/box_benchmark', str),
         'candidate_count': ('128', int),
         'yaw_step_deg': ('15.0', float),
         'floor_refinement_candidate_count': ('0', int),

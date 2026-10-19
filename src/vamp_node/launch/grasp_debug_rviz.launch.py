@@ -15,6 +15,9 @@ def generate_launch_description():
     fixed_frame = LaunchConfiguration("fixed_frame")
     return LaunchDescription([
         DeclareLaunchArgument(
+            "rviz_config", default_value=config,
+            description="RViz display configuration (visualization only)."),
+        DeclareLaunchArgument(
             "fixed_frame",
             default_value="base_link",
             description=(
@@ -23,10 +26,24 @@ def generate_launch_description():
             ),
         ),
         Node(
+            package="vamp_node",
+            executable="collision_spheres_viewer",
+            output="screen",
+        ),
+        # Visualization-only identity child for RViz frame discovery.
+        Node(
+            package="tf2_ros",
+            executable="static_transform_publisher",
+            name="grasp_debug_reference",
+            arguments=["--frame-id", "base_link",
+                       "--child-frame-id", "collision_spheres_view_origin"],
+            output="screen",
+        ),
+        Node(
             package="rviz2",
             executable="rviz2",
             name="grasp_debug_rviz",
-            arguments=["-d", config, "-f", fixed_frame],
+            arguments=["-d", LaunchConfiguration("rviz_config"), "-f", fixed_frame],
             output="screen",
         ),
     ])

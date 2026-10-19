@@ -1,0 +1,6 @@
+string object_name
+float32 lift_distance_m
+---
+bool success
+string status
+uint64 plan_revision

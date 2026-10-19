@@ -1,0 +1,11 @@
+string object_name
+---
+bool success
+string status
+uint64 plan_revision
+string phase
+std_msgs/Header observation_header
+float64 expires_in_seconds
+string[] completed_stages
+string[] waiting_stages
+bool physical_execution_enabled

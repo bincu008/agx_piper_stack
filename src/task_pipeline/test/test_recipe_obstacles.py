@@ -62,3 +62,61 @@ def test_default_recipe_uses_exclusive_grid_and_commits_after_validation():
     assert steps[-1].function_name == 'commit_floor_slots'
     assert steps[-1].bindings[0].source_step_id == 'placement_ik'
     assert steps[-1].failure_policy == 'stop'
+
+
+
+def test_all_calculation_precedes_public_frozen_execution_steps():
+    """Keep every planning failure before actuator execution."""
+    from task_pipeline.recipes import grasp_and_lift, prepare_grasp_lift
+    calculation = prepare_grasp_lift('small white bowl at bottom left')
+    names = [s.function_name for s in calculation]
+    assert names[-1] == 'prepare_grasp_lift'
+    assert 'move_pregrasp' not in names and 'execute_prepared_grasp_lift' not in names
+    full = grasp_and_lift('small white bowl at bottom left')
+    assert [s.function_name for s in full[-5:]] == [
+        'execute_plan', 'gripper_open', 'execute_plan', 'gripper_close', 'execute_plan']
+    assert [s.step_id for s in full[-5:]] == [
+        'pregrasp', 'gripper_open', 'approach', 'gripper_close', 'lift']
+    assert full[-1].bindings[0].source_step_id == 'prepare_motion'
+
+
+def test_reviewed_execution_contains_no_calculation_or_refinement():
+    """Reject absent prepared plans rather than silently recalculate after movement."""
+    from task_pipeline.recipes import grasp_and_lift
+    steps = grasp_and_lift('small white bowl at bottom left', use_cached=True)
+    assert [s.function_name for s in steps] == [
+        'get_prepared_grasp_lift', 'validate_prepared_grasp_lift', 'get_execution_state',
+        'execute_plan', 'gripper_open', 'execute_plan', 'gripper_close', 'execute_plan']
+    assert all(s.failure_policy == 'stop' for s in steps)
+
+
+def test_pick_place_recipe_plans_first_and_executes_cached_public_stages_only():
+    from task_pipeline.recipes import prepare_pick_place, execute_cached_pick_place
+    planned = prepare_pick_place('beige cup, grasp its body')
+    functions = [s.function_name for s in planned]
+    assert functions[-2:] == ['prepare_pick_place', 'get_execution_state']
+    assert 'commit_floor_slots' not in functions
+    assert not any(f.startswith('execute') for f in functions)
+    cache = next(s for s in planned if s.step_id == 'cache_grasp')
+    assert cache.bindings[0].source_field == 'candidates'
+    execute = execute_cached_pick_place('beige cup, grasp its body')
+    assert [s.step_id for s in execute] == ['prepare_motion', 'check_motion', 'pregrasp',
+        'gripper_open', 'approach', 'gripper_close', 'lift', 'transfer', 'descent',
+        'release', 'commit_slots']
+    assert all(s.function_name not in ('ground_object', 'calculate_grasps', 'plan_placement')
+               for s in execute)
+
+
+def test_queued_pick_place_binds_execution_to_calculation_revision():
+    from task_pipeline.recipes import pick_and_place
+    steps = pick_and_place('striped white plate')
+    ids = [s.step_id for s in steps]
+    assert len(ids) == len(set(ids))
+    boundary = ids.index('pregrasp')
+    assert ids[boundary:] == ['pregrasp', 'gripper_open', 'approach', 'gripper_close',
+                              'lift', 'transfer', 'descent', 'release', 'commit_slots']
+    assert steps[boundary - 1].function_name == 'validate_prepared_pick_place'
+    assert all(s.failure_policy == 'stop' for s in steps)
+    for s in steps[boundary:-1]:
+        assert any(b.target_field == 'plan_revision' and b.source_step_id == 'prepare_motion'
+                   for b in s.bindings)

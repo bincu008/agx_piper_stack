@@ -18,7 +18,15 @@ public:
     explicit PlacementPointIndex(const std::vector<Point> &points) {
         for (size_t index = 0; index < points.size(); ++index) {
             const Eigen::Vector3f point(points[index][0], points[index][1], points[index][2]);
-            if (point.allFinite()) cells_[cell(point)].push_back({point, index});
+            if (point.allFinite()) {
+                const auto key = cell(point);
+                if (cells_.empty()) minimum_cell_ = maximum_cell_ = key;
+                else {
+                    minimum_cell_ = minimum_cell_.cwiseMin(key);
+                    maximum_cell_ = maximum_cell_.cwiseMax(key);
+                }
+                cells_[key].push_back({point, index});
+            }
         }
     }
     template<class Predicate>
@@ -78,8 +86,11 @@ private:
     template<class Predicate>
     bool boxClearIndexed(const Eigen::Vector3f &lower,const Eigen::Vector3f &upper,
         Predicate collides) const {
-        const auto lo=cell(lower-Eigen::Vector3f::Constant(1e-6F));
-        const auto hi=cell(upper+Eigen::Vector3f::Constant(1e-6F));
+        if (cells_.empty()) return true;
+        // Clip only empty CELL ranges, preserving predicate calls and their
+        // original order even for points outside the metric query rectangle.
+        const auto lo=cell(lower-Eigen::Vector3f::Constant(1e-6F)).cwiseMax(minimum_cell_).eval();
+        const auto hi=cell(upper+Eigen::Vector3f::Constant(1e-6F)).cwiseMin(maximum_cell_).eval();
         for (int x=lo.x();x<=hi.x();++x)
             for (int y=lo.y();y<=hi.y();++y)
                 for (int z=lo.z();z<=hi.z();++z) {
@@ -92,6 +103,8 @@ private:
     }
     struct Entry { Eigen::Vector3f point; size_t index; };
     std::unordered_map<Eigen::Vector3i,std::vector<Entry>,Hash,Equal> cells_;
+    Eigen::Vector3i minimum_cell_ = Eigen::Vector3i::Zero();
+    Eigen::Vector3i maximum_cell_ = Eigen::Vector3i::Zero();
 };
 
 // Cache geometry only. Complete byte comparisons catch in-place scene edits;

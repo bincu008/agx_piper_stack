@@ -1,6 +1,7 @@
 """Master-owned, ordered execution of freshly validated payload paths."""
 
 from master_node.gripper_widths import grasp_gripper_widths
+from master_node.contact_evidence import contact_present
 
 import copy
 import math
@@ -12,6 +13,9 @@ from rclpy.serialization import serialize_message
 
 
 from master_node.joint_command_calibration import command_pose_reference, feedback_reference
+
+
+from .destination_memory import mapped_inputs, check_capacity
 
 
 class HeldMotion:
@@ -62,12 +66,16 @@ class HeldMotion:
             distance = request.lift_distance_m or .05
             if not math.isfinite(distance) or distance <= 0:
                 raise ValueError('LIFT_DISTANCE_MUST_BE_FINITE_AND_POSITIVE')
-            geometry = self.node.step_runtime._call('prepare_held_scene', PrepareHeldScene.Request(
+            geometry = self.node.step_runtime._call('prepare_held_scene', mapped_inputs(
+                getattr(self.node, 'manipulation_memory', None), PrepareHeldScene.Request(
                 observation_header=source.observation_header, cloud=source.observation_cloud,
                 source_mask=source.source_mask, semantic_mask=source.semantic_mask,
-                destination_mask=request.destination_mask))
+                destination_mask=request.destination_mask)))
             if not geometry.success:
                 raise RuntimeError(geometry.status)
+            memory = getattr(self.node, 'manipulation_memory', None)
+            if not request.lift_only:
+                check_capacity(memory, geometry.source_object_cloud)
             candidate = copy.deepcopy(self.node.cached_grasp_plans[key]['candidate'])
             candidate.grasp_pose = copy.deepcopy(refined['grasp_pose'])
             candidate.grasp_pose.header = copy.deepcopy(source.observation_header)
@@ -103,6 +111,12 @@ class HeldMotion:
                            'prepared': time.monotonic(), 'phase': 'PREPARED',
                            'signature': self.signature(refined), 'lift_only': request.lift_only,
                            'expected': list(candidate.grasp_joints)}
+            if not request.lift_only and memory is not None and memory.destination is not None:
+                self.record.update(
+                    pick_place=True, destination_name=memory.destination['name'],
+                    destination_id=memory.destination['object_id'],
+                    header=copy.deepcopy(source.observation_header),
+                    review_source=geometry.source_object_cloud, candidate=candidate, lift=plan)
             response.success = True
             response.plan_revision = self.revision
             response.plan_cdr = serialize_message(plan)
@@ -142,15 +156,16 @@ class HeldMotion:
             if max(abs(a-b) for a, b in zip(actual, feedback_reference(self.node, expected))) > .02:
                 raise RuntimeError('HELD_PATH_START_STATE_MISMATCH')
             status = self.node.current_gripper_status
-            valid = (status is not None and math.isfinite(status.width) and
-                     math.isfinite(status.force) and status.width > .001 and
-                     abs(status.force) >= .2)
+            evidence = getattr(self.node, 'gripper_contact_evidence', None)
+            valid = (evidence.holding() if evidence is not None
+                     else contact_present(status))
             if not contact or valid:
                 return
             if now >= deadline:
                 detail = ('feedback unavailable' if status is None else
                           f'width={status.width:.6f}m force={status.force:.6f}N')
-                raise RuntimeError('HELD_CONTACT_LOST: '+detail)
+                reason = evidence.holding_failure() if evidence is not None else 'CONTACT_SAMPLE_INVALID'
+                raise RuntimeError('HELD_CONTACT_LOST: '+detail+' reason='+reason)
             time.sleep(min(.02, deadline-now))
 
     def stage(self, name, request, response):

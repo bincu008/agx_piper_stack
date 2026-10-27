@@ -601,3 +601,42 @@ def test_adjusted_slot_commit_preserves_source_exclusivity_and_dry_run():
     assert not PlacementNode._commit_floor_slots(node, request, CommitFloorSlots.Response()).success
     request.selected_pose.header.stamp.sec += 1
     assert not PlacementNode._commit_floor_slots(node, request, CommitFloorSlots.Response()).success
+
+
+def test_committed_numpy_cell_indices_have_json_safe_memory():
+    """Exercise the real post-commit memory response that crashed after release."""
+    import json
+    import threading
+    from collections import deque
+    from types import SimpleNamespace
+    from geometry_msgs.msg import PoseStamped
+    from my_actions.srv import CommitFloorSlots, GetManipulationMemory
+    from placement_node.node import PlacementNode
+    from placement_node.inference import PlacementCandidate
+    from std_msgs.msg import Header
+
+    header = Header(frame_id='base_link')
+    header.stamp.sec = 123
+    candidate = PlacementCandidate(np.eye(3), np.array([.1, .2, .03]), 1)
+    entry = {'layout': grid().to_dict(), 'reserved': set(), 'commits': set()}
+    used = [[np.int64(0), np.int64(1)]]
+    node = SimpleNamespace(
+        _slot_lock=threading.Lock(), _slot_layouts={'key': entry},
+        _slot_pending=deque([(header, 'key', [candidate], [used], 0)]),
+        _pose_matrix=PlacementNode._pose_matrix, _publish_floor_slots=lambda *args: None)
+    pose = PoseStamped(header=header)
+    pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = candidate.translation
+    pose.pose.orientation.w = 1.0
+    request = CommitFloorSlots.Request(selected_pose=pose)
+    for _ in range(2):
+        result = PlacementNode._commit_floor_slots(node, request, CommitFloorSlots.Response())
+        assert result.success
+        response = PlacementNode._get_floor_slots(
+            node, GetManipulationMemory.Request(), GetManipulationMemory.Response())
+        assert json.loads(response.state_json)[0]['reserved_cells'] == [[0, 1]]
+    assert all(type(value) is int for cell in entry['reserved'] for value in cell)
+    # Existing cache entries from before normalization must also be readable.
+    entry['reserved'] = {(np.int64(0), np.int64(1))}
+    response = PlacementNode._get_floor_slots(
+        node, GetManipulationMemory.Request(), GetManipulationMemory.Response())
+    assert json.loads(response.state_json)[0]['reserved_cells'] == [[0, 1]]

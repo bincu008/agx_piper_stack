@@ -109,3 +109,41 @@ def test_bounded_registered_depth_seam_moves_with_payload_not_table_or_tray(monk
     assert np.any(np.all(np.isclose(payload, xyz[10, 5]), axis=1))
     for point in (xyz[19, 5], xyz[12, 5], xyz[11, 5], xyz[10, 6], xyz[13, 5]):
         assert np.any(np.all(np.isclose(obstacles, point), axis=1))
+
+
+def test_mapped_tray_and_placed_objects_survive_out_of_view(monkeypatch):
+    """A zero current tray mask retains mapped support and placed obstacles."""
+    header = Header(frame_id='base_link')
+    header.stamp.sec = 50
+    x, y = np.meshgrid(np.linspace(0, .06, 20), np.linspace(0, .06, 20))
+    xyz = np.stack((x, y, np.full_like(x, .1)), axis=2).astype(np.float32)
+    cloud = point_cloud2.create_cloud_xyz32(header, xyz.reshape(-1, 3))
+    cloud.height, cloud.width, cloud.row_step = 20, 20, cloud.point_step*20
+    mask = CvBridge().cv2_to_imgmsg(np.full((20, 20), 255, np.uint8), 'mono8')
+    mask.header = copy.deepcopy(header)
+    missing = CvBridge().cv2_to_imgmsg(np.zeros((20, 20), np.uint8), 'mono8')
+    missing.header = copy.deepcopy(header)
+    old = copy.deepcopy(header)
+    old.stamp.sec = 20
+    base = xyz.reshape(-1, 3).copy()
+    base[:, 0] += .4
+    base[:, 2] = .02
+    placed = base[:100].copy()
+    placed[:, 2] += .06
+    base_cloud = point_cloud2.create_cloud_xyz32(old, base)
+    placed_cloud = point_cloud2.create_cloud_xyz32(old, placed)
+    monkeypatch.setattr(held_scene, 'construct_support_bottom',
+                        lambda measured, _: (measured, measured[:10], measured[:0], None))
+    reply = held_scene.prepare_held_scene(PrepareHeldScene.Request(
+        observation_header=header, cloud=cloud, source_mask=mask, destination_mask=missing,
+        destination_base_cloud=base_cloud, placed_scene_cloud=placed_cloud),
+        PrepareHeldScene.Response())
+    assert reply.success, reply.status
+    result = point_cloud2.read_points(reply.collision_scene)
+    assert len(result) == len(base)+len(placed)
+    assert np.all(result['support'][-len(placed):] == 0)
+    support = point_cloud2.read_points_numpy(reply.destination_support_cloud,
+                                            field_names=('x', 'y', 'z'))
+    np.testing.assert_allclose(support, base)
+    assert base_cloud.header == old and placed_cloud.header == old
+    assert reply.collision_scene.header == header

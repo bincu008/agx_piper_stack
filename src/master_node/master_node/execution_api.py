@@ -16,6 +16,7 @@ from task_pipeline.grasp_input import affordance_from_description
 
 from .grasp_stages import GraspStages
 from .held_motion import HeldMotion
+from .next_best_view import NextBestView
 from .prepared_grasp_lift import PreparedGraspLiftExecutor
 
 
@@ -33,6 +34,7 @@ class ExecutionAPI:
         self.grasp_stages = GraspStages(self)
         self.held_motion = HeldMotion(self)
         self.prepared_grasp_lift = PreparedGraspLiftExecutor(self)
+        self.next_best_view = NextBestView(self)
         for kind, name, callback in (
                 (PrepareGraspInput, 'prepare_grasp_input', self._prepare),
                 (MoveTo, 'move_to', self._move),
@@ -150,6 +152,11 @@ class ExecutionAPI:
                 self._joints(plan.path_flat[index:index + 6])
             self.node.state = 'MOVING'
             for index in range(0, len(plan.path_flat), 6):
+                # A full RRTC path begins with measured feedback, not a new
+                # command target. Do not apply command calibration to it again.
+                if index == 0 and len(plan.path_flat) > 6 and max(abs(a-b) for a, b in zip(
+                        plan.path_flat[:6], request.expected_start_joints)) < 1.e-5:
+                    continue
                 if not self.node.move_arm_to(list(plan.path_flat[index:index + 6])):
                     raise RuntimeError('TRAJECTORY_EXECUTION_FAILED')
             response.success = response.motion_completed = True

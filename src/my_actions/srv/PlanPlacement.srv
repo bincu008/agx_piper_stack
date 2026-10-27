@@ -28,6 +28,12 @@ bool lift_only
 # Zero retains the existing 10 cm default; finite positive heights have no fixed cap.
 # Reachability, path resource limits and configured collision checks still apply.
 float32 lift_distance_m
+# Empty-hand lift/withdrawal mode: no grasp or payload cloud is required.
+# placement_scene is the immutable base_link scene; optional UINT8 released_object
+# marks only the stationary object just released, for bounded finger separation.
+bool empty_hand
+float32[] start_joints
+float32 jaw_opening_m
 ---
 bool success
 string status

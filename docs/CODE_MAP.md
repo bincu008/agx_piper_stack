@@ -276,3 +276,61 @@ pending tasks at an explicit `RunPipelineSteps` pause boundary. The
   read-only `get_floor_slots` and uses verified frozen destination geometry.
 - `vlm_node/src/vlm_reasoning_node.cpp`: resolves targets through the shared
   memory APIs. It does not own a second long-lived geometry directory.
+
+- `master_node/master_node/prepared_plan_review.py`: final-only RViz markers and
+  requested/achieved object clouds for the master-owned prepared session. It
+  consumes accepted backend geometry, performs visualization transforms only,
+  and never invokes a planner or actuator.
+
+### Next-best-view ownership
+
+- `vision_node/include/vision_node/nbv_preference.hpp`: top-down/base-facing sample generation and ranking; ActiveVision retains octree visibility checks.
+- `my_actions/srv/PlanNextBestView.srv`: named/explicit target, desired range and revision-bound planned camera/TCP/path result.
+- `master_node/master_node/next_best_view.py`: master-owned view cache, shared capture/IK/VAMP calls and guarded empty-hand execution.
+- `task_pipeline/task_pipeline/registry.py`: public plan_next_best_view / execute_next_best_view catalog entries.
+- `task_pipeline/task_pipeline/recipes.py`: owner-bound look/payload/clearance plans; queue pauses before look, then post-release withdrawal, clearance and capture.
+
+- `my_actions/srv/PlanCameraRetreat.srv` and VAMP `handlePlanCameraRetreat`: frozen predicted scene, released start/open jaw, full-scene clearance-only mode or explicit view candidates, validated retreat path/FK endpoint.
+
+- `plan_lift` / `PlanPlacement.empty_hand`: VAMP handleEmptyHandLift validates a released-gripper lift without attaching the placed object.
+- `vamp_node/include/vamp_node/empty_hand_withdrawal.hpp`: bounded initial released-object finger contact policy; separate from held-object noise allowance.
+- `execute_withdrawal` / master prepared session: ordered cached empty-hand segment between release and clearance retreat, with its own RViz endpoint.
+
+### Target visibility API
+
+- `my_actions/srv/CheckTargetView.srv`: public memory/name-based visibility decision.
+- `my_actions/srv/CheckTargetVisibility.srv`: frozen geometry/camera backend schema.
+- `master_node/master_node/target_view.py`: read-only active/directory lookup and
+  shared capture/backend dispatch; registered by `manipulation_memory.py`.
+- `vision_node/include/vision_node/target_visibility.hpp`: field of view, range,
+  target-cell exclusion and bounded OctoMap ray checks; served by
+  `active_vision_server.cpp` on `/active_vision/check_target_visibility`.
+- `task_pipeline/task_pipeline/registry.py`: canonical public endpoints for both
+  visibility functions; existing request/response tracing applies.
+
+
+### Persistent destination map
+
+- `master_node/master_node/destination_memory.py`: confirmed-release transform,
+  idempotent object-cloud merge, bounded capacity and explicit mapped inputs.
+- `manipulation_memory.py`: retains immutable tray base and composite destination
+  across view changes; clears on destination switch/explicit forget.
+- `placement_node/placement_node/held_scene.py`: reconstructs frozen support and
+  obstacle inputs from current observation plus remembered destination geometry.
+- `placement_node/placement_node/node.py`: uses immutable base for grid cache keys
+  while merged destination points block later placements. Slot commits preserve
+  whole-cell exclusivity and existing IDs.
+
+- `vamp_node/include/vamp_node/guided_joint_lift.hpp`: bounded differential
+  joint ascent with object-up/height tasks, free XY/yaw, APF and joint-margin
+  guidance, active joint-bound handling and validated dense edges. Called by the
+  shared held-motion planner before Cartesian fallbacks. It is not used by the
+  final grasp approach or post-release withdrawal.
+
+### All-target perception inventory
+
+- `my_actions/srv/PerceiveScene.srv`: shared target-list / synchronized-capture input and per-target visibility, position and status output.
+- `master_node/master_node/scene_perception.py`: batch presence and bounding-box inference, strict parsing, per-target EdgeSAM, and shared memory updates.
+- `master_node/config/perception/scene_targets.yaml`: default requested inventory, independent of the active pick object.
+- `task_pipeline/task_pipeline/recipes.py`: one inventory pass before grasp calculation; object/destination reads use `get_active_target` afterward.
+- `task_pipeline/task_pipeline/mock_bowl_cup.py`: same all-target API for initial benchmark perception.

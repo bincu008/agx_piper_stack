@@ -70,10 +70,22 @@ class MasterStepRuntime:
         done = threading.Event()
         future.add_done_callback(lambda _: done.set())
         deadline = time.monotonic() + self.node.get_parameter('pipeline_step_timeout_sec').value
+        missing_since = None
         while not done.wait(.02):
             if not rclpy.ok():
                 raise RuntimeError('MASTER_SHUTDOWN')
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if client.service_is_ready():
+                missing_since = None
+            elif missing_since is None:
+                missing_since = now
+            elif now - missing_since >= 2.0 and not done.is_set():
+                # Cancel only this local wait, never retry a possibly completed
+                # operation or infer that the remote operation did not run.
+                future.cancel()
+                raise RuntimeError('BACKEND_LOST_STATE_UNKNOWN: ' + spec.backend)
+            if now >= deadline:
+                future.cancel()
                 raise RuntimeError('BACKEND_TIMEOUT_STATE_UNKNOWN: ' + spec.backend)
         if future.exception():
             raise RuntimeError(str(future.exception()))
@@ -169,7 +181,10 @@ class MasterStepRuntime:
         self._timings.publish(PipelineTiming(
             function_name=name, backend=FUNCTIONS[name].backend,
             input_mode=mode, scope='backend_inclusive',
-            object_name=getattr(request, 'object_name', '') or getattr(request, 'target', ''),
+            object_name=(getattr(request, 'object_name', '') or
+                         getattr(request, 'target_name', '') or
+                         (request.target if isinstance(getattr(request, 'target', None), str)
+                          else '')),
             full_motion=bool(getattr(request, 'plan_pick_place_motion', False)),
             wall_seconds=time.monotonic() - started,
             success=failure is None and response_success(response),

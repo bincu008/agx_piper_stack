@@ -7,7 +7,7 @@ from cv_bridge import CvBridge
 
 from geometry_msgs.msg import TransformStamped
 
-from master_node.manipulation_memory import ManipulationMemory, observed_mask
+from master_node.manipulation_memory import ManipulationMemory, observed_mask, xyz
 from master_node.world_state import WorldStateManager
 
 from my_actions import srv
@@ -232,14 +232,14 @@ def test_changed_camera_view_forces_object_reobservation():
 
 
 def test_changed_calibration_invalidates_destination_geometry():
-    """Changed calibration invalidates destination geometry."""
+    """Changed calibration blocks reuse without silently discarding inventory."""
     memory, _, calls, _, _ = fixture()
     first = resolve(memory, 'tray', 'destination')
     memory.node.X_matrix[0, 3] = 0.005
     second = resolve(memory, 'tray', 'destination')
-    assert second.success and not second.reused
-    assert second.memory_revision > first.memory_revision
-    assert calls.count('ground_object') == 2
+    assert not second.success and 'CALIBRATION_CHANGED' in second.status
+    assert memory.destination['geometry_header'] == first.geometry_source_header
+    assert calls.count('ground_object') == 1
 
 
 def test_grasp_success_keeps_semantic_geometry_for_future_reobservation():
@@ -264,3 +264,24 @@ def test_active_placements_reject_unsupported_overlay_instead_of_ignoring_it():
         srv.FindPlacementCandidates.Response(),
     )
     assert not result.success and 'OVERLAY_UNSUPPORTED' in result.status
+
+
+def test_stationary_reuse_does_not_expand_semantic_mask_into_nearby_surface():
+    """The 8 mm evidence radius must not turn adjacent table into the object."""
+    memory, observation, calls, _, _ = fixture()
+    assert resolve(memory, 'bowl').success
+    record = memory.objects['bowl']
+    semantic = memory.bridge.imgmsg_to_cv2(record['semantic_mask'], 'mono8') > 0
+    # Move an outside pixel within the geometric evidence radius of the rim.
+    points = xyz(observation.cloud, organized=True).copy()
+    points[:, 16] = points[:, 15] + np.array([.002, 0., 0.])
+    cloud = point_cloud2.create_cloud_xyz32(observation.cloud.header, points.reshape(-1, 3))
+    cloud.height, cloud.width, cloud.row_step = 32, 32, 32 * cloud.point_step
+    changed = copy.deepcopy(observation)
+    changed.cloud = cloud
+    grounded = calls.count('ground_object')
+    result = resolve(memory, 'bowl', observation=changed)
+    assert result.success and result.reused
+    mask = memory.bridge.imgmsg_to_cv2(result.mask, 'mono8') > 0
+    assert not np.any(mask & ~semantic)
+    assert calls.count('ground_object') == grounded

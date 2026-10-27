@@ -28,23 +28,25 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--object', default='brown cup')
     parser.add_argument('--destination', default='tray')
+    parser.add_argument('--scene-object', action='append', default=[],
+                        help='Override inventory objects; repeat for each target (active object is included)')
     parser.add_argument('--grasp-only', action='store_true')
     parser.add_argument('--fresh-perception', action='store_true',
-                        help='Bypass active target reuse and run the original perception recipe')
+                        help='Force initial all-target perception even when locations are already remembered')
     execution_group = parser.add_mutually_exclusive_group()
     execution_group.add_argument('--queue-grasp-lift', action='store_true',
                                  help='Plan and queue all stages; pause before physical motion')
     execution_group.add_argument('--queue-pick-place', action='store_true',
                                  help='Plan all pick/place stages and pause before physical motion')
     execution_group.add_argument('--prepare-grasp-lift', action='store_true',
-                                 help='Validate and cache all grasp/lift paths without motion')
+                                 help='Acquire object camera view if needed, then validate/cache grasp and lift without grasp motion')
     execution_group.add_argument('--check-cached-grasp-lift', action='store_true',
                                  help='Check cached plan and starting feedback without actuation')
     execution_group.add_argument('--execute-grasp-lift', action='store_true',
                         help='Physical trial: refined grasp and lift, then stop holding')
     execution_group.add_argument('--execute-cached-grasp-lift', action='store_true',
                                  help='Execute the reviewed cached grasp, then stop after lift')
-    execution_group.add_argument('--prepare-pick-place', action='store_true', help='Preview all pick/place paths without motion')
+    execution_group.add_argument('--prepare-pick-place', action='store_true', help='Acquire object camera view if needed, then preview all pick/place paths before grasping')
     execution_group.add_argument('--check-cached-pick-place', action='store_true', help='Validate reviewed pick/place readiness without actuation')
     execution_group.add_argument('--execute-cached-pick-place', action='store_true', help='Execute reviewed grasp/lift/transfer/descent/release')
     parser.add_argument('--preparation-attempts', type=int, choices=range(1, 4), default=1,
@@ -108,9 +110,12 @@ def main():
             else:
                 recipe = cup_to_tray(args.object, args.destination, not args.grasp_only,
                                      obstacles, args.placement_policy)
-            if not args.fresh_perception and not (execute_lift or execute_place or
+            if not (execute_lift or execute_place or
                     args.check_cached_grasp_lift or args.check_cached_pick_place or obstacles is not None):
-                recipe = with_active_memory(recipe, args.object, args.destination)
+                recipe = with_active_memory(
+                    recipe, args.object, args.destination, args.scene_object,
+                    allow_view_motion=bool(args.prepare_grasp_lift or args.prepare_pick_place)
+                    and attempt == 1, refresh_scene=args.fresh_perception)
             future = client.call_async(SubmitPipelineSteps.Request(steps=recipe))
             rclpy.spin_until_future_complete(node, future, timeout_sec=30)
             if not future.done() or not future.result().success:
@@ -122,7 +127,8 @@ def main():
                 raise RuntimeError('Run action unavailable')
             goal = action.send_goal_async(
                 RunPipelineSteps.Goal(context_id=context_id,
-                                      stop_before_step_id='pregrasp' if (args.queue_grasp_lift or args.queue_pick_place) else ''),
+                                      stop_before_step_id=('look' if args.queue_pick_place else
+                                                           'pregrasp' if args.queue_grasp_lift else '')),
                 feedback_callback=lambda feedback: print(
                     feedback.feedback.step_id, feedback.feedback.status, flush=True))
             rclpy.spin_until_future_complete(node, goal, timeout_sec=15)
@@ -179,7 +185,7 @@ def main():
                 'additional_obstacle_points': obstacles.width * obstacles.height if obstacles else 0,
                 'obstacle_cloud_topic': args.obstacle_cloud_topic,
                 'placement_policy': args.placement_policy,
-                'execution_mode': 'physical_pick_place' if execute_place else 'physical_grasp_lift' if execute_lift else 'calculation',
+                'execution_mode': 'physical_pick_place' if execute_place else 'physical_grasp_lift' if execute_lift else 'view_acquisition_then_calculation' if (args.prepare_grasp_lift or args.prepare_pick_place) else 'calculation',
                 'seconds': sum(item['seconds'] for item in attempts),
                 'attempts': attempts,
                 'steps': attempts[-1]['steps'],

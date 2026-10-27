@@ -1,0 +1,17 @@
+# Empty object_names uses the configured inventory; active_object_name is included.
+string[] object_names
+string active_object_name
+string destination_name
+sensor_msgs/Image image
+sensor_msgs/PointCloud2 observation_cloud
+geometry_msgs/TransformStamped camera_transform
+---
+bool success
+string status
+std_msgs/Header observation_header
+string[] names
+string[] roles
+bool[] observed
+string[] target_statuses
+geometry_msgs/Point[] positions
+uint64 memory_revision

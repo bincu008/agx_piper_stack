@@ -75,7 +75,10 @@ class PipelineNode(Node):
 
     def __init__(self, runtime=None):
         """Create bounded clients and observation subscriptions."""
-        super().__init__('pipeline_node')
+        # In-process launch remapping can give this proxy the master's name.
+        # Only the master should serve its parameters; keep standalone proxy
+        # parameter services and all launch parameter overrides unchanged.
+        super().__init__('pipeline_node', start_parameter_services=runtime is None)
         self._runtime = runtime
         self.declare_parameter('request_timeout_sec', 600.0)
         self.declare_parameter('capture_timeout_sec', 30.0)

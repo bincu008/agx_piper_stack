@@ -1,3 +1,6 @@
+#include "vision_node/target_visibility.hpp"
+#include "my_actions/srv/check_target_visibility.hpp"
+#include "vision_node/nbv_preference.hpp"
 #include <onnxruntime_cxx_api.h>
 #include "vision_node/metric_scale.hpp"
 #include "vision_node/voxel_neighbors.hpp"
@@ -206,6 +209,10 @@ public:
       "/active_vision/get_3d_coordinate",
       std::bind(&ActiveVisionServer::handleGet3DCoordinate, this, std::placeholders::_1, std::placeholders::_2));
 
+    check_visibility_srv_ = this->create_service<my_actions::srv::CheckTargetVisibility>(
+      "/active_vision/check_target_visibility",
+      std::bind(&ActiveVisionServer::handleCheckVisibility,this,
+                std::placeholders::_1,std::placeholders::_2));
     get_nbv_srv_ = this->create_service<my_actions::srv::GetNBVPose>(
       "/active_vision/get_nbv_candidates",
       std::bind(&ActiveVisionServer::handleGetNBVPose, this, std::placeholders::_1, std::placeholders::_2));
@@ -932,6 +939,76 @@ private:
     response->success = true;
   }
 
+  static std::vector<Eigen::Vector3f> visibilityCloud(
+      const sensor_msgs::msg::PointCloud2 &cloud) {
+    if (cloud.header.frame_id!="base_link" || cloud.is_bigendian || !cloud.width ||
+        !cloud.height || cloud.point_step<12 ||
+        static_cast<uint64_t>(cloud.width)*cloud.point_step!=cloud.row_step ||
+        static_cast<uint64_t>(cloud.row_step)*cloud.height!=cloud.data.size() ||
+        cloud.data.size()>16*1024*1024)
+      throw std::runtime_error("INVALID_VISIBILITY_CLOUD");
+    for (const auto *name:{"x","y","z"})
+      if (!std::any_of(cloud.fields.begin(),cloud.fields.end(),[&](const auto &f) {
+        return f.name==name && f.count==1 && f.datatype==sensor_msgs::msg::PointField::FLOAT32 &&
+               f.offset<=cloud.point_step-4;
+      })) throw std::runtime_error("INVALID_VISIBILITY_CLOUD_FIELDS");
+    std::vector<Eigen::Vector3f> points;
+    sensor_msgs::PointCloud2ConstIterator<float> x(cloud,"x"),y(cloud,"y"),z(cloud,"z");
+    for (;x!=x.end();++x,++y,++z)
+      if (std::isfinite(*x) && std::isfinite(*y) && std::isfinite(*z)) {
+        const Eigen::Vector3f point(*x,*y,*z);
+        if (point.norm()<=10.F) points.push_back(point);
+      }
+    return points;
+  }
+
+  void handleCheckVisibility(
+      const std::shared_ptr<my_actions::srv::CheckTargetVisibility::Request> request,
+      std::shared_ptr<my_actions::srv::CheckTargetVisibility::Response> response) {
+    try {
+      const auto &cloud=request->scene_cloud;
+      const auto &camera=request->camera_transform;
+      const auto &info=request->camera_info;
+      if (cloud.header.frame_id!="base_link" || camera.header!=cloud.header ||
+          rclcpp::Time(cloud.header.stamp).nanoseconds()<=0 || camera.child_frame_id.empty())
+        throw std::runtime_error("VISIBILITY_OBSERVATION_ASSOCIATION_MISMATCH");
+      if (info.width!=cloud.width || info.height!=cloud.height ||
+          info.header.frame_id!=camera.child_frame_id ||
+          !std::isfinite(info.k[0]) || !std::isfinite(info.k[4]) ||
+          !std::isfinite(info.k[2]) || !std::isfinite(info.k[5]) ||
+          info.k[0]<=0. || info.k[4]<=0.)
+        throw std::runtime_error("VISIBILITY_CAMERA_INFO_MISMATCH");
+      const auto &q=camera.transform.rotation;
+      const auto &t=camera.transform.translation;
+      Eigen::Quaternionf rotation(q.w,q.x,q.y,q.z);
+      Eigen::Isometry3f transform=Eigen::Isometry3f::Identity();
+      transform.translation()=Eigen::Vector3f(t.x,t.y,t.z);
+      if (!rotation.coeffs().allFinite() || std::abs(rotation.norm()-1.F)>.001F ||
+          !transform.translation().allFinite())
+        throw std::runtime_error("INVALID_VISIBILITY_CAMERA_TRANSFORM");
+      transform.linear()=rotation.normalized().toRotationMatrix();
+      const auto scene=visibilityCloud(cloud);
+      if (scene.size()<80) throw std::runtime_error("INSUFFICIENT_VISIBILITY_SCENE");
+      std::vector<Eigen::Vector3f> target;
+      if (request->target_cloud.width) target=visibilityCloud(request->target_cloud);
+      else target.emplace_back(request->target_position.x,request->target_position.y,
+                               request->target_position.z);
+      if (target.empty() || !std::all_of(target.begin(),target.end(),[](const auto &p) {
+            return p.allFinite() && p.norm()<=10.F;
+          })) throw std::runtime_error("INVALID_VISIBILITY_TARGET");
+      const auto result=vision_node::targetVisibility(scene,target,transform,
+        info.k[0],info.k[4],info.k[2],info.k[5],info.width,info.height);
+      response->success=true;
+      response->visible=result.visible;
+      response->status=result.visible ? "READY" : "LOOK_REQUIRED";
+      response->observation_header=cloud.header;
+      response->sample_count=result.samples;
+      response->in_view_count=result.in_view;
+      response->clear_count=result.clear;
+      response->visible_fraction=result.fraction;
+    } catch (const std::exception &error) { response->status=error.what(); }
+  }
+
   void handleGetNBVPose(const std::shared_ptr<my_actions::srv::GetNBVPose::Request> request,
                         std::shared_ptr<my_actions::srv::GetNBVPose::Response> response)
   {
@@ -956,64 +1033,40 @@ private:
     Eigen::Matrix4f T_base_cam = getCameraTransform(q_joints);
     Eigen::Vector3f current_cam_pos(T_base_cam(0,3), T_base_cam(1,3), T_base_cam(2,3));
 
-    int num_samples = 150;
-    float phi = 3.14159265f * (3.f - std::sqrt(5.f)); // golden angle
-    
-    struct ValidCandidate {
-      Eigen::Vector3f pos;
-      float dist_to_current;
-    };
+    const Eigen::Vector3f target(target_x,target_y,target_z);
+    if (!target.allFinite() || !std::isfinite(radius)) return;
+    struct ValidCandidate { Eigen::Vector3f pos; float cost; };
     std::vector<ValidCandidate> valid_candidates;
-
-    for (int i = 0; i < num_samples; ++i) {
-      float y_sphere = 1.0f - (i / float(num_samples - 1)) * 2.0f; 
-      float radius_at_y = std::sqrt(1.0f - y_sphere * y_sphere);
-      float theta = phi * i;
-
-      float x_sphere = std::cos(theta) * radius_at_y;
-      float z_sphere = std::sin(theta) * radius_at_y;
-      
-      Eigen::Vector3f candidate_pos(
-        target_x + x_sphere * radius,
-        target_y + y_sphere * radius,
-        target_z + z_sphere * radius
-      );
-      
+    for (const auto &candidate_pos : vision_node::nextViewSamples(target,radius)) {
       // Filter out points that are below table or too far behind the object
       if (candidate_pos.z() < 0.1f) continue;
       
       // Check occlusion using OctoMap raycasting
       octomap::point3d candidate_octo(candidate_pos.x(), candidate_pos.y(), candidate_pos.z());
       octomap::point3d direction(target_x - candidate_pos.x(), target_y - candidate_pos.y(), target_z - candidate_pos.z());
-      
       octomap::point3d hit_pt;
-      bool hit = octree_->castRay(candidate_octo, direction, hit_pt, true, radius);
-      
+      const bool hit = octree_->castRay(candidate_octo, direction, hit_pt, true, radius);
       bool occluded = false;
       if (hit) {
-        // If it hit something, check if the hit point is very close to the target
-        float hit_dist = std::sqrt(
+        const float hit_dist = std::sqrt(
           std::pow(hit_pt.x() - target_x, 2) +
           std::pow(hit_pt.y() - target_y, 2) +
-          std::pow(hit_pt.z() - target_z, 2)
-        );
-        if (hit_dist > 0.05f) { // If hit is more than 5cm away from target, it's occluded
-          occluded = true;
-        }
+          std::pow(hit_pt.z() - target_z, 2));
+        occluded = hit_dist > 0.05F;
       }
-      
+
       if (!occluded) {
         ValidCandidate vc;
         vc.pos = candidate_pos;
-        vc.dist_to_current = (candidate_pos - current_cam_pos).norm();
+        vc.cost = vision_node::nextViewCost(candidate_pos,target,current_cam_pos);
         valid_candidates.push_back(vc);
       }
     }
     
-    // Sort by distance to current camera position to minimize travel
+    // Prefer steep downward, base-facing views; travel breaks nearby ties.
     std::sort(valid_candidates.begin(), valid_candidates.end(), 
       [](const ValidCandidate& a, const ValidCandidate& b) {
-        return a.dist_to_current < b.dist_to_current;
+        return a.cost < b.cost;
       });
       
     for (const auto& vc : valid_candidates) {
@@ -1537,6 +1590,7 @@ private:
   rclcpp::Service<my_actions::srv::GetObstacleLocation>::SharedPtr get_obstacle_srv_;
   rclcpp::Service<my_actions::srv::Get3DCoordinate>::SharedPtr get_3d_coord_srv_;
   rclcpp::Service<my_actions::srv::GetNBVPose>::SharedPtr get_nbv_srv_;
+  rclcpp::Service<my_actions::srv::CheckTargetVisibility>::SharedPtr check_visibility_srv_;
   rclcpp::Client<std_srvs::srv::Empty>::SharedPtr estop_client_;
   rclcpp::Client<my_actions::srv::UpdateObjectObservation>::SharedPtr
     update_object_client_;

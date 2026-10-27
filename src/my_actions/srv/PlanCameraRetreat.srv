@@ -1,0 +1,13 @@
+# Immutable predicted scene after release; source capture header is preserved.
+sensor_msgs/PointCloud2 collision_scene
+float32[] start_joints
+geometry_msgs/Pose[] candidate_tcp_poses
+float32 jaw_opening_m
+# Empty-hand clearance rather than a prescribed camera viewpoint.
+bool clearance_only
+---
+bool success
+string status
+uint32 selected_index
+geometry_msgs/PoseStamped tcp_pose
+float32[] path_flat

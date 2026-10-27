@@ -340,8 +340,25 @@ def test_active_recipe_uses_shared_memory_and_valid_predecessors():
         schema = FUNCTIONS[item.function_name].service_type
         for binding in item.bindings:
             assert binding.source_step_id in seen
-            get_field(seen[binding.source_step_id].Response(),binding.source_field)
+            if binding.source_field != '@response_cdr':
+                get_field(seen[binding.source_step_id].Response(),binding.source_field)
         seen[item.step_id] = schema
-    assert next(s for s in recipe if s.step_id=='segment_cup').function_name=='resolve_target'
+    assert next(s for s in recipe if s.step_id=='segment_cup').function_name=='refresh_active_target'
     assert next(s for s in recipe if s.step_id=='placements').function_name=='find_active_placements'
     assert all(s.function_name!='ground_object' for s in recipe)
+
+
+def test_in_process_proxy_does_not_duplicate_master_parameter_services():
+    """Only the actual master answers parameter reads under launch name remapping."""
+    rclpy.init(args=['--ros-args', '-r', '__node:=piper_master_control'])
+    node = None
+    try:
+        node = PipelineNode(runtime=SimpleNamespace())
+        assert node.get_name() == 'piper_master_control'
+        names = {service.srv_name for service in node.services}
+        assert '/pipeline/list_functions' in names
+        assert '/piper_master_control/get_parameters' not in names
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()

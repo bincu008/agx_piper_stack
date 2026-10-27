@@ -21,6 +21,12 @@ from scipy.spatial import cKDTree
 from sensor_msgs_py import point_cloud2
 
 
+from .target_view import check_target_view
+from .scene_perception import ScenePerception
+from .perception_acquisition import PerceptionAcquisition
+from .destination_memory import mapped_inputs, remember_release, check_capacity, grasp_scene
+
+
 def xyz(cloud, organized=False):
     """Read existing manual-base-frame geometry without applying another transform."""
     fields = point_cloud2.read_points(cloud, field_names=('x', 'y', 'z'), skip_nans=False)
@@ -83,12 +89,21 @@ class ManipulationMemory:
         self.directory = OrderedDict()
         self.revision = 0
         self.group = ReentrantCallbackGroup()
+        self.scene_perception = ScenePerception(self)
+        self.acquisition = PerceptionAcquisition(self)
         for schema, name, callback in (
+            (srv.PerceiveScene, 'perceive_scene', self.scene_perception.perceive),
+            (srv.PerceiveScene, 'ensure_scene_memory', self.acquisition.ensure_memory),
+            (srv.CheckTargetView, 'ensure_target_view',
+             lambda q, r: self.acquisition.ensure_view(q, r, allow_motion=True)),
+            (srv.CheckTargetView, 'require_target_view', self.acquisition.ensure_view),
             (srv.ResolveManipulationTarget, 'resolve_target', self.resolve),
             (srv.ResolveManipulationTarget, 'refresh_active_target', self.refresh),
             (srv.ResolveManipulationTarget, 'forget_active_target', self.forget),
             (srv.ResolveManipulationTarget, 'get_active_target', self.get_target),
             (srv.GetManipulationMemory, 'get_manipulation_memory', self.inspect),
+            (srv.CheckTargetView, 'check_target_view',
+             lambda q, r: check_target_view(self, q, r)),
             (srv.FindGraspCandidates, 'calculate_active_grasps', self.grasps),
             (srv.FindPlacementCandidates, 'find_active_placements', self.placements),
         ):
@@ -127,7 +142,7 @@ class ManipulationMemory:
         qb = np.array([getattr(b.rotation, k) for k in ('x', 'y', 'z', 'w')])
         return t <= 0.002**2 and abs(float(qa @ qb)) >= 0.99999
 
-    def _resolve(self, request, response):
+    def _resolve(self, request, response, grounded_mask=None):
         """Validate mapped geometry or ground it on the synchronized observation."""
         self.guard_mutation()
         name, role = request.name.strip(), request.role or 'object'
@@ -173,9 +188,13 @@ class ManipulationMemory:
         ):
             raise ValueError('TARGET_MANUAL_TRANSFORM_ASSOCIATION_MISMATCH')
         points = xyz(cloud, organized=True)
+        cached_destination = role == 'destination' and record is not None
+        if cached_destination and record['calibration'] != self.calibration():
+            raise RuntimeError('DESTINATION_CALIBRATION_CHANGED: reset destination explicitly')
         mask = None
         if (
             record
+            and not cached_destination
             and not request.refresh
             and record['calibration'] == self.calibration()
             and time.monotonic() - record['verified'] < 300
@@ -187,6 +206,30 @@ class ManipulationMemory:
             )
         ):
             mask = observed_mask(points, record['points'], destination=role == 'destination')
+            if mask is not None:
+                # With an unchanged calibrated view, preserve semantic pixel
+                # boundaries. The 8 mm evidence gate may otherwise grow a
+                # bowl mask onto adjacent table points on every reuse.
+                previous = record['observation'].camera_transform.transform
+                current = observation.camera_transform.transform
+                stationary = (
+                    max(abs(getattr(previous.translation, axis)-
+                            getattr(current.translation, axis)) for axis in ('x', 'y', 'z')) < 1.e-6
+                    and abs(sum(getattr(previous.rotation, axis)*
+                                getattr(current.rotation, axis)
+                                for axis in ('x', 'y', 'z', 'w'))) > 1.-1.e-12)
+                semantic = self.bridge.imgmsg_to_cv2(record['semantic_mask'], 'mono8') > 0
+                if stationary and semantic.shape == mask.shape:
+                    mask &= semantic
+                    if mask.sum() < 80:
+                        mask = None
+        if cached_destination:
+            # Camera movement/temporary occlusion does not erase the inventory.
+            # Current pixels are optional; mapped base/placed clouds feed planning.
+            mask = observed_mask(points, record.get('base_points', record['points']),
+                                 destination=True)
+            if mask is None:
+                mask = np.zeros(points.shape[:2], dtype=bool)
         reused = mask is not None
         if not reused:
             if role == 'object' and record:
@@ -196,31 +239,34 @@ class ManipulationMemory:
                 with self.lock:
                     self.destination = None
                 self.invalidate_destination()
-            present = self.call(
-                'verify_presence', srv.VerifyPresence.Request(image=image, target=name)
-            )
-            if not present.success or not present.present:
-                raise RuntimeError('TARGET_NOT_PRESENT: ' + present.status)
-            target = (
-                'the complete visible placement surface of the '
-                if role == 'destination'
-                else 'the complete visible object '
-            ) + name
-            ground = self.call(
-                'ground_object', srv.GroundObject.Request(image=image, target=target)
-            )
-            if not ground.success:
-                raise RuntimeError('TARGET_GROUNDING_FAILED: ' + ground.status)
-            segmented = self.call(
-                'segment_object',
-                srv.SegmentGroundedImage.Request(image=image, bbox=ground.pixel_box),
-            )
-            if not segmented.success:
-                raise RuntimeError('TARGET_SEGMENTATION_FAILED: ' + segmented.status)
-            mask = self.bridge.imgmsg_to_cv2(segmented.mask, 'mono8') > 0
+            if grounded_mask is not None:
+                mask = grounded_mask
+            else:
+                present = self.call(
+                    'verify_presence', srv.VerifyPresence.Request(image=image, target=name)
+                )
+                if not present.success or not present.present:
+                    raise RuntimeError('TARGET_NOT_PRESENT: ' + present.status)
+                target = (
+                    'the complete visible placement surface of the '
+                    if role == 'destination'
+                    else 'the complete visible object '
+                ) + name
+                ground = self.call(
+                    'ground_object', srv.GroundObject.Request(image=image, target=target)
+                )
+                if not ground.success:
+                    raise RuntimeError('TARGET_GROUNDING_FAILED: ' + ground.status)
+                segmented = self.call(
+                    'segment_object',
+                    srv.SegmentGroundedImage.Request(image=image, bbox=ground.pixel_box),
+                )
+                if not segmented.success:
+                    raise RuntimeError('TARGET_SEGMENTATION_FAILED: ' + segmented.status)
+                mask = self.bridge.imgmsg_to_cv2(segmented.mask, 'mono8') > 0
         finite = mask & np.isfinite(points).all(axis=2)
         selected = points[finite]
-        if len(selected) < 80:
+        if len(selected) < 80 and not cached_destination:
             raise ValueError('INSUFFICIENT_TARGET_GEOMETRY')
         ys, xs = np.nonzero(finite)
         mask_message = self.bridge.cv2_to_imgmsg((finite * 255).astype(np.uint8), 'mono8')
@@ -247,13 +293,19 @@ class ManipulationMemory:
                 'grid': None,
                 'calibration': self.calibration(),
             }
+        if role == 'destination' and not cached_destination:
+            record['base_cloud'] = record['cloud']
+            record['base_points'] = record['points'].copy()
+            record['placed_points'] = np.empty((0, 3), np.float32)
+            record['placements'] = OrderedDict()
         record = dict(
             record,
             observation=observation,
             mask=mask_message,
             semantic_mask=mask_message,
             verified=time.monotonic(),
-            pixel_box=[int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1)],
+            pixel_box=([int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1)]
+                       if len(xs) else [0, 0, 0, 0]),
         )
         with self.lock:
             if role == 'destination':
@@ -304,6 +356,10 @@ class ManipulationMemory:
                 response.status = 'ACTIVE_TARGET_REQUIRED'
                 return response
             observation = record['observation']
+            if (request.observation_cloud.data and
+                    observation.cloud.header != request.observation_cloud.header):
+                response.status = 'TARGET_NOT_VISIBLE_IN_CURRENT_SCENE: look at target and recapture'
+                return response
             response.success, response.reused = True, True
             response.status = 'ACTIVE_TARGET_SNAPSHOT_READY'
             response.object_id, response.memory_revision = record['object_id'], record['revision']
@@ -400,6 +456,9 @@ class ManipulationMemory:
                 target_description=record['name'],
                 affordance_type=request.affordance_type or prepared.affordance_type,
             )
+            scene = grasp_scene(self, observation)
+            if scene is not None:
+                query.collision_scene = scene
             result = self.call('calculate_grasps', query)
             if result.success:
                 with self.lock:
@@ -439,16 +498,17 @@ class ManipulationMemory:
             destination = self.destination
             geometry = self.call(
                 'prepare_held_scene',
-                srv.PrepareHeldScene.Request(
+                mapped_inputs(self, srv.PrepareHeldScene.Request(
                     observation_header=observation.cloud.header,
                     cloud=observation.cloud,
                     source_mask=record['mask'],
                     semantic_mask=record['semantic_mask'],
                     destination_mask=target.mask,
-                ),
+                ), destination['name']),
             )
             if not geometry.success:
                 raise RuntimeError(geometry.status)
+            check_capacity(self, geometry.source_object_cloud, destination['name'])
             # Explicit mapped-scene snapshot: original destination provenance
             # stays in geometry_source_header/memory, not relabeled as a capture.
             mapped_destination = copy.deepcopy(destination['cloud'])
@@ -471,6 +531,7 @@ class ManipulationMemory:
                     object_cloud=geometry.source_object_cloud,
                     scene_cloud=geometry.collision_scene,
                     destination_cloud=mapped_destination,
+                    destination_base_cloud=destination['base_cloud'],
                     bottom_cloud=bottom_cloud,
                     orientation_policy=request.orientation_policy or 'upright',
                     support_mode=request.support_mode or 'floor_slots',
@@ -508,6 +569,13 @@ class ManipulationMemory:
                 'object_id': record['object_id'],
                 'memory_revision': record['revision'],
                 'geometry_points': len(record['points']),
+                'placed_objects': len(record.get('placements', ())),
+                'placed_points': len(record.get('placed_points', ())),
+                'placed_sources': [
+                    {'name': item['name'], 'object_id': item['object_id'],
+                     'source_stamp': [item['source_header'].stamp.sec,
+                                      item['source_header'].stamp.nanosec]}
+                    for item in record.get('placements', {}).values()],
                 'grid': record.get('grid'),
                 'grid_state': record.get('grid_state'),
             }
@@ -574,21 +642,13 @@ class ManipulationMemory:
         if name == 'release_placed_object' and response.success:
             session = self.node.execution_api.prepared_grasp_lift
             plan = session.record
+            if not (plan and plan.get('pick_place') and
+                    plan['key'] == request.object_name.casefold()):
+                held = getattr(self.node.execution_api, 'held_motion', None)
+                plan = held.record if held else None
             if not plan or plan.get('phase') != 'RELEASED':
                 return
-            with self.lock:
-                record = self.objects.pop(self.key(request.object_name), None)
-                if record:
-                    p = plan['lift'].selected_candidate.object_pose.pose.position
-                    position = [p.x, p.y, p.z]
-                    self.node.world_state.upsert_object(
-                        record['object_id'], record['name'], position, 'placed', True
-                    )
-                    self.directory[record['object_id']] = {
-                        'name': record['name'],
-                        'position': position,
-                    }
-                    self.revision += 1
+            remember_release(self, request, plan)
 
     def inspect(self, request, response):
         """Return active metadata and the actual pending and completed tasks."""

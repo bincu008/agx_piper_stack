@@ -229,3 +229,39 @@ def test_contact_settling_does_not_accept_persistent_loss(monkeypatch):
     with pytest.raises(RuntimeError, match='force=-0.050000N'):
         held.feedback(held.node.current_joint_states.position[:6], settle_sec=.3)
     assert not events
+
+
+def test_thin_rim_remains_valid_during_held_lift():
+    """The post-close checker uses the same thin-rim geometry as confirmation."""
+    held, events = fixture()
+    held.node.current_gripper_status = SimpleNamespace(width=.00056, force=-.24)
+    result = call(held)
+    assert result.success, result.status
+
+
+def test_held_feedback_uses_sustained_force_evidence_for_brief_dip():
+    """An isolated low reading does not contradict the confirmed stable grasp."""
+    from master_node.contact_evidence import SettledContact
+    held, events = fixture()
+    gate = SettledContact()
+    now = time.monotonic()
+    sample = SimpleNamespace(width=.00056, force=-.25)
+    for i in range(11):
+        stamp = now-.2+i*.02
+        sample.force = -.12 if i == 10 else -.25
+        gate.update(sample, stamp, stamp)
+    held.node.current_gripper_status = sample
+    held.node.gripper_contact_evidence = gate
+    held.feedback([0.]*6)
+    assert not events
+    # Replay confirmed contact followed by sustained load loss, ending now.
+    loss = SettledContact()
+    for i in range(11):
+        stamp = now-.4+i*.02
+        loss.update(SimpleNamespace(width=.00056, force=-.25), stamp, stamp)
+    for i in range(1, 11):
+        stamp = now-.2+i*.02
+        loss.update(SimpleNamespace(width=.00056, force=0.), stamp, stamp)
+    held.node.gripper_contact_evidence = loss
+    with pytest.raises(RuntimeError, match='CONTACT_BELOW_HOLDING_THRESHOLD'):
+        held.feedback([0.]*6)

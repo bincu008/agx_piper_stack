@@ -1,0 +1,21 @@
+# Read-only memory lookup and geometric visibility; never invokes VLM or motion.
+string name
+# object (default) or destination
+string role
+# Optional paired frozen observation; empty means capture through shared API.
+sensor_msgs/PointCloud2 observation_cloud
+geometry_msgs/TransformStamped camera_transform
+---
+bool success
+# READY, LOOK_REQUIRED, LOCATION_UNKNOWN, or explicit input/backend error.
+string status
+string object_id
+uint64 memory_revision
+geometry_msgs/Point position
+bool visible
+bool location_only
+std_msgs/Header observation_header
+uint32 sample_count
+uint32 in_view_count
+uint32 clear_count
+float32 visible_fraction

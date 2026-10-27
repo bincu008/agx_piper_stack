@@ -161,3 +161,23 @@ def test_trajectory_claims_master_state_and_restores_it_after_failure():
         ExecuteTrajectory.Response())
     assert not result.success and result.status == 'TRAJECTORY_EXECUTION_FAILED'
     assert seen == ['BUSY', 'MOVING'] and node.state == 'IDLE'
+
+
+def test_trajectory_does_not_recommand_initial_measured_sample():
+    """A measured start anchors the path but is not an actuator target."""
+    api = object.__new__(ExecutionAPI)
+    api._lock = threading.Lock()
+    commanded = []
+    api.node = SimpleNamespace(
+        allow_physical_grasp_execution=True, state='IDLE', _held_object=None,
+        physical_collision_detected=False, collision_detected=False,
+        joint_limits=[(-1., 1.)] * 6,
+        current_joint_states=SimpleNamespace(position=[0.] * 6),
+        step_runtime=SimpleNamespace(_call=lambda *args: CheckAndReplan.Response(
+            success=True, path_flat=[0.] * 6 + [.1] * 6)),
+        move_arm_to=lambda joints: (commanded.append(joints), True)[1])
+    result = api._trajectory(ExecuteTrajectory.Request(
+        path_flat=[0.] * 6 + [.1] * 6, expected_start_joints=[0.] * 6),
+        ExecuteTrajectory.Response())
+    assert result.success and len(commanded) == 1
+    assert commanded[0] == pytest.approx([.1] * 6)

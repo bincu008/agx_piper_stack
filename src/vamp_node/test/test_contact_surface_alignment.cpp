@@ -231,3 +231,38 @@ TEST(ShallowGrasp, RejectsRecordedOriginalFallbackBelowTable) {
     EXPECT_TRUE(vamp_node::measuredPadContactsSupported(target,contacts,.05211444F,.07F,.02F,-.0615F));
   }
 }
+
+TEST(FinalContactGeometry, RejectsAirGapAndContactsOnSameFingerSide) {
+  const Eigen::Isometry3f pose=Eigen::Isometry3f::Identity();
+  EXPECT_NEAR(vamp_node::finalJawFaceError(pose,{0.F,.01F,0.F},
+    {0.F,-.01F,0.F},.02F),0.F,1.e-6F);
+  EXPECT_GT(vamp_node::finalJawFaceError(pose,{0.F,.01F,0.F},
+    {0.F,-.01F,0.F},.084F),.003F);
+  EXPECT_FALSE(std::isfinite(vamp_node::finalJawFaceError(pose,
+    {0.F,.01F,0.F},{0.F,.02F,0.F},.02F)));
+}
+TEST(FinalContactGeometry, UsesFinalRigidPoseAndAllowsSwappedFingerLabels) {
+  Eigen::Isometry3f pose=Eigen::Isometry3f::Identity();
+  pose.linear()=Eigen::AngleAxisf(.8F,Eigen::Vector3f::UnitX()).toRotationMatrix();
+  pose.translation()=Eigen::Vector3f(.4F,.1F,.1F);
+  const Eigen::Vector3f a=pose*Eigen::Vector3f(0.F,.01F,.03F);
+  const Eigen::Vector3f b=pose*Eigen::Vector3f(0.F,-.01F,.03F);
+  EXPECT_LT(vamp_node::finalJawFaceError(pose,a,b,.02F),1.e-6F);
+  EXPECT_LT(vamp_node::finalJawFaceError(pose,b,a,.02F),1.e-6F);
+}
+TEST(FinalContactGeometry, WideFinalGraspCannotKeepEarlierPinchLabel) {
+  EXPECT_FALSE(vamp_node::finalGeometryRemainsPinch(true,.084F,
+    {0.F,.042F,0.F},{0.F,-.042F,0.F},.05F));
+  EXPECT_TRUE(vamp_node::finalGeometryRemainsPinch(true,.02F,
+    {0.F,.01F,0.F},{0.F,-.01F,0.F},.05F));
+  EXPECT_FALSE(vamp_node::finalGeometryRemainsPinch(false,.02F,
+    {0.F,.01F,0.F},{0.F,-.01F,0.F},.05F));
+  EXPECT_FALSE(vamp_node::finalGeometryRemainsPinch(true,.02F,
+    {0.F,.01F,.06F},{0.F,-.01F,0.F},.05F));
+}
+TEST(FinalContactGeometry, PinchPreferenceSurvivesQualityAndPathScores) {
+  EXPECT_TRUE(vamp_node::preferFinalPinch(true,-10.F,false,10.F));
+  EXPECT_FALSE(vamp_node::preferFinalPinch(false,10.F,true,-10.F));
+  EXPECT_TRUE(vamp_node::preferFinalPinch(true,2.F,true,1.F));
+  EXPECT_FALSE(vamp_node::preferFinalPinch(true,1.F,true,1.F));
+}

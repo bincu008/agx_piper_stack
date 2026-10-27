@@ -6,6 +6,8 @@ std_msgs/Header observation_header
 geometry_msgs/Point source_object_center
 my_actions/PlacementCandidate[] candidates
 sensor_msgs/Image destination_mask
+# Optional complete response from this master's plan_next_best_view API.
+uint8[] look_plan_cdr
 ---
 bool success
 string status

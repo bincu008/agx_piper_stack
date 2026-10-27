@@ -8,6 +8,33 @@
 #include <limits>
 
 namespace vamp_node {
+// Recheck the actual FK pose: being inside the jaw volume does not mean
+// the measured surface touches either inner finger face.
+inline float finalJawFaceError(const Eigen::Isometry3f &pose,
+    const Eigen::Vector3f &left, const Eigen::Vector3f &right, float opening) {
+  if (!pose.matrix().allFinite() || !left.allFinite() || !right.allFinite() ||
+      !std::isfinite(opening) || opening <= 0.F)
+    return std::numeric_limits<float>::infinity();
+  const float a = (pose.inverse()*left).y();
+  const float b = (pose.inverse()*right).y();
+  if (a*b >= 0.F) return std::numeric_limits<float>::infinity();
+  return std::max(std::abs(std::abs(a)-opening*.5F),
+    std::abs(std::abs(b)-opening*.5F));
+}
+
+inline bool finalGeometryRemainsPinch(bool measured_pinch, float opening,
+    const Eigen::Vector3f &left, const Eigen::Vector3f &right, float limit) {
+  return measured_pinch && left.allFinite() && right.allFinite() &&
+    std::isfinite(opening) && opening > 0.F && std::isfinite(limit) && limit > 0.F &&
+    std::max(opening,(left-right).norm()) <= limit+1.e-6F;
+}
+
+// A quality/path score must not reverse the operator's pinch preference.
+inline bool preferFinalPinch(bool left_pinch, float left_score,
+    bool right_pinch, float right_score) {
+  return left_pinch != right_pinch ? left_pinch : left_score > right_score;
+}
+
 // Inner pad normal is the jaw-closing axis (tool Y), not finger length Z.
 inline float padSurfaceAngle(const Eigen::Vector3f &jaw,
     const Eigen::Vector3f &left, const Eigen::Vector3f &right) {

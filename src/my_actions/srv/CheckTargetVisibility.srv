@@ -1,0 +1,16 @@
+# Geometry backend: all XYZ is in base_link, camera transform is manual FK*X.
+sensor_msgs/PointCloud2 scene_cloud
+sensor_msgs/PointCloud2 target_cloud
+# Used only when target_cloud is empty (directory-only memory).
+geometry_msgs/Point target_position
+geometry_msgs/TransformStamped camera_transform
+sensor_msgs/CameraInfo camera_info
+---
+bool success
+string status
+bool visible
+std_msgs/Header observation_header
+uint32 sample_count
+uint32 in_view_count
+uint32 clear_count
+float32 visible_fraction

@@ -4,6 +4,10 @@ sensor_msgs/Image source_mask
 # Original semantic mask bounds source seam recovery; neighbors stay blocking.
 sensor_msgs/Image semantic_mask
 sensor_msgs/Image destination_mask
+# Optional remembered destination inputs in base_link, retaining source headers.
+# The base freezes tray support; placed geometry is always an obstacle.
+sensor_msgs/PointCloud2 destination_base_cloud
+sensor_msgs/PointCloud2 placed_scene_cloud
 ---
 bool success
 string status

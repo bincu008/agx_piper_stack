@@ -100,9 +100,10 @@ def test_pick_place_recipe_plans_first_and_executes_cached_public_stages_only():
     cache = next(s for s in planned if s.step_id == 'cache_grasp')
     assert cache.bindings[0].source_field == 'candidates'
     execute = execute_cached_pick_place('beige cup, grasp its body')
-    assert [s.step_id for s in execute] == ['prepare_motion', 'check_motion', 'pregrasp',
+    assert [s.step_id for s in execute] == ['prepare_motion', 'check_motion', 'look', 'pregrasp',
         'gripper_open', 'approach', 'gripper_close', 'lift', 'transfer', 'descent',
-        'release', 'commit_slots']
+        'release', 'commit_slots', 'withdrawal', 'move_tray_view',
+        'observe_tray']
     assert all(s.function_name not in ('ground_object', 'calculate_grasps', 'plan_placement')
                for s in execute)
 
@@ -112,11 +113,62 @@ def test_queued_pick_place_binds_execution_to_calculation_revision():
     steps = pick_and_place('striped white plate')
     ids = [s.step_id for s in steps]
     assert len(ids) == len(set(ids))
-    boundary = ids.index('pregrasp')
-    assert ids[boundary:] == ['pregrasp', 'gripper_open', 'approach', 'gripper_close',
-                              'lift', 'transfer', 'descent', 'release', 'commit_slots']
+    boundary = ids.index('look')
+    assert ids[boundary:] == ['look', 'pregrasp', 'gripper_open', 'approach', 'gripper_close',
+                              'lift', 'transfer', 'descent', 'release', 'commit_slots',
+                              'withdrawal', 'move_tray_view', 'observe_tray']
     assert steps[boundary - 1].function_name == 'validate_prepared_pick_place'
     assert all(s.failure_policy == 'stop' for s in steps)
-    for s in steps[boundary:-1]:
+    for s in steps[boundary:ids.index('commit_slots')]:
         assert any(b.target_field == 'plan_revision' and b.source_step_id == 'prepare_motion'
                    for b in s.bindings)
+
+
+def test_complete_pick_place_has_public_look_before_pregrasp():
+    """The standard object recipe must include a revision-bound first view."""
+    from task_pipeline.recipes import prepare_pick_place, execute_cached_pick_place
+    calculation = prepare_pick_place('cup')
+    names = [s.step_id for s in calculation]
+    assert names.index('plan_look') < names.index('prepare_motion')
+    prepare = next(s for s in calculation if s.step_id == 'prepare_motion')
+    assert any(b.target_field == 'look_plan_cdr' and b.source_step_id == 'plan_look'
+               and b.source_field == '@response_cdr' for b in prepare.bindings)
+    execution = execute_cached_pick_place('cup')
+    names = [s.step_id for s in execution]
+    assert names.index('look') < names.index('pregrasp')
+
+
+def test_memory_view_recapture_and_single_target_refresh_precede_grasp():
+    """The final grasp input must belong to the post-view capture."""
+    from rclpy.serialization import deserialize_message
+    from my_actions import srv
+    from task_pipeline.recipes import with_active_memory, prepare_pick_place
+    steps = with_active_memory(prepare_pick_place('cup', 'tray'), 'cup', 'tray',
+                               ['bowl', 'cup'], allow_view_motion=True)
+    ids = [s.step_id for s in steps]
+    assert ids[:5] == ['observe_initial', 'scene_memory', 'acquire_object_view',
+                      'observe', 'verify_object_view']
+    assert ids.index('verify_object_view') < ids.index('segment_cup') < ids.index('grasps')
+    batch = next(s for s in steps if s.step_id == 'scene_memory')
+    assert batch.function_name == 'ensure_scene_memory'
+    request = deserialize_message(bytes(batch.request_cdr), srv.PerceiveScene.Request)
+    assert request.object_names == ['bowl', 'cup'] and request.destination_name == 'tray'
+    assert {b.source_step_id for b in batch.bindings} == {'observe_initial'}
+    assert next(s for s in steps if s.step_id == 'acquire_object_view').function_name == 'ensure_target_view'
+    target = next(s for s in steps if s.step_id == 'segment_cup')
+    assert target.function_name == 'refresh_active_target'
+    assert {b.source_step_id for b in target.bindings} == {'observe'}
+    assert next(s for s in steps if s.step_id == 'segment_tray').function_name == 'resolve_target'
+
+
+def test_queue_only_acquisition_never_executes_a_camera_move():
+    from task_pipeline.recipes import with_active_memory, pick_and_place
+    steps = with_active_memory(pick_and_place('cup'), 'cup')
+    assert next(s for s in steps if s.step_id == 'acquire_object_view').function_name == 'require_target_view'
+    assert not any(s.function_name == 'ensure_target_view' for s in steps)
+
+
+def test_forced_scene_refresh_keeps_acquisition_before_fresh_target_perception():
+    from task_pipeline.recipes import with_active_memory, prepare_pick_place
+    steps = with_active_memory(prepare_pick_place('cup'), 'cup', refresh_scene=True)
+    assert next(s for s in steps if s.step_id == 'scene_memory').function_name == 'perceive_scene'

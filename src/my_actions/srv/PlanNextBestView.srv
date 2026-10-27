@@ -1,0 +1,19 @@
+# Prefer the target's base-facing, steep top-down side. No actuation.
+string target_name
+# Optional explicit target; empty frame resolves active memory/name-location hints.
+geometry_msgs/PointStamped target
+# Camera-to-target distance, not TCP distance. Zero defaults to 0.45 m.
+float32 camera_distance_m
+# Prepared object pipeline may keep a geometrically suitable current view.
+bool allow_current_view
+---
+bool success
+string status
+uint64 plan_revision
+std_msgs/Header observation_header
+geometry_msgs/PoseStamped camera_pose
+geometry_msgs/PoseStamped tcp_pose
+float32 camera_distance_m
+float64[6] expected_start_joints
+float64[] path_flat
+uint32 candidates_tested

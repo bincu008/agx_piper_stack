@@ -565,16 +565,16 @@ def test_approach_stream_does_not_wait_for_intermediate_joint_arrival(monkeypatc
     def publish(*, arm_positions):
         sent.append(list(arm_positions))
         # Feedback remains at start until final command is issued.
-        if len(sent) == 3:
+        if arm_positions == [.003]*6:
             trial.node.current_joint_states.position = list(arm_positions)
         return True
 
     trial.node._publish_joint_state_command = publish
     target = [.003]*6
     assert trial.stream_approach([target], [0.]*6) == target
-    assert len(sent) == 3
+    assert len(sent) == 2
     assert sent[-1] == target
-    assert clock[0] >= trial.node.joint_feedback_time+.049
+    assert clock[0] >= trial.node.joint_feedback_time+.019
 
 
 def test_approach_stream_stops_before_sending_on_fault():
@@ -617,7 +617,7 @@ def test_pregrasp_does_not_command_initial_out_of_bounds_feedback():
     assert calls == [entry]
 
 
-@pytest.mark.parametrize('stage', ['approach', 'lift'])
+@pytest.mark.parametrize('stage', ['approach', 'lift', 'transfer', 'descent', 'withdrawal', 'retreat'])
 def test_faster_stream_uses_fewer_commands_on_same_validated_edge(monkeypatch, stage):
     trial, _, _ = fixture()
     clock = [0.]
@@ -636,10 +636,14 @@ def test_faster_stream_uses_fewer_commands_on_same_validated_edge(monkeypatch, s
     trial.node._publish_joint_state_command = publish
     target = [.09]*6
     assert trial.stream_approach([target], [0.]*6, stage=stage) == target
-    assert len(sent) == 72  # Previously 90 at 50 Hz and 0.05 rad/s.
-    assert clock[0] == pytest.approx(1.2)  # Previously 1.8 seconds.
+    assert len(sent) == 58  # 100 Hz at 0.1575 rad/s along the same edge.
+    assert clock[0] == pytest.approx(.58)  # Previously .4 seconds.
     assert sent[-1] == target
     assert all(0. <= q <= .09 for sample in sent for q in sample)
+    previous = [0.]*6
+    for sample in sent:
+        assert max(abs(a-b) for a, b in zip(sample, previous)) <= .1575*.01+1.e-9
+        previous = sample
 
 
 def test_plan_lift_clears_placement_batch_policy_before_dispatch():
@@ -655,3 +659,85 @@ def test_plan_lift_clears_placement_batch_policy_before_dispatch():
     assert observed == [('plan_placement', True, 0, False)]
     assert query.validation_batch_size == 8 and query.retry_motion_failures
     assert not events
+
+
+def settling_trial(monkeypatch):
+    """Simulate independent TCP feedback delay without publishing commands."""
+    import copy
+    trial, _, _ = fixture()
+    clock = [time.monotonic()]
+    target = copy.deepcopy(trial.node.current_tcp_pose)
+    target.pose.position.z -= .02
+    trial.node._held_object = 'bowl'
+    trial.execution.held_motion.feedback = lambda *a, **kw: None
+    trial.node._publish_joint_state_command = lambda **kw: pytest.fail('Command while settling')
+    monkeypatch.setattr('master_node.prepared_grasp_lift.time.monotonic', lambda: clock[0])
+    return trial, clock, target
+
+
+def test_endpoint_waits_for_delayed_pose_with_contact_monitoring(monkeypatch):
+    trial, clock, target = settling_trial(monkeypatch)
+    start = clock[0]
+    contacts = []
+    trial.execution.held_motion.feedback = lambda *a, **kw: contacts.append(kw['contact'])
+
+    def sleep(seconds):
+        clock[0] += seconds
+        trial.node.pose_feedback_time = clock[0]
+        if clock[0]-start >= .3:
+            trial.node.current_tcp_pose = target
+
+    monkeypatch.setattr('master_node.prepared_grasp_lift.time.sleep', sleep)
+    trial.check_pose(target, settle=True)
+    assert .3 <= clock[0]-start < .35
+    assert contacts and all(contacts)
+
+
+def test_endpoint_settling_is_bounded_and_reports_error(monkeypatch):
+    trial, clock, target = settling_trial(monkeypatch)
+    start = clock[0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+        trial.node.pose_feedback_time = clock[0]
+
+    monkeypatch.setattr('master_node.prepared_grasp_lift.time.sleep', sleep)
+    with pytest.raises(RuntimeError, match='position_error_m=0.020000'):
+        trial.check_pose(target, settle=True)
+    assert 2. <= clock[0]-start < 2.05
+
+
+@pytest.mark.parametrize('fault', ['ACTIVE_COLLISION', 'HELD_CONTACT_LOST', 'STALE_HARDWARE_FEEDBACK'])
+def test_endpoint_settling_keeps_safety_monitoring(monkeypatch, fault):
+    trial, _, target = settling_trial(monkeypatch)
+
+    def feedback(*args, **kwargs):
+        raise RuntimeError(fault)
+
+    trial.execution.held_motion.feedback = feedback
+    with pytest.raises(RuntimeError, match=fault):
+        trial.check_pose(target, settle=True)
+
+
+def test_matching_but_old_tcp_feedback_must_refresh(monkeypatch):
+    trial, clock, target = settling_trial(monkeypatch)
+    trial.node.current_tcp_pose = target
+    trial.node.pose_feedback_time = clock[0]-.5
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock[0] += seconds
+        trial.node.pose_feedback_time = clock[0]
+
+    monkeypatch.setattr('master_node.prepared_grasp_lift.time.sleep', sleep)
+    trial.check_pose(target, settle=True)
+    assert slept
+
+
+def test_start_pose_checks_do_not_wait_or_relax(monkeypatch):
+    trial, _, target = settling_trial(monkeypatch)
+    monkeypatch.setattr('master_node.prepared_grasp_lift.time.sleep',
+                        lambda _: pytest.fail('Start-state check waited'))
+    with pytest.raises(RuntimeError, match='PREPARED_MOTION_POSE_MISMATCH'):
+        trial.check_pose(target)

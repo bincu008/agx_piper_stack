@@ -830,15 +830,27 @@ envelope of nominal limits and their offset-translated limits. This does not
 expand nominal IK/command bounds, wrap angles, change raw feedback, or bypass
 driver limit enforcement.
 
-Prepared final approach streams prevalidated joint edges at 60 Hz with a
-0.075 rad/s joint timing bound (50% faster than the previous default), rather than waiting at each microstep.
+Prepared final approach streams prevalidated joint edges at 100 Hz with a
+0.1575 rad/s joint timing bound (30% below the previous 0.225 rad/s bound), rather than waiting at each microstep.
+After each motion segment, allow up to 2 seconds for fresh TCP feedback to settle
+within the unchanged pose tolerances. Contact, collision and feedback monitoring
+remain active; this wait sends no additional motion commands.
 Start-state, live feedback/fault and final joint/TCP arrival checks remain active;
 closing is permitted only after final verification. Driver-side smoothing is
 hardware-dependent and has not been verified by offline tests.
 
-Gripper closing confirms contact only after three fresh samples spanning 150 ms
-with a settled aperture (within 0.5 mm) and force magnitude at least 0.2 N. A
-transient closing motor load cannot alone authorize lifting.
+Gripper closing confirms contact after at least three fresh samples spanning
+150 ms, with a settled aperture (within 0.5 mm), opening above 0.1 mm and median
+force magnitude at least 0.2 N over a rolling 250 ms window. Brief force dips
+are tolerated; a reading below 0.1 N, closed jaws, aperture motion or stale
+feedback resets initial acquisition evidence. Once closing has established
+contact, held lift/transfer/descent use a separate 0.1 N holding threshold:
+force loss or closed jaws must persist for 150 ms before rejecting. Feedback
+older than 100 ms rejects holding immediately. Holding never reacquires the
+initial 0.2 N window, and a new gripper command clears its established evidence.
+Failure reports distinguish unestablished contact, stale feedback and sustained
+holding loss. Raw feedback remains unchanged. A transient closing motor load
+cannot alone authorize lifting.
 
 Prepared lift uses the same timed streaming as final approach, retaining live
 held-contact monitoring and final joint/TCP verification. Pre-grasp retains
@@ -1124,10 +1136,13 @@ See [lift/escape API details](docs/STANDARD_PIPELINE_API.md#payload-aware-lift-a
 ### Reusable manipulation memory
 
 The master now keeps up to eight active object clouds and one active destination
-with its grid, plus a small name/location directory. Default `pipeline_task`
-recipes reuse a destination after checking it against current depth. Missing,
-moved or stale geometry is grounded again; calculation failures keep valid data
-available for a quick API retry. No actuator retries are added.
+with its grid, plus a small name/location directory. The destination keeps its
+original tray base and fixed slot IDs until a destination switch or explicit
+forget/reset. Each confirmed release appends the object's cloud at its achieved
+FK pose. Subsequent objects use this merged scene and only unoccupied slots;
+camera movement, occlusion and elapsed time do not rebuild the tray grid.
+Source objects still require fresh observation checks. Calculation failures keep
+valid data available for an API retry. No actuator retries are added.
 
 The master log prints each pipeline step, pending tasks, active object names/XYZ
 and destination name/XYZ. Inspect the same state with:
@@ -1136,6 +1151,132 @@ and destination name/XYZ. Inspect the same state with:
 ros2 service call /pipeline/get_manipulation_memory my_actions/srv/GetManipulationMemory '{}'
 ```
 
-Use `--queue-pick-place` to calculate and leave the physical tasks waiting.
-`--fresh-perception` selects the previous explicit perception recipe.
+Use `--queue-pick-place` to calculate and pause before the first `look` stage,
+leaving all physical tasks waiting. The prepared sequence is look, grasp, lift,
+place and empty-hand clearance retreat. If the target is already geometrically
+visible, look completes without moving; otherwise its path is planned before
+pre-grasp. Retreat clears the released object without requiring a distant tray
+view. The next object gets its own visibility/look decision.
+`--fresh-perception` is retained for compatibility; the standard batch pass
+already refreshes visible objects.
 See [memory APIs and retry examples](docs/STANDARD_PIPELINE_API.md#master-owned-manipulation-memory-2026-10-19).
+
+### Final pinch geometry and selection
+
+Grasp labels are checked against final IK/FK geometry after angle refinement.
+Measured contacts must lie within 3 mm of opposite inner jaw faces; merely lying
+inside the open jaw volume is insufficient. A candidate initially labeled
+`PINCH` becomes `POWER_GRASP` if its final opening or measured contact span
+exceeds the existing `pinch_max_opening_m` limit (default 50 mm).
+Validated pinches precede other grasps in both quality and path ranking; existing
+ranking orders grasps within each group. Complete motion preparation tries that
+ordered pool, retaining power grasps as fallback when pinches cannot complete.
+This preference neither forces a rim contact nor guarantees a feasible pinch.
+Use an explicit `grasp its rim` description when the contact region must be the rim.
+
+`[PREPARED GRASP SELECTED]` reports the final `skill`, `opening` in millimetres,
+and angle selection. Results expose `FINAL_CONTACT_FACES_VALIDATED` and
+`FINAL_SKILL`; these are geometric checks, not physical contact confirmation.
+Restart the reasoning stack and prepare again after updating the planner;
+previously cached plans and latched previews are not retroactively corrected.
+
+### Focused final pick/place review
+
+Launch `ros2 launch vamp_node grasp_debug_rviz.launch.py` after restarting the
+reasoning stack with the updated master. The default view contains the selected
+complete grasp, actual placement gripper, source object, tray and slot grid.
+Grey shows the requested slot object; cyan shows the object attached to the
+actual calculated placement pose, including any relaxed IK offset, rotation and
+release clearance. The offset label compares these poses. These are planning
+predictions, not measured object motion.
+
+The view clears on a new preparation. A failed full plan has no final accepted
+grasp/placement to display, even when individual grasp proposals passed.
+Benchmark and candidate-trial layers are removed; collision spheres are optional
+and disabled by default. See the final prepared-plan review section in
+[the API guide](docs/STANDARD_PIPELINE_API.md#final-prepared-plan-review-in-rviz).
+
+### Post-placement camera view
+
+Prepared pick/place preparation plans clearance against the predicted placed
+scene. Execution releases the object, commits its slots, follows a cached
+empty-hand withdrawal, then a short clearance retreat and captures again. Both
+paths are calculated before execution. The clearance endpoint need not show
+the tray. A separate next-best-view request can plan a distant view; its ranking
+prefers looking steeply downward from the tray's base-facing side, at 45 cm
+with bounded reachable alternatives.
+
+Public `/pipeline/plan_next_best_view` calculates without motion;
+`/pipeline/execute_next_best_view` executes its revision-bound empty-hand plan
+under the existing physical gate. See [API details](docs/STANDARD_PIPELINE_API.md#next-best-view-after-placement).
+A failed camera task preserves the completed placement and occupied slots.
+
+### Check whether a remembered target is in view
+
+Use the read-only `check_target_view` API before choosing a camera movement:
+
+```bash
+ros2 service call /pipeline/check_target_view my_actions/srv/CheckTargetView \
+  "{name: 'small white bowl at bottom left', role: 'object'}"
+```
+
+It returns `READY`, `LOOK_REQUIRED` or `LOCATION_UNKNOWN` using remembered
+geometry, the synchronized manual camera transform, camera intrinsics and
+OctoMap ray casting. It makes no VLM requests and does not move the arm. Use
+`role: 'destination'` for the tray; its grid/reservations remain unchanged.
+`READY` is expected visibility, not confirmation that the object is still there.
+See [the API contract](docs/STANDARD_PIPELINE_API.md#remembered-target-visibility-read-only)
+for counts, directory-only checks and explicit observation bindings.
+
+### Fixed bowl-then-cup mock API check
+
+This calculation-only benchmark grounds the lower-left bowl, beige cup and tray,
+checks current visibility, then invokes the shared ordered layout planner to
+calculate bowl followed by cup placement. It uses real configured VLM/EdgeSAM/HGGD
+inference. The layout planner removes each accepted source and inserts its actual
+FK-derived predicted placed geometry before calculating the next object; slots
+remain exclusive. Physical memory is not falsely updated as a confirmed release.
+
+Start mock replay and the reasoning stack in separate terminals, both with
+`ROS_DOMAIN_ID=87`; keep `allow_physical_grasp_execution:=false`. Use the default
+scene-1 snapshot and `inference_profile:=lmstudio`. Then run:
+
+```bash
+source install/setup.bash
+export ROS_DOMAIN_ID=87
+ros2 run task_pipeline mock_bowl_cup --lift-distance 0.20
+```
+
+The command rejects missing mock replay, visible hardware driver nodes, or an
+enabled physical gate. It resets this isolated test's slot reservations and stops
+on a failed object. It writes a timestamped report under
+`~/agx_piper_data/reports/mock_bowl_cup/`, including ordered API start/end/runtime,
+nested API traces, per-grasp validation attempts, scene checks and diagnostic CDRs.
+A partial layout exits nonzero. Failed planning responses are saved too.
+The benchmark defaults to a 20 cm lift (`--lift-distance 0.20`); the general
+layout API retains a 5 cm default when its height is unset. Successful held plans
+are checked for the requested vertical clearance. Use
+`--output /absolute/new/directory` to choose a fresh report directory.
+
+This is an ordered virtual-placement benchmark, not the completed multi-object
+physical recipe: it does not execute camera views, approach, grasp/release,
+withdrawal or retreat, and does not create an executable two-object session.
+A `LOOK_REQUIRED` decision stops this fixed-view replay rather than pretending
+that the replay camera moved. Held lift/transfer/descent calculations retain the
+operator's configured collision exceptions and report their response markers.
+
+### Perceive all manipulation targets together
+
+The standard `pipeline_task` command captures once, then calls `perceive_scene`
+before calculating any grasp. Presence and bounding-box prompts each ask about
+**both the bowl and cup plus the destination**. Each observed target is segmented
+and stored in master memory; the selected object is then used for manipulation.
+Single-object perception APIs remain available for explicit callers.
+
+Edit [the default target inventory](src/master_node/config/perception/scene_targets.yaml)
+for another scene, or repeat `--scene-object` to supply the complete desired list.
+The current `--object` and `--destination` are always included. Existing tray
+geometry, placed-object obstacles and occupied slots survive repeated perception.
+Unseen objects retain location hints but cannot supply stale grasp clouds.
+This initial inventory is calculation only; recovering an unseen object still
+requires the separate guarded look-at operation and a new capture.

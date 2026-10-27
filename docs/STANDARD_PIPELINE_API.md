@@ -666,18 +666,19 @@ remains full. Rebuild consumers and restart the reasoning stack after this chang
 
 `prepare_pick_place` uses the same source-linked grasp pool and public
 `prepare_held_scene`, `plan_final_approach`, `plan_placement` (full-motion mode)
-and `plan_motion` operations. It caches only a complete pregrasp, approach,
-lift, transfer and descent plan after command-limit/continuity checks and a
+and `plan_motion` operations. It caches only complete look, pregrasp, approach,
+lift, transfer, descent, withdrawal and retreat paths after command-limit/continuity checks and a
 non-consuming floor-slot commit check. No actuator calls or slot reservations
 occur during preparation. `get_prepared_pick_place` and
 `validate_prepared_pick_place` expose that same revision and selected object pose.
 
 `pipeline_task --queue-pick-place --object 'striped white plate' --destination tray`
-constructs the complete master queue and pauses before `pregrasp`. Its remaining
-operations are, in order: `execute_plan(pregrasp)`, `gripper_open`,
+constructs the complete master queue and pauses before `look`. Its remaining
+operations are, in order: `execute_plan(look)`, `execute_plan(pregrasp)`, `gripper_open`,
 `execute_plan(approach)`, `gripper_close`, `execute_plan(lift)`,
 `execute_placement_transfer`, `execute_placement_descent`, `release_placed_object`,
-then `commit_floor_slots`. All physical stages share the same prepared revision
+then `commit_floor_slots`, `execute_withdrawal`, `execute_placement_retreat`,
+and `capture_observation`. All physical stages share the same prepared revision
 and ordered session; they never run IK or replan. `PAUSED_AT_STEP_BOUNDARY`
 means calculation completed and pending stages were retained, not executed.
 
@@ -783,16 +784,31 @@ active destination retains its source geometry and grid. Switching destinations
 releases old active geometry and unexecuted prepared/grid state, retaining its
 hint. Hints guide identity; they are not trusted manipulation geometry.
 
-Every normal resolve validates cached geometry against a fresh synchronized
-manual-FK/X observation. Unchanged destinations keep their original geometry and
-grid IDs; the current mask belongs to the current observation. Old geometry is
-explicitly mapped into the current logical planning scene, not claimed as a new
-camera capture. Depth evidence, camera viewpoint (for grasp RGB-D), calibration
-or age mismatch triggers inference. Location matching cannot prove semantic
-identity after an identical-looking replacement; use `refresh_active_target`
-when external changes are known. Reuse is bounded to five minutes since the
-last successful resolve; direct grasp/search retries require source verification
-within 60 seconds. Backend source/cache expiry can still require refresh.
+Object resolves validate cached geometry against a fresh synchronized manual-FK/X
+observation; object RGB-D/viewpoint and age checks still apply. The active
+destination retains its immutable tray base, merged placed-object geometry and
+frozen grid until a destination switch or explicit forget/reset. Looking away,
+occlusion, `refresh_active_target` or elapsed time does not silently discard it.
+A calibration mismatch blocks reuse and requires an explicit destination reset.
+When external tray changes are known, forget and resolve it again.
+
+After a confirmed `release_placed_object`, the exact prepared source cloud is
+transformed by the achieved FK end-effector pose and cached grasp attachment,
+then appended once to the destination. Repeated release results do not duplicate
+geometry. A failed release or calculation never merges geometry. The composite
+cloud retains the original map header; each placed source retains its own source
+header in memory metadata. Its `placed` field distinguishes tray base (0) from
+placed objects (1); this is a derived map, not a fresh camera capture.
+
+`PrepareHeldScene.destination_base_cloud` and `placed_scene_cloud` pass that map
+explicitly into the frozen collision scene, including when the tray is outside
+the current image. Placed points remain obstacles, without floor-contact labels.
+`SearchPlacements.destination_base_cloud` keeps support/grid identity anchored to
+the original tray while `destination_cloud` contains the merged geometry. Grid
+IDs and reservations remain fixed; later searches exclude occupied cells.
+Memory permits at most 128 placed objects and 500,000 destination points, checked
+before preparing a new placement rather than silently evicting obstacles.
+Direct source grasp/search retries still require verification within 60 seconds.
 
 Calculation failures retain active geometry for another API call. Queued retry
 steps must use a new step ID/context because completed step IDs are idempotent.
@@ -823,3 +839,324 @@ A second CLI command for another object reuses the verified tray. VLM object and
 destination resolution uses the same public memory APIs; its legacy visibility/
 NBV behavior remains separate. Presence/ground/segment backend calls retain
 individual timing/traces even though `resolve_target` is a composite API.
+
+### Final prepared-plan review in RViz
+
+`master_node/prepared_plan_review.py` publishes only after the complete prepared
+pick/place plan passes. New preparations and resets clear all final review
+outputs, including on failure. Visualization failure is logged separately and
+cannot invalidate an otherwise complete motion plan.
+
+| Topic | Display |
+| --- | --- |
+| `/pipeline/prepared_grasp` | Actual selected grasp axes/fingers, using the retained candidate and VAMP's returned physical finger dimensions. |
+| `/pipeline/prepared_placement` | Achievable placement tool axes/fingers and positional/angular offset from the requested slot pose. |
+| `/pipeline/prepared_nominal_object_cloud` | Grey object cloud transformed to the requested slot pose. |
+| `/pipeline/prepared_placed_object_cloud` | Cyan object cloud transformed by placement FK × inverse grasp FK; includes accepted position/orientation deviation and release clearance. |
+
+Both cloud displays use the same frozen source geometry and its observation
+header. The final grasp is the actual attachment pose returned by the held-motion
+backend, including final-approach FK residuals. Finger poses/dimensions come from
+the accepted backend response; no second TCP/mesh calibration or TF lookup is
+introduced. These are predicted achieved poses from calculated joints, not
+measured post-execution object positions or a physics simulation.
+
+`ros2 launch vamp_node grasp_debug_rviz.launch.py` now defaults to this focused
+review, source object, tray and floor slots. Benchmark, rejected-trial, candidate
+pool, support-surface duplicates and coarse obstacle displays are removed from
+this configuration. Collision spheres remain an optional disabled display.
+The separate angle-review configuration remains available for detailed grasp
+diagnostics. Existing backend debug topics remain callable.
+
+Accepted grasp proposals alone do not produce a final executable pose. If all
+complete-plan trials fail, final review stays empty; inspect the pipeline failure
+rather than interpreting an old candidate marker as accepted motion.
+
+## Next best view after placement
+
+`plan_next_best_view` (`my_actions/srv/PlanNextBestView`) captures a fresh scene,
+resolves `target_name` from active memory/location hints (or accepts an explicit
+`target` PointStamped in base_link), ranks camera views, solves the calibrated
+optical-to-TCP pose and asks the existing VAMP planner for an empty-hand path.
+It performs no motion. The preference is 15° from vertical toward base_link;
+occlusion, IK and full robot/scene collision checks still apply. A hint selects
+where to look; it is not reusable grasp geometry. After release, a recipe without
+active memory can use the released object's placement position as a tray-view hint.
+
+`camera_distance_m` is camera-to-target distance, default 0.45 m, accepted range
+0.30–0.65 m. Bounded alternatives shorten the requested radius by 5/10 cm and
+try at most eight views per radius within a 15-second between-calls budget.
+The response includes plan_revision, expected_start_joints, path_flat,
+candidates_tested, source header and desired camera/TCP poses. These poses are
+IK targets, not measured camera feedback. A blocking backend call may exceed
+the between-calls budget.
+
+`execute_next_best_view` (`my_actions/srv/HeldMotionStage`) accepts that
+plan_revision and optionally the matching target name in object_name. It checks
+empty-hand ownership, fresh feedback, the physical execution gate, a 60-second
+plan lifetime and unchanged start joints. The single-use plan delegates to the
+shared execute_trajectory API, including its existing scene revalidation/replanning.
+An uncertain actuator outcome is not automatically retried. Legacy look_at_target
+now delegates to these same two operations.
+
+The standard prepared pick/place recipe plans the retreat **during preparation**.
+It removes the source object, inserts its achieved placement cloud using actual
+placement FK × inverse grasp FK, and preserves all other scene geometry and
+source timestamps. `plan_camera_retreat` (`my_actions/srv/PlanCameraRetreat`)
+uses `clearance_only=true` for the standard recipe: a short, freely oriented
+empty-hand clearance path from the withdrawal endpoint, against that immutable
+predicted scene with the released jaw opening. A distant camera pose is optional
+through the standalone view APIs; it is not a placement completion requirement. Full arm, finger,
+self, joint-limit and dense edge checks remain active. A missing retreat rejects
+preparation before any actuator command. The same master-owned prepared record
+stores the empty-hand withdrawal and retreat paths and publishes all four milestone endpoints before execution.
+
+After release, the public sequence is:
+
+1. release_placed_object (feedback-confirmed).
+2. commit_floor_slots (for floor_slots).
+3. execute_withdrawal (bind plan_revision from prepare_motion).
+4. execute_placement_retreat (same revision, after withdrawal).
+5. capture_observation (after clearance; this view is not guaranteed to show the tray).
+
+For a matching prepared pick/place revision, execute_placement_retreat verifies
+release, empty hand, hardware feedback/start pose and the active session timeout;
+it streams the frozen path without capture, IK or replanning. It marks the retreat
+completed once and exposes it through get_execution_state. Standalone next-view
+planning/execution remains available separately as described above. An unknown
+actuator outcome prohibits automatic retry; completed placement and reservations
+remain recorded even if retreat fails.
+
+Calculation-only example after resolving the tray into active memory:
+
+```bash
+ros2 service call /pipeline/plan_next_best_view my_actions/srv/PlanNextBestView \
+  "{target_name: tray, camera_distance_m: 0.45}"
+```
+
+Execution is a separate physical action: use execute_next_best_view with the
+returned revision only after reviewing the plan and enabling the physical gate.
+
+### RViz motion milestones
+
+`ros2 launch vamp_node grasp_debug_rviz.launch.py` shows numbered endpoint
+markers: **1 Grasp**, **2 Lift**, **3 Placement**, **4 Clearance retreat (TCP)**.
+The topics are `/pipeline/prepared_grasp`, `/pipeline/prepared_lift`,
+`/pipeline/prepared_placement` and `/pipeline/next_view_endpoint`. Each displays
+only its final pose and RGB tool axes, without intermediate trajectory samples.
+Object clouds and the destination grid remain visible. Placement uses the
+accepted FK endpoint; the prepared retreat marker is the accepted FK TCP endpoint (standalone views
+show their desired IK TCP endpoint).
+
+Grasp/lift/placement appear after complete preparation. The clearance endpoint is calculated and published during complete pick/place
+preparation, before physical motion. Its TCP comes from the accepted retreat FK. New
+preparation/reset clears the preceding view, and a failed view replacement clears
+its endpoint. Markers show planned endpoints, not measured execution progress.
+Restart the reasoning stack and reopen the RViz launch to load these displays.
+
+### Empty-hand lift / release withdrawal
+
+Operator update (2026-10-20): the existing `placement_bypass_robot_environment_during_lift` flag (default true) also bypasses robot/finger-versus-scene checks for the initial released state and the short empty-hand withdrawal. Self collision, nominal joint limits, IK, no-descending and dense edge checks remain active. Results explicitly expose `WITHDRAWAL_ROBOT_ENVIRONMENT_CHECK_BYPASSED`; this is not scene-collision validated withdrawal. The subsequent clearance retreat restores full scene checking and must pass before accepting a complete plan. Set the existing flag false to restore the contact-separation policy described below. No new launch argument is introduced.
+
+
+`plan_lift` retains the PlanPlacement schema and adds an explicit `empty_hand`
+mode. Supply `start_joints`, `jaw_opening_m`, `use_layout_scene=true` and an
+immutable `placement_scene` in base_link. Leave source_object_cloud empty: this
+mode never attaches an object. `lift_distance_m` defaults to 5 cm in this mode;
+accepted empty-hand heights are 1–10 cm. Held-object mode is unchanged.
+The result uses lift_path_flat, lift_ee_pose, lift_joints and motion_status.
+
+For release departure, the predicted scene may include a UINT8
+`released_object` field: 1 only for samples belonging to the stationary object
+just placed, 0 for all other geometry. The initial finger contact region includes only released-object samples
+within the finger sphere/mesh bounds plus a 2 mm proximity shell. During the
+first 3 cm of TCP travel, contacts may shift among samples in that frozen region.
+The sum of squared padded penetration depths (maximum per sample across fingers)
+may not exceed its original value (plus bounded numerical slack). Tangential
+sliding or slow separation is allowed within the frozen contact region for at
+most 3 cm; a prescribed per-millimetre decrease is not required. The initial geometric cap
+is 30 mm in the padded sphere model; per-sample overlap cannot exceed the initial
+maximum by more than 2 mm. Neither quantity measures physical penetration.
+New points outside that region and all neighboring-object contacts stay blocking.
+Arm/wrist/palm and self checks remain active. This is an explicit contact
+separation policy, not a noise classifier or the attached-object sparse budget.
+The terminal
+withdrawal pose must pass complete scene collision checks. IK, nominal joint
+bounds and <=0.005 rad / <=2 mm sampled edges remain validated.
+Withdrawal IK uses 0.2 mm / 0.003 rad tolerances so small departures do not
+introduce unintended orientation changes against the released surface.
+
+Withdrawal tries vertical/reverse-approach paths first, then bounded two-leg escape paths: 1.5 or 2.5 cm along the reversed approach or initial contact normals, followed by the requested rise. No route may descend; the same frozen contact allowance and fully clear endpoint apply. `OUTWARD_WITHDRAWAL_USED` identifies a two-leg route.
+
+Prepared pick/place uses a 3 cm empty-hand withdrawal and then plans the distant
+view from that cleared endpoint. Both segments belong to the same prepared
+revision and must pass before preparation succeeds. Public execution order is:
+
+`release_placed_object → commit_floor_slots → execute_withdrawal → execute_placement_retreat → capture_observation`.
+
+`execute_withdrawal` uses HeldMotionStage and the prepared revision, requires
+confirmed release and fresh empty-hand feedback, streams only the cached segment,
+and restores speed. Retreat cannot start before withdrawal completes. Neither
+execution operation captures, solves IK or replans. Unknown actuator outcomes
+are never automatically retried. `/pipeline/prepared_withdrawal` shows the added
+`3b Withdrawal (empty)` milestone in the standard RViz launch.
+
+### Remembered-target visibility (read-only)
+
+`/pipeline/check_target_view` (`my_actions/srv/CheckTargetView`) accepts `name`
+(or an object ID) and `role` (`object`, default, or `destination`). It reads the
+master's active geometry/directory and captures a fresh synchronized observation
+through the shared API. Optional paired `observation_cloud` and `camera_transform`
+let a recipe bind an existing `capture_observation` result without capturing twice.
+Camera intrinsics come from the master's CameraInfo subscription and must match
+the registered cloud dimensions/optical frame. No VLM inference, segmentation,
+memory mutation, grid reservation or actuator operation occurs in this API.
+
+- `READY`: at least 60% of up to 64 sampled remembered surface points are in
+  camera range/field of view and have clear rays.
+- `LOOK_REQUIRED`: the geometric assessment completed, but coverage is insufficient.
+- `LOCATION_UNKNOWN`: no unique remembered location is available, or active
+  geometry belongs to a different hand-eye calibration.
+- Invalid input, capture failure or missing camera calibration returns
+  `success=false` and an explicit error. The three decisions above return
+  `success=true`: callers must branch on `status`, not just success.
+
+Results include object ID, memory revision, position, observation header,
+sample/in-view/clear counts and visible fraction. Directory-only entries use one
+center ray and expose `location_only=true`; they cannot establish whole-object
+coverage. `READY` means expected geometric visibility, not that the object still
+exists, is correctly identified or has usable grasp depth. Fresh observation and
+target resolution/segmentation remain required before manipulation.
+
+The shared `/pipeline/check_target_visibility`
+(`my_actions/srv/CheckTargetVisibility`) geometry backend runs in ActiveVision.
+It reuses OctoMap `castRay`, already used by next-view search. It constructs an
+immutable 5 mm occupancy tree from the supplied current observation, excludes
+only cells occupied by the remembered target cloud, and ends rays 10 mm before
+their surface samples. Other geometry remains blocking. Unknown space is treated
+as transparent, so this API is not collision clearance certification. Optical
+range is 5 cm–1 m, matching full-resolution observation ingress. Scene and manual
+FK*X transform headers must match exactly; remembered target geometry retains its
+original header. The accumulated obstacle map, collision planner and existing
+next-view policy are unchanged. No TF lookups or extra perception scaling occur.
+
+Example after the target has been resolved into memory:
+
+```bash
+ros2 service call /pipeline/check_target_view my_actions/srv/CheckTargetView \
+  "{name: 'small white bowl at bottom left', role: 'object'}"
+```
+
+This exposes a decision API only. Recipes do not automatically execute look-at
+motion or a new multi-object coordinator when the result is `LOOK_REQUIRED`.
+
+### Fixed scene-1 bowl/cup replay benchmark
+
+`ros2 run task_pipeline mock_bowl_cup` uses the catalog's `run_step` endpoint and
+master result store for capture, pins, memory resolution, visibility and ordered
+`plan_layout`. It calculates lower-left bowl then beige cup with real configured
+inference. Full held lift/transfer/descent checks occur inside the shared layout
+API; they do not cover an executable multi-object approach/retreat session.
+Physical memory is not marked released by virtual placement. Failed objects stop
+this benchmark, remain failures and do not consume cells. Later diagnostics only
+read slots. See README for isolation and output location. Public response failures
+are recorded with their CDR, candidate attempts and scene provenance; a failed
+cup may leave the successful bowl's virtual slot reserved for inspection.
+
+
+`PlanObjectLayout.lift_distance_m` requests the held-object lift before transfer.
+Zero retains the legacy 5 cm default; explicit values must be finite and positive.
+The mock bowl/cup runner defaults to 0.20 m and checks the returned FK lift height.
+This does not shorten the motion to force success or enable actuator execution.
+
+### Guided lift inside full-plan candidate selection
+
+`plan_lift` and the held-motion part of `plan_placement` first try coordinated
+joint ascent with object-up and height constraints. XY and yaw are free within a
+bounded local envelope; obstacle potential-field guidance and joint-limit margin
+bias guide the free directions. Existing collision exceptions apply only to
+lift, with self/object-arm checks and nominal limits retained. A successful route
+returns `GUIDED_JOINT_LIFT_VALIDATED` alongside existing bypass markers. Ordinary
+Cartesian/bounded fallbacks remain. No new actuator API or launch argument is
+introduced. Prepared selection accepts only a complete candidate plan, and tries
+another retained grasp after a definite failure; no path prefix is executable.
+
+
+### Compulsory prepared object sequence (2026-10-27)
+
+The standard `--prepare-pick-place` recipe plans **look → grasp → lift → place →
+retreat** before execution. `plan_next_best_view(allow_current_view=true)` first
+uses the geometric visibility API. `READY` yields `CURRENT_VIEW_ALREADY_SUITABLE`
+and a no-motion look stage; otherwise it plans a camera path. No VLM presence
+check is substituted for geometric visibility. A moved-view image acquisition is
+not emulated by frozen replay.
+
+The complete serialized look response is bound into `prepare_pick_place`; the
+master verifies ownership, age and start feedback, then plans pre-grasp from the
+look endpoint. `execute_plan(segment='look')` uses the same prepared revision,
+physical gate and ordered session. A satisfied current view sends no commands.
+`--queue-pick-place` pauses **before look**, leaving all physical tasks pending.
+The actual waiting sequence is look, pregrasp, gripper_open, approach,
+gripper_close, lift, transfer, descent, release, withdrawal, retreat. Slot commit
+and post-retreat capture remain recipe bookkeeping steps.
+
+Empty-hand withdrawal first tries a bounded free-orientation joint ascent; its
+endpoint must be completely scene-clear before the full-scene clearance retreat
+can start. Existing lift/withdrawal scene bypass markers still apply within the
+withdrawal segment. Self collision, nominal command limits, dense edge checks
+and failure-without-executable-prefix remain. The next object independently
+checks visibility and plans its own look; clearance does not promise a tray view.
+
+### Completed-session cleanup
+
+After confirmed release, withdrawal, retreat and speed restoration, the master
+clears transient executable source/grasp/refinement/held/view caches and arm
+ownership automatically. A bounded last-completion summary remains available via
+`get_execution_state`: phase `COMPLETE`, status
+`EXECUTION_COMPLETE_CACHE_CLEARED`, no waiting stages, zero execution lifetime.
+Old prepared revisions cannot execute again. The next object's cache/preparation
+starts fresh while retaining tray geometry, placed clouds, occupied slots and API
+history. Lift-only execution still owns its held object; incomplete/unknown runs
+must not use this completion cleanup to erase ownership.
+
+### All-target scene perception
+
+Standard `pipeline_task` perception now starts with `perceive_scene`
+(`my_actions/srv/PerceiveScene`). One synchronized RGB-D/manual-FK*X observation
+feeds two separately timed VLM requests: presence for every target, then bounding
+boxes for every target. Both prompts contain the complete object list and the
+destination. EdgeSAM segments each observed target separately on that same image;
+master memory stores their distinct names, IDs, positions and measured clouds
+before HGGD runs. `get_active_target` selects current object/destination data
+without another single-target VLM call.
+
+The default inventory is installed from
+`master_node/config/perception/scene_targets.yaml`: lower-left small white bowl
+and beige cup, plus the requested destination. The requested active object is
+always included. Repeated `--scene-object` entries override the configured object
+list; direct `PerceiveScene.object_names` does the same. A grasp directive on the
+active object does not create an extra copy of its configured base name.
+`--fresh-perception` remains a compatibility flag; standard perception already
+refreshes visible objects through the batch pass. Direct single-object presence,
+grounding and `resolve_target` APIs remain available.
+
+Missing/uncertain objects do not get invented clouds. Their remembered directory
+location survives, while stale active grasp geometry is discarded. The selected
+object must be observed before grasp calculation; memory alone is not current
+visual evidence. An existing destination retains its immutable base, placed
+clouds and occupied grid even when out of view. A new destination requires valid
+observed geometry. Preparation remains non-actuating; this inventory pass does
+not move the wrist camera to recover an unseen object.
+
+Perception-only example (captures once when image/cloud inputs are omitted):
+
+```bash
+ros2 service call /pipeline/perceive_scene my_actions/srv/PerceiveScene \
+  "{object_names: ['small white bowl at bottom left', 'beige cup'], destination_name: 'dark rectangular tray'}"
+```
+
+Responses report names, roles, per-target visibility/status and positions.
+Shared timings retain each batch inference and individual segmentation call;
+`[SCENE INFERENCE]` logs the complete prompt and raw response. Invalid key sets,
+boxes for present targets, source headers or masks fail explicitly. No
+single-object inference is used as a hidden fallback for malformed batch output.

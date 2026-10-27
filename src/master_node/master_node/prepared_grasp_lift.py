@@ -1,6 +1,7 @@
 """Plan a complete initial-observation grasp/lift before any actuator command."""
 
 from master_node.gripper_widths import grasp_gripper_widths
+from master_node.prepared_plan_review import PreparedPlanReview, endpoint_markers
 
 import copy
 import math
@@ -9,16 +10,20 @@ import time
 from my_actions.srv import (
     ExecutePlan, GetExecutionState, PreparedGripperCommand,
     CheckAndReplan, HeldMotionStage, PlanCartesianGraspApproach, PlanPlacement,
-    PrepareHeldScene, PreparedGraspLift, PreparePickPlace, CommitFloorSlots,
+    PrepareHeldScene, PreparedGraspLift, PreparePickPlace, CommitFloorSlots, PlanNextBestView,
 )
 
 from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.serialization import deserialize_message
 
 from visualization_msgs.msg import Marker, MarkerArray
 from std_srvs.srv import SetBool, Trigger
 
 
 from master_node.joint_command_calibration import command_pose_reference, feedback_reference
+
+
+from .destination_memory import mapped_inputs, check_capacity
 
 
 class PreparedGraspLiftExecutor:
@@ -28,12 +33,18 @@ class PreparedGraspLiftExecutor:
         """Share actuator ownership with the existing master APIs."""
         self.execution, self.node = execution, execution.node
         self.record, self.revision = None, 0
+        self.completed_record = None
         timeout = self.node.declare_parameter('prepared_execution_timeout_sec', 300.0).value
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError('prepared_execution_timeout_sec must be finite and positive')
+        self.node.create_service(HeldMotionStage, '/master/execute_withdrawal',
+                                 self.execute_withdrawal, callback_group=execution.group)
+        self.node.create_service(HeldMotionStage, '/master/execute_placement_retreat',
+                                 self.execute_retreat, callback_group=execution.group)
         self.preview = self.node.create_publisher(
             MarkerArray, '/pipeline/prepared_grasp',
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.review = PreparedPlanReview(self.node, self.preview)
         for name, callback in (('prepare_grasp_lift', self.prepare),
                                ('get_prepared_grasp_lift', self.get),
                                ('validate_prepared_grasp_lift', self.validate)):
@@ -91,6 +102,9 @@ class PreparedGraspLiftExecutor:
             response.status = ('ALL_MOTION_PLANNED;' + record['lift'].motion_status +
                                ';'+record['approach_status'] +
                                f";GRASP_CANDIDATES_TRIED={record.get('candidate_attempts', 1)}")
+            if record.get('pick_place'):
+                response.status += (';'+record['withdrawal_plan'].motion_status+
+                                    ';RETREAT_FROZEN_SCENE_VALIDATED')
         except Exception as error:
             response.status = str(error)
         finally:
@@ -184,12 +198,31 @@ class PreparedGraspLiftExecutor:
                     raise RuntimeError('INVALID_PICK_PLACE_SOURCE_ASSOCIATION')
                 if request.support_mode not in ('auto', 'edge', 'stack', 'floor_slots'):
                     raise RuntimeError('INVALID_PLACEMENT_SUPPORT_MODE')
-            geometry = self.node.step_runtime._call('prepare_held_scene', PrepareHeldScene.Request(
+            geometry = self.node.step_runtime._call('prepare_held_scene', mapped_inputs(
+                getattr(self.node, 'manipulation_memory', None), PrepareHeldScene.Request(
                 observation_header=source.observation_header, cloud=source.observation_cloud,
                 source_mask=source.source_mask, semantic_mask=source.semantic_mask,
-                destination_mask=request.destination_mask if pick_place else type(source.source_mask)()))
+                destination_mask=request.destination_mask if pick_place else type(source.source_mask)()),
+                request.destination_name if pick_place else ''))
             if not geometry.success:
                 raise RuntimeError(geometry.status)
+            if pick_place:
+                memory = getattr(self.node, 'manipulation_memory', None)
+                check_capacity(memory, geometry.source_object_cloud, request.destination_name)
+            look_plan=None
+            planning_start=start_joints
+            if pick_place and request.look_plan_cdr:
+                if len(request.look_plan_cdr)>1024*1024:
+                    raise RuntimeError('LOOK_PLAN_TOO_LARGE')
+                look_plan=deserialize_message(bytes(request.look_plan_cdr),PlanNextBestView.Response)
+                owner=getattr(self.execution.next_best_view,'record',None)
+                if (not owner or not look_plan.success or owner['result']!=look_plan or
+                        owner['name']!=request.object_name or time.monotonic()-owner['created']>60 or
+                        max(abs(a-b) for a,b in zip(start_joints,look_plan.expected_start_joints))>.02):
+                    raise RuntimeError('LOOK_PLAN_SOURCE_OR_START_CHANGED')
+                look_path=self.execution.held_motion.path(look_plan.path_flat)
+                self.validate_commands([('look',look_path)],start_joints)
+                planning_start=look_path[-1]
             failures = []
             planned = False
             budget_started = time.monotonic()
@@ -199,10 +232,15 @@ class PreparedGraspLiftExecutor:
                     break
                 self.node.get_logger().info(
                     f"[PREPARED GRASP TRIAL] object={request.object_name!r} "
-                    f"candidate={proposal.id} attempt={candidate_index+1}/{min(8, len(source.candidates))}")
+                    f"candidate={proposal.id} skill={proposal.affordance_family} "
+                    f"opening={proposal.jaw_opening_m*1000:.1f}mm "
+                    f"attempt={candidate_index+1}/{min(8, len(source.candidates))}")
                 try:
                     candidate, approach, path, lift, lift_path, prepath = self.plan_candidate(
-                        proposal, request, source, geometry, start_joints)
+                        proposal, request, source, geometry, planning_start)
+                    withdrawal, retreat = (
+                        self.execution.next_best_view.prepare_retreat(geometry, lift, request)
+                        if pick_place else (None, None))
                     planned = True
                     break
                 except (RuntimeError, ValueError) as error:
@@ -222,15 +260,33 @@ class PreparedGraspLiftExecutor:
                 'alignment_waypoint_count': approach.alignment_waypoint_count,
                 'approach_status': approach.failure_reason,
                 'candidate_attempts': candidate_index+1, 'pick_place': pick_place}
+            if look_plan is not None:
+                self.record['look']=look_path
+                self.record['look_plan']=look_plan
             if pick_place:
+                self.record['withdrawal_plan'] = withdrawal
+                self.record['withdrawal'] = self.execution.held_motion.path(withdrawal.lift_path_flat)
+                self.record['retreat_plan'] = retreat
+                self.record['retreat'] = self.execution.held_motion.path(retreat.path_flat)
                 self.record['transfer'] = self.execution.held_motion.path(lift.transfer_path_flat)
                 self.record['descent'] = self.execution.held_motion.path(lift.descent_path_flat)
                 self.record['destination_name'] = request.destination_name
+                if memory is not None and memory.destination is not None:
+                    self.record['destination_id'] = memory.destination['object_id']
                 self.record['support_mode'] = request.support_mode
+                self.record['review_source'] = geometry.source_object_cloud
+                self.record['review_center'] = request.source_object_center
+                self.record['review_nominal'] = copy.deepcopy(next(
+                    item.object_pose for item in request.candidates
+                    if item.id == lift.selected_candidate.id))
             self.publish_preview(self.record['candidate'])
+            if pick_place:
+                self.execution.next_best_view.publish_preview(retreat, self.record)
             self.node.get_logger().info(
                 f"[PREPARED GRASP SELECTED] object={request.object_name!r} "
                 f"candidate={self.record['candidate'].id} "
+                f"skill={self.record['candidate'].affordance_family} "
+                f"opening={self.record['candidate'].jaw_opening_m*1000:.1f}mm "
                 f"status={self.record['candidate'].validation_status}")
             response.success = True
             response.plan_revision = self.revision
@@ -239,6 +295,7 @@ class PreparedGraspLiftExecutor:
                                f';GRASP_CANDIDATES_TRIED={candidate_index+1}')
             if pick_place:
                 response.selected_pose = copy.deepcopy(lift.selected_candidate.object_pose)
+                response.status += ';'+withdrawal.motion_status+';RETREAT_FROZEN_SCENE_VALIDATED'
         except Exception as error:
             response.status = str(error)
         finally:
@@ -250,6 +307,25 @@ class PreparedGraspLiftExecutor:
         """Display only the complete prepared plan, clearing earlier attempts."""
         if not hasattr(self, 'preview'):
             return
+        if hasattr(self, 'review'):
+            if candidate is None:
+                self.review.clear()
+                return
+            if self.record and self.record.get('pick_place'):
+                try:
+                    self.review.publish(self.record)
+                except Exception as error:
+                    self.review.clear()
+                    logger = self.node.get_logger()
+                    getattr(logger, 'warning', logger.info)(
+                        f'[PREPARED REVIEW] unavailable: {error}')
+                return
+        if candidate is not None and hasattr(self, 'review') and self.record:
+            try:
+                self.review.lift.publish(endpoint_markers(
+                    self.record['lift'].lift_ee_pose, '2 Lift', 'lift_endpoint'))
+            except Exception as error:
+                self.node.get_logger().warning(f'[LIFT PREVIEW] unavailable: {error}')
         markers = [Marker(action=Marker.DELETEALL)]
         if candidate is not None:
             for index, (name, pose, color) in enumerate((
@@ -313,10 +389,12 @@ class PreparedGraspLiftExecutor:
         # destination motion. The complete placement backend also revalidates
         # its own lift/escape; no unchecked path can be supplied by a caller.
         lift = self.node.step_runtime._call('plan_lift', motion_request)
-        if full and lift.success and lift.motion_success:
-            lift = self.node.step_runtime._call('plan_placement', motion_request)
         if not lift.success or not lift.motion_success:
             raise RuntimeError('PREFLIGHT_LIFT_REJECTED: '+lift.status)
+        if full:
+            lift = self.node.step_runtime._call('plan_placement', motion_request)
+            if not lift.success or not lift.motion_success:
+                raise RuntimeError('PREFLIGHT_PLACEMENT_REJECTED: '+lift.status)
         if (lift.lift_ee_pose.pose.position.z-candidate.grasp_pose.pose.position.z <
                 float(request.lift_distance_m or .05)-.002):
             raise RuntimeError('LIFT_CLEARANCE_SHORTFALL')
@@ -354,7 +432,7 @@ class PreparedGraspLiftExecutor:
         for stage, waypoints in stages:
             for index, joints in enumerate(waypoints):
                 # An initial observation is not a new requested endpoint.
-                if stage in ('pregrasp', 'prepath') and index == 0 and max(
+                if stage in ('look', 'pregrasp', 'prepath') and index == 0 and max(
                         abs(a-b) for a, b in zip(joints, start_joints)) < 1.e-5:
                     continue
                 for joint, (value, bounds) in enumerate(zip(joints, command_limits)):
@@ -369,13 +447,14 @@ class PreparedGraspLiftExecutor:
               'LIFTED', 'AT_PREPLACE', 'PLACED', 'RELEASED')
 
     def stages(self, record):
-        return self.FULL_STAGES if record.get('pick_place') else self.STAGES
+        return (('look',) if record.get('look') else ()) + (
+            self.FULL_STAGES + ('withdrawal', 'retreat') if record.get('pick_place') else self.STAGES)
 
     def motion_fields(self, record):
-        return ('prepath', 'approach', 'lift_path') + (('transfer', 'descent') if record.get('pick_place') else ())
+        return (('look',) if record.get('look') else ()) + ('prepath', 'approach', 'lift_path') + (('transfer', 'descent', 'withdrawal', 'retreat') if record.get('pick_place') else ())
 
     def plan_lift(self, request, response):
-        """Use the existing held-motion solver for a lift-only calculation."""
+        """Plan either a held-object lift or a released empty-hand withdrawal."""
         query = copy.deepcopy(request)
         query.lift_only = query.plan_pick_place_motion = True
         # Lift has no destination candidates: placement batching would skip the
@@ -383,6 +462,117 @@ class PreparedGraspLiftExecutor:
         query.validation_batch_size = 0
         query.retry_motion_failures = False
         return self.node.step_runtime._call('plan_placement', query)
+
+    def execute_withdrawal(self, request, response):
+        """Execute the cached empty-hand lift after confirmed release."""
+        return self.execute_released_segment(request, response, 'withdrawal')
+
+    def execute_retreat(self, request, response):
+        """Execute the cached distant view only after withdrawal finishes."""
+        return self.execute_released_segment(request, response, 'retreat')
+
+    def execute_released_segment(self, request, response, segment):
+        """Follow one released-hand segment without capture, IK or replanning."""
+        admitted = self.execution._lock.acquire(blocking=False)
+        started = False
+        try:
+            if not admitted:
+                raise RuntimeError('EXECUTION_API_BUSY')
+            self.execution._guard(prepared=True)
+            record = self.record
+            if (not record or not record.get('pick_place') or
+                    request.plan_revision != record['revision'] or
+                    request.object_name not in ('', record['destination_name'], record['key'])):
+                raise RuntimeError('PREPARED_'+segment.upper()+'_REVISION_MISMATCH')
+            if (record['phase'] != 'RELEASED' or record.get(segment+'_completed') or
+                    (segment == 'retreat' and not record.get('withdrawal_completed'))):
+                raise RuntimeError(segment.upper()+'_REQUIRES_RELEASE_AND_ORDERED_PREDECESSOR')
+            if self.node._held_object is not None:
+                raise RuntimeError(segment.upper()+'_REQUIRES_EMPTY_HAND')
+            if time.monotonic()-record.get('execution_started',record['created']) > self.execution_timeout():
+                raise RuntimeError('EXECUTION_SESSION_TIMED_OUT')
+            with self.execution._cache_lock:
+                cached = self.execution._cache.get(record['key'])
+            if cached and cached[0] != record['source_version']:
+                raise RuntimeError('PREPARED_SOURCE_CHANGED')
+            expected = record['descent'][-1] if segment == 'withdrawal' else record['withdrawal'][-1]
+            self.execution.held_motion.feedback(expected, contact=False)
+            opening, _ = grasp_gripper_widths(record['candidate'].jaw_opening_m)
+            if abs(self.node.current_gripper_status.width-opening) > .005:
+                if not self.node._wait_for_gripper_opening(opening):
+                    raise RuntimeError(segment.upper()+'_RELEASE_OPENING_NOT_REACHED')
+                self.execution.held_motion.feedback(expected, contact=False)
+            start_pose = (record['lift'].placement_ee_pose if segment == 'withdrawal'
+                          else record['withdrawal_plan'].lift_ee_pose)
+            self.check_pose(start_pose, commanded=True)
+            self.validate_commands([(segment,record[segment])],expected)
+            self.node.state = 'MOVING'
+            started = True
+            if not self.node.set_arm_speed(8 if segment == 'withdrawal' else 20):
+                raise RuntimeError('ARM_SPEED_COMMAND_FAILED')
+            self.follow(record[segment], expected, False, segment)
+            end_pose = (record['withdrawal_plan'].lift_ee_pose if segment == 'withdrawal'
+                        else record['retreat_plan'].tcp_pose)
+            self.check_pose(end_pose, commanded=True, settle=True)
+            record[segment+'_completed'] = True
+            record.setdefault('completed_stages',[]).append(segment)
+            response.success = response.motion_completed = True
+            response.status = 'PREPARED_'+segment.upper()+'_COMPLETE'
+        except Exception as error:
+            response.status = str(error)
+            if started:
+                self.record['phase'] = 'STATE_UNKNOWN'
+                self.node.state = 'ERROR'
+                response.status = 'STATE_UNKNOWN: '+response.status
+        finally:
+            if started:
+                if not self.node.set_arm_speed(20):
+                    self.record['phase'] = 'STATE_UNKNOWN'
+                    self.node.state = 'ERROR'
+                    response.success = False
+                    response.status = 'STATE_UNKNOWN: ARM_SPEED_RESTORE_FAILED'
+                elif self.record['phase'] != 'STATE_UNKNOWN':
+                    self.node.state = 'IDLE'
+                if response.success and segment == 'retreat':
+                    try:
+                        self.complete_locked()
+                    except Exception as error:
+                        response.success = False
+                        response.status = 'SESSION_CLEANUP_FAILED: '+str(error)
+            if admitted:
+                self.execution._lock.release()
+        return response
+
+    def complete_locked(self):
+        """Retire executable data after confirmed empty-hand retreat, not lift."""
+        record = self.record
+        if (not record or record['phase'] != 'RELEASED' or
+                not record.get('withdrawal_completed') or not record.get('retreat_completed') or
+                self.node._held_object is not None or self.node.state != 'IDLE'):
+            raise RuntimeError('COMPLETE_EMPTY_HAND_SESSION_REQUIRED')
+        self.completed_record = {
+            'key': record['key'], 'revision': record['revision'],
+            'header': copy.deepcopy(record['header']),
+            'completed_stages': list(record.get('completed_stages', []))}
+        with self.execution._cache_lock:
+            keys = set(self.execution._cache)
+            keys.update(self.node.cached_grasp_plans)
+            keys.update(getattr(self.node, 'refined_grasp_plans', {}))
+            self.execution._cache.clear()
+            self.node.cached_grasp_plans.clear()
+            getattr(self.node, 'refined_grasp_plans', {}).clear()
+            stages = getattr(self.execution, 'grasp_stages', None)
+            if stages:
+                for key in keys:
+                    stages.invalidate(key)
+        self.execution.held_motion.record = None
+        view = getattr(self.execution, 'next_best_view', None)
+        if view is not None:
+            view.record = None
+        self.node.gripper_contact_evidence = None
+        self.record = None
+        # Destination/placed clouds, exclusive cells and API history are not
+        # executable caches and must survive the next object's preparation.
 
     def execution_state(self, request, response):
         """Inspect the authoritative execution session without actuator commands."""
@@ -392,6 +582,18 @@ class PreparedGraspLiftExecutor:
                 raise RuntimeError('EXECUTION_API_BUSY')
             record = self.record
             if not record or record['key'] != request.object_name.casefold():
+                completed = getattr(self, 'completed_record', None)
+                if completed and completed['key'] == request.object_name.casefold():
+                    response.success = True
+                    response.status = 'EXECUTION_COMPLETE_CACHE_CLEARED'
+                    response.phase = 'COMPLETE'
+                    response.plan_revision = completed['revision']
+                    response.observation_header = completed['header']
+                    response.completed_stages = completed['completed_stages']
+                    response.waiting_stages = []
+                    response.expires_in_seconds = 0.
+                    response.physical_execution_enabled = self.node.allow_physical_grasp_execution
+                    return response
                 raise RuntimeError('NO_PREPARED_GRASP_LIFT')
             response.plan_revision = record['revision']
             response.phase = record['phase']
@@ -419,8 +621,64 @@ class PreparedGraspLiftExecutor:
                 self.execution._lock.release()
         return response
 
+    def execute_look(self, request, response):
+        """Execute the frozen first view under the same prepared revision and gate."""
+        admitted=self.execution._lock.acquire(blocking=False)
+        started=False
+        try:
+            if not admitted:
+                raise RuntimeError('EXECUTION_API_BUSY')
+            self.execution._guard(prepared=True)
+            record=self.record
+            if (not record or not record.get('look') or record['key']!=request.object_name.casefold()
+                    or request.plan_revision!=record['revision'] or record['phase']!='PREPARED'
+                    or record.get('look_completed')):
+                raise RuntimeError('PREPARED_LOOK_REVISION_OR_PHASE_MISMATCH')
+            source, version=self.source(record['key'])
+            if version!=record['source_version'] or time.monotonic()-record['created']>60:
+                raise RuntimeError('PREPARED_SOURCE_CHANGED')
+            if self.node._held_object is not None or self.node.state!='IDLE':
+                raise RuntimeError('LOOK_REQUIRES_IDLE_EMPTY_HAND')
+            self.execution.held_motion.feedback(record['start_joints'],contact=False)
+            self.check_pose(record['start_pose'])
+            self.validate_commands([('look',record['look'])],record['start_joints'])
+            record['execution_started']=time.monotonic()
+            record['execution_source']=source
+            if record['look_plan'].status!='CURRENT_VIEW_ALREADY_SUITABLE':
+                self.node.state='MOVING'
+                started=True
+                if not self.node.set_arm_speed(20):
+                    raise RuntimeError('ARM_SPEED_COMMAND_FAILED')
+                self.follow(record['look'],record['start_joints'],False,'look')
+                self.check_pose(record['look_plan'].tcp_pose,commanded=True,settle=True)
+            record['look_completed']=True
+            record.setdefault('completed_stages',[]).append('look')
+            response.success=response.motion_completed=True
+            response.status='PREPARED_LOOK_COMPLETE'
+            response.phase=record['phase']
+        except Exception as error:
+            response.status=str(error)
+            if started:
+                self.record['phase']='STATE_UNKNOWN'
+                self.node.state='ERROR'
+                response.status='STATE_UNKNOWN: '+response.status
+        finally:
+            if started:
+                if not self.node.set_arm_speed(20):
+                    self.record['phase']='STATE_UNKNOWN'
+                    self.node.state='ERROR'
+                    response.success=False
+                    response.status='STATE_UNKNOWN: ARM_SPEED_RESTORE_FAILED'
+                elif self.record['phase']!='STATE_UNKNOWN':
+                    self.node.state='IDLE'
+            if admitted:
+                self.execution._lock.release()
+        return response
+
     def execute_segment(self, request, response):
         """Execute exactly one complete frozen motion segment."""
+        if request.segment == 'look':
+            return self.execute_look(request,response)
         if request.segment not in ('pregrasp', 'approach', 'lift', 'transfer', 'descent'):
             response.status = 'INVALID_SEGMENT'
             return response
@@ -479,7 +737,9 @@ class PreparedGraspLiftExecutor:
                 index = self.FULL_STAGES.index(stage)
                 if record['phase'] != self.PHASES[index]:
                     raise RuntimeError('WRONG_EXECUTION_PHASE: '+record['phase'])
-                expected = (record['start_joints'] if index == 0 else
+                if index == 0 and record.get('look') and not record.get('look_completed'):
+                    raise RuntimeError('PREGRASP_REQUIRES_COMPLETED_LOOK')
+                expected = ((record['look'][-1] if record.get('look') else record['start_joints']) if index == 0 else
                             record['prepath'][-1] if index <= 2 else
                             record['approach'][-1] if index <= 4 else
                             record['lift_path'][-1] if index == 5 else
@@ -489,7 +749,11 @@ class PreparedGraspLiftExecutor:
                 if index == 0:
                     if self.node._held_object is not None:
                         raise RuntimeError('EMPTY_HAND_REQUIRED')
-                    self.check_pose(record['start_pose'])
+                    if (record.get('look') and
+                            record['look_plan'].status!='CURRENT_VIEW_ALREADY_SUITABLE'):
+                        self.check_pose(record['look_plan'].tcp_pose,commanded=True)
+                    else:
+                        self.check_pose(record['start_pose'])
                 elif index <= 2:
                     self.check_pose(candidate.pregrasp_pose, .010, .15, commanded=True)
                 elif index <= 4:
@@ -541,7 +805,7 @@ class PreparedGraspLiftExecutor:
                                     record['lift'].preplace_ee_pose if index == 5 else
                                     record['lift'].placement_ee_pose,
                                     .010 if index == 0 else .003,
-                                    .15 if index == 0 else .03, commanded=True)
+                                    .15 if index == 0 else .03, commanded=True, settle=True)
                 record['phase'] = self.PHASES[index+1]
                 record.setdefault('completed_stages', []).append(stage)
             response.success = True
@@ -676,17 +940,36 @@ class PreparedGraspLiftExecutor:
             if admitted:
                 self.execution._lock.release()
 
-    def check_pose(self, pose, position=.003, orientation=.03, commanded=False):
-        """Check actual feedback against the already validated endpoint."""
+    def check_pose(self, pose, position=.003, orientation=.03, commanded=False, settle=False):
+        """Allow bounded endpoint feedback settling without resending commands."""
         if commanded:
             pose = command_pose_reference(pose, getattr(self.node, 'joint6_command_offset_rad', 0.))
-        error = self.node._pose_error(pose, self.node.current_tcp_pose)
-        if error is None or error[0] > position or error[1] > orientation:
-            raise RuntimeError('PREPARED_MOTION_POSE_MISMATCH')
+        deadline = time.monotonic()+(2.0 if settle else 0.0)
+        while True:
+            now = time.monotonic()
+            if settle:
+                # Monitor through the final accepted feedback sample as well
+                # as the wait; never resend commands while settling.
+                self.execution.held_motion.feedback(
+                    self.node.current_joint_states.position[:6],
+                    contact=self.node._held_object is not None)
+            error = self.node._pose_error(pose, self.node.current_tcp_pose)
+            age = now-getattr(self.node, 'pose_feedback_time', 0.0)
+            fresh = not settle or 0.0 <= age <= .25
+            if (error is not None and all(math.isfinite(v) for v in error) and
+                    error[0] <= position and error[1] <= orientation and fresh):
+                return
+            if not settle or now >= deadline:
+                detail = ('pose feedback unavailable' if error is None else
+                          f'position_error_m={error[0]:.6f} '
+                          f'orientation_error_rad={error[1]:.6f}')
+                raise RuntimeError('PREPARED_MOTION_POSE_MISMATCH: '+detail+
+                                   f' feedback_age_sec={age:.3f}')
+            time.sleep(.02)
 
     def follow(self, path, expected, contact, stage):
         """Issue the frozen joint waypoints without invoking any planning API."""
-        if stage in ('approach', 'lift', 'transfer', 'descent'):
+        if stage in ('look', 'approach', 'lift', 'transfer', 'descent', 'withdrawal', 'retreat'):
             return self.stream_approach(path, expected, contact=contact, stage=stage)
         for index, joints in enumerate(path):
             # The planner's first sample records the measured start, including
@@ -708,9 +991,9 @@ class PreparedGraspLiftExecutor:
     def stream_approach(self, path, expected, contact=False, stage='approach'):
         """Stream frozen approach/lift edges; wait only at the endpoint."""
         self.execution.held_motion.feedback(expected, contact=contact)
-        # 60 Hz commands, bounded to 0.075 rad/s per joint (50% faster).
+        # 100 Hz commands, bounded to 0.1575 rad/s per joint.
         # Interpolation remains on prevalidated joint edges; no new IK poses.
-        period, velocity = 1./60., .075
+        period, velocity = 1./100., .1575
 
         def monitor():
             if self.node.physical_collision_detected or self.node.collision_detected:

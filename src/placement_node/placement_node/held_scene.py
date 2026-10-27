@@ -4,6 +4,8 @@ from cv_bridge import CvBridge
 
 import numpy as np
 
+from scipy.spatial import cKDTree
+
 from sensor_msgs.msg import PointField
 
 from sensor_msgs_py import point_cloud2
@@ -78,7 +80,25 @@ def prepare_held_scene(request, response):
             [(*p, int(f)) for p, f in zip(points, flags)])
         support = np.zeros(mask.shape, np.uint8)
         destination = request.destination_mask
-        if destination.width:
+        mapped_base = request.destination_base_cloud
+        base_points = None
+        base_support = None
+        if mapped_base.width:
+            if mapped_base.header.frame_id != 'base_link' or len(mapped_base.data) > 16*1024*1024:
+                raise ValueError('INVALID_MAPPED_DESTINATION')
+            base_points = point_cloud2.read_points_numpy(
+                mapped_base, field_names=('x', 'y', 'z'), skip_nans=True).reshape(-1, 3)
+            if len(base_points) < 80:
+                raise ValueError('MAPPED_DESTINATION_TOO_SMALL')
+            distance, _ = cKDTree(base_points).query(
+                organized[finite], distance_upper_bound=.01)
+            valid = np.zeros(mask.shape, bool)
+            valid[finite] = distance <= .01
+            support = destination_support_mask(
+                organized, valid & ~associated, base_points).astype(np.uint8)
+            base_support = destination_support_mask(
+                base_points, np.ones(len(base_points), bool), base_points).astype(np.uint8)
+        elif destination.width:
             dmask = bridge.imgmsg_to_cv2(destination, desired_encoding='mono8') > 0
             if destination.header.stamp != header.stamp or dmask.shape != mask.shape:
                 raise ValueError('DESTINATION_MASK_OBSERVATION_MISMATCH')
@@ -87,12 +107,25 @@ def prepare_held_scene(request, response):
                 raise ValueError('DESTINATION_SUPPORT_TOO_SMALL')
             support = destination_support_mask(organized, valid, organized[valid]).astype(np.uint8)
         environment = finite & ~associated
+        scene_points, scene_support = organized[environment], support[environment]
+        support_points = organized[support > 0]
+        if base_points is not None:
+            scene_points = np.vstack((scene_points, base_points))
+            scene_support = np.concatenate((scene_support, base_support))
+            support_points = base_points[base_support > 0]
+        placed = request.placed_scene_cloud
+        if placed.width:
+            if placed.header.frame_id != 'base_link' or len(placed.data) > 16*1024*1024:
+                raise ValueError('INVALID_MAPPED_PLACED_SCENE')
+            placed_points = point_cloud2.read_points_numpy(
+                placed, field_names=('x', 'y', 'z'), skip_nans=True).reshape(-1, 3)
+            scene_points = np.vstack((scene_points, placed_points))
+            scene_support = np.concatenate((scene_support, np.zeros(len(placed_points), np.uint8)))
         response.collision_scene = point_cloud2.create_cloud(
             header, fields+[PointField(name='support', offset=12,
                                        datatype=PointField.UINT8, count=1)],
-            [(*p, int(f)) for p, f in zip(organized[environment], support[environment])])
-        response.destination_support_cloud = point_cloud2.create_cloud_xyz32(
-            header, organized[support > 0].tolist())
+            [(*p, int(f)) for p, f in zip(scene_points, scene_support)])
+        response.destination_support_cloud = point_cloud2.create_cloud_xyz32(header, support_points)
         center = points.mean(axis=0)
         (response.source_object_center.x, response.source_object_center.y,
          response.source_object_center.z) = map(float, center)

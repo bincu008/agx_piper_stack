@@ -136,13 +136,18 @@ def prepare_pick_place(object_name, destination_name='tray', lift_distance_m=.05
     cache = next(s for s in steps if s.step_id == 'cache_grasp')
     cache.bindings[0] = StepBinding(target_field='candidates', source_step_id='grasps',
                                    source_field='candidates')
+    steps.append(step('plan_look', 'plan_next_best_view',
+                      srv.PlanNextBestView.Request(target_name=object_name, allow_current_view=True),
+                      [('target.header', 'observe', 'cloud.header'),
+                       ('target.point', 'grasps', 'corrected_seed_base')]))
     steps.append(step('prepare_motion', 'prepare_pick_place', srv.PreparePickPlace.Request(
         object_name=object_name, destination_name=destination_name,
         support_mode=support_mode, lift_distance_m=float(lift_distance_m)),
         [('observation_header', 'observe', 'cloud.header'),
          ('source_object_center', 'placements', 'source_object_center'),
          ('candidates', 'placements', 'candidates'),
-         ('destination_mask', 'segment_tray', 'mask')]))
+         ('destination_mask', 'segment_tray', 'mask'),
+         ('look_plan_cdr', 'plan_look', '@response_cdr')]))
     steps.append(step('execution_state', 'get_execution_state', srv.GetExecutionState.Request(object_name=object_name)))
     return steps
 
@@ -154,7 +159,7 @@ def execute_cached_pick_place(object_name, destination_name='tray', support_mode
     steps.append(step('check_motion', 'validate_prepared_pick_place',
                       srv.PreparePickPlace.Request(object_name=object_name)))
     revision = [('plan_revision', 'prepare_motion', 'plan_revision')]
-    for stage in ('pregrasp', 'gripper_open', 'approach', 'gripper_close', 'lift'):
+    for stage in ('look', 'pregrasp', 'gripper_open', 'approach', 'gripper_close', 'lift'):
         schema = srv.PreparedGripperCommand if stage.startswith('gripper') else srv.ExecutePlan
         query = schema.Request(object_name=object_name)
         if schema is srv.ExecutePlan:
@@ -169,6 +174,14 @@ def execute_cached_pick_place(object_name, destination_name='tray', support_mode
     if support_mode == 'floor_slots':
         steps.append(step('commit_slots', 'commit_floor_slots', srv.CommitFloorSlots.Request(),
                           [('selected_pose', 'prepare_motion', 'selected_pose')]))
+    # Execute frozen clearance after release; the next object gets its own look stage.
+    steps.extend([
+        step('withdrawal', 'execute_withdrawal', srv.HeldMotionStage.Request(
+            object_name=destination_name), revision),
+        step('move_tray_view', 'execute_placement_retreat', srv.HeldMotionStage.Request(
+            object_name=destination_name), revision),
+        step('observe_tray', 'capture_observation', srv.CaptureObservation.Request()),
+    ])
     return steps
 
 
@@ -179,17 +192,36 @@ def pick_and_place(object_name, destination_name='tray', lift_distance_m=.05,
             + execute_cached_pick_place(object_name, destination_name, support_mode)[1:])
 
 
-def with_active_memory(steps, object_name, destination_name='tray'):
-    """Reuse master target memory while retaining the existing typed recipe."""
+def with_active_memory(steps, object_name, destination_name='tray', scene_objects=(),
+                       allow_view_motion=False, refresh_scene=False):
+    """Acquire the selected view, then refresh its geometry before grasp calculation."""
     import copy
-    result = []
+    result = [
+        step('observe_initial', 'capture_observation', srv.CaptureObservation.Request()),
+        step('scene_memory', 'perceive_scene' if refresh_scene else 'ensure_scene_memory',
+             srv.PerceiveScene.Request(active_object_name=object_name,
+                 object_names=list(scene_objects), destination_name=destination_name),
+             [('image', 'observe_initial', 'image'),
+              ('observation_cloud', 'observe_initial', 'cloud'),
+              ('camera_transform', 'observe_initial', 'camera_transform')]),
+        step('acquire_object_view', 'ensure_target_view' if allow_view_motion else 'require_target_view',
+             srv.CheckTargetView.Request(name=object_name, role='object'),
+             [('observation_cloud', 'observe_initial', 'cloud'),
+              ('camera_transform', 'observe_initial', 'camera_transform')]),
+        step('observe', 'capture_observation', srv.CaptureObservation.Request()),
+        step('verify_object_view', 'require_target_view',
+             srv.CheckTargetView.Request(name=object_name, role='object'),
+             [('observation_cloud', 'observe', 'cloud'),
+              ('camera_transform', 'observe', 'camera_transform')]),
+    ]
     for item in steps:
-        if item.step_id in ('presence_cup', 'ground_cup', 'presence_tray', 'ground_tray'):
+        if item.step_id in ('observe', 'presence_cup', 'ground_cup', 'presence_tray', 'ground_tray'):
             continue
         item = copy.deepcopy(item)
         if item.step_id in ('segment_cup', 'segment_tray'):
             destination = item.step_id == 'segment_tray'
-            item = step(item.step_id, 'resolve_target', srv.ResolveManipulationTarget.Request(
+            item = step(item.step_id, 'resolve_target' if destination else 'refresh_active_target',
+                        srv.ResolveManipulationTarget.Request(
                 name=destination_name if destination else object_name,
                 role='destination' if destination else 'object'),
                 [('image', 'observe', 'image'),

@@ -2,6 +2,9 @@ std_msgs/Header observation_header
 sensor_msgs/PointCloud2 object_cloud
 sensor_msgs/PointCloud2 scene_cloud
 sensor_msgs/PointCloud2 destination_cloud
+# Optional immutable tray base for support and stable grid identity. The
+# destination_cloud above may also contain successfully placed objects.
+sensor_msgs/PointCloud2 destination_base_cloud
 sensor_msgs/PointCloud2 bottom_cloud
 sensor_msgs/PointCloud2 stack_support_cloud
 string orientation_policy

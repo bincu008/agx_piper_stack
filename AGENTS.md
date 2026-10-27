@@ -522,12 +522,16 @@ Reject larger deviations and any collision along the entry transition.
 
 ### Prepared approach/lift speed (2026-10-14)
 
-Operator requested 50% faster approach and lift. Prepared streaming uses 60 Hz
-and 0.075 rad/s joint timing (previously 50 Hz/0.05 rad/s), reducing command
-samples along each unchanged validated edge. Driver approach/lift cap is 8%
+Operator update (2026-10-20): prepared streaming uses 100 Hz and 0.1575 rad/s
+joint timing (30% below the previous 0.225 rad/s bound). This applies
+to approach, lift, transfer, descent, withdrawal and retreat along unchanged
+validated edges. Driver approach/lift cap is 8%
 (the integer setting rounds 7.5% upward); pre-grasp and exit restoration stay
 20%. Preserve collision/contact/fresh-feedback monitoring, exact frozen endpoints
-and final arrival verification. This supersedes the earlier prepared 5% cap;
+and final arrival verification. Post-motion TCP checks allow up to 2 seconds
+for fresh feedback to settle, with unchanged pose tolerances and continuous
+contact/collision/freshness monitoring; start-state checks stay immediate.
+This supersedes the earlier prepared 5% cap;
 do not change geometric validation spacing or skip unvalidated path corners.
 
 ### Gripper targets update (2026-10-14)
@@ -834,3 +838,160 @@ confirmed release updates physical location; planning/slot commits do not imply
 motion. Switching destinations releases active geometry and idle prepared/grid
 state, retaining hints. Held/unknown execution state blocks memory mutation.
 See the memory section in docs/STANDARD_PIPELINE_API.md for commands and limits.
+
+## Final grasp skill consistency
+
+Preserve final measured-contact checks after angle refinement and actual FK:
+contacts must be within 3 mm of opposite inner finger faces. Reclassify an
+initial PINCH as POWER_GRASP when final jaw opening or full measured contact
+span exceeds the existing pinch_max_opening_m limit (50 mm default). Rank
+validated pinches before other skills, preserving quality/path ranking within
+each group and bounded complete-plan fallback. Do not treat an early local-skill
+label as evidence of final pinch geometry. Prepared logs expose final skill and
+opening. A power fallback must not be described as a successful rim pinch.
+
+## Final prepared-plan RViz review
+
+Default grasp_debug_rviz uses `/pipeline/prepared_grasp`, `prepared_placement`,
+`prepared_nominal_object_cloud` (grey requested slot) and
+`prepared_placed_object_cloud` (cyan achieved object). Master publishes final
+endpoints only after complete preparation and clears them on startup/new plans/
+resets/failure. Reuse VAMP's returned finger dimensions and poses. Achieved
+geometry is placement FK times inverse selected grasp FK applied to the exact
+immutable source cloud; retain source headers and compare against the requested
+slot pose/center. Never show nominal geometry as achieved after relaxed IK or
+intermediate successes as a complete accepted plan. Visualization errors must
+not change execution readiness. Actual here means predicted FK, not measured
+physical object motion. Benchmark and candidate trials stay out of this focused
+config; arm collision spheres remain optional and disabled by default.
+
+## Post-release next best view
+
+Prefer steep top-down camera views from the target's base-facing side. Public
+plan_next_best_view uses fresh shared capture, manual calibrated optical-to-TCP
+conversion, existing pose IK and VAMP with full empty-hand collision checking;
+execute_next_best_view delegates the guarded execute_trajectory API. Keep their
+revision/expiry/start checks and no actuator retry on unknown outcome. Default
+camera-to-target distance is 45 cm with bounded shorter reachable alternatives.
+Prepared pick/place must plan and validate the retreat before any actuation,
+against the predicted scene after placement, under the same prepared revision.
+After confirmed release and floor-slot commit, execute_placement_retreat follows
+the cached path without capture, IK or replanning; recapture only at the distant
+viewpoint. The wrist camera is too close to the object immediately after release. View failure must preserve completed
+placement and reservations; never retry physical placement because its later
+camera task failed. Capture does not clear occupied slots. Test on isolated mock
+ROS domains with physical execution false, without moving real hardware.
+
+
+## Empty-hand release withdrawal
+
+Operator update (2026-10-20): the existing `placement_bypass_robot_environment_during_lift` flag (default true) also bypasses robot/finger-versus-scene checks for the initial released state and the short empty-hand withdrawal. Self collision, nominal joint limits, IK, no-descending and dense edge checks remain active. Results explicitly expose `WITHDRAWAL_ROBOT_ENVIRONMENT_CHECK_BYPASSED`; this is not scene-collision validated withdrawal. The subsequent distant retreat restores full scene checking and must pass before accepting a complete plan. Set the existing flag false to restore the contact-separation policy described below. No new launch argument is introduced.
+
+
+`plan_lift` supports explicit `empty_hand=true`, frozen placement_scene,
+start_joints and jaw_opening_m, with no source payload cloud. Held mode stays
+unchanged. Prepared pick/place plans a 3 cm withdrawal before the distant retreat;
+execute_withdrawal follows confirmed release/slot commit and precedes
+execute_placement_retreat. Both are cached/revision-bound before any actuation,
+and execute without capture/IK/replanning. Capture only at the far view.
+Only samples labelled released_object=1 in the initial finger contact region
+(including a 2 mm sphere/mesh proximity shell) may receive contact separation
+allowance. Freeze the original overlap-energy budget; do not reset it per waypoint.
+Keep aggregate squared penetration within its original budget, with bounded
+numerical slack, a 3 cm contact window and fully clear terminal pose. Tangential
+sliding is allowed; do not demand an arbitrary decrease per millimetre. Initial padded-sphere overlap
+is capped at 30 mm; the current maximum may exceed its original value by at most
+2 mm. These geometric proxies are not physical penetration or evidence of noise.
+Keep neighboring obstacles, arm/palm/self checks and nominal joint/dense edge
+validation active. This is independent of attached-object sparse contact budgets.
+Withdrawal tries vertical/reverse-approach paths first, then bounded two-leg escape paths: 1.5 or 2.5 cm along the reversed approach or initial contact normals, followed by the requested rise. No route may descend; the same frozen contact allowance and fully clear endpoint apply. `OUTWARD_WITHDRAWAL_USED` identifies a two-leg route.
+
+Even with the scene bypass, never bypass self-collision or joint-limit checks. Preview on /pipeline/prepared_withdrawal.
+
+## Geometric target visibility
+
+`check_target_view` is a read-only memory-aware public API. It may capture via
+capture_observation and call check_target_visibility, but must never call VLM,
+segmentation or motion APIs. Reuse the synchronized manual FK*X transform and
+registered-camera intrinsics. No computational TF fallback. READY/LOOK_REQUIRED/
+LOCATION_UNKNOWN are successful decisions; errors are failures. Callers must
+inspect status. Current-view ray casting uses a frozen 5 mm tree and bounded
+surface samples, excludes target-occupied cells and stops 10 mm short of target
+samples. Unknown space is transparent: READY is expected visibility, not object
+presence, depth sufficiency or collision safety. Directory-only center checks
+expose location_only=true. Do not silently make this API move the camera, alter
+memory or consume tray slots. Existing next-view and motion policies stay intact.
+
+
+## Persistent destination geometry
+
+The active destination retains an immutable tray base, composite cloud and frozen
+grid IDs until switching destinations or explicit forget/reset. Camera movement,
+occlusion, refresh or age must not silently erase this inventory. Calibration
+mismatch requires explicit reset. Object observation freshness checks still apply.
+After confirmed prepared release, append exact source geometry transformed by
+actual achieved EE FK and cached grasp attachment, once per plan/source revision.
+Failed release/calculation must not append. Preserve original map/source headers;
+the composite is derived geometry (`placed`: base=0, placed object=1).
+Pass immutable base and placed obstacles via PrepareHeldScene; SearchPlacements
+uses destination_base_cloud for stable support/grid identity and merged geometry
+for obstacles. Keep placed points out of floor-support exemptions. Preserve
+whole-cell reservations and explicit commit validation. Capacity checks (128
+placements / 500,000 mapped points) happen before preparation; never silently
+remove obstacles. Automated validation simulates release bookkeeping only and
+must not call physical gripper/motion APIs to update memory.
+
+## Guided joint lift and whole-plan grasp selection
+
+Prepared pick/place must accept a grasp only after its approach, lift, transfer,
+descent, withdrawal and retreat are all prepared. A definite planning failure
+tries the next retained grasp within the existing eight-candidate/30-second
+budget; execution never retries candidates or uses a partial path.
+
+Held lifting first tries differential joint-space ascent: requested height and
+object upright tolerance remain constraints, while XY and yaw may vary. APF
+scene guidance and joint-margin centering act in the free task directions. Keep
+nominal command limits, self/object-arm checks, midpoint checks, <=0.004 rad joint
+steps and <=2 mm adjacent TCP steps. The lateral envelope is bounded by
+min(25 cm, requested rise + 6 cm), with a 1.5-second total guided-attempt budget;
+failed routes return no executable prefix. Existing Cartesian/bounded fallbacks
+remain available. All configured lift bypasses remain explicit in responses;
+transfer restores full scene checks. `GUIDED_JOINT_LIFT_VALIDATED` identifies this
+route. Do not apply APF or free-orientation joint ascent to final grasp approach,
+transfer, descent, or empty-hand withdrawal. Never shorten a requested lift or
+relax the object upright tolerance to force success.
+
+
+## Compulsory per-object prepared sequence (2026-10-27)
+
+Standard pick/place preparation includes look, grasp, lift, place and retreat.
+Bind the owner-validated `PlanNextBestView` response into preparation and plan
+pre-grasp from its endpoint. Geometric READY may satisfy look without motion;
+otherwise execute the frozen look through the same prepared session before
+pre-grasp. Queue-only must pause before look. Default post-release retreat is a
+bounded free-orientation clearance path, not a mandatory far tray camera pose.
+Withdrawal must end at a full-scene-clear state before retreat; retain explicit
+withdrawal/lift bypass markers and all self/joint checks. The next object checks
+visibility independently. Frozen replay cannot verify moved-view acquisition or
+physical actuator/contact behavior; report those limits separately.
+
+Successful complete pick/place execution must retire transient execution caches
+and ownership after empty-hand retreat and speed restoration. Preserve destination
+memory, placed geometry, occupied slots and history; keep only a bounded completion
+summary for inspection. Do not retire held, incomplete or unknown sessions. Test
+completion of one object followed by caching the next, not only independent trials.
+
+## All-target perception inventory (2026-10-28)
+
+Standard image-based pipeline recipes must call the shared `perceive_scene`
+API on one synchronized observation before HGGD. Both batch presence and batch
+bounding-box prompts include the complete configured target list and destination;
+segment each observed target and select it through `get_active_target`, rather
+than issuing separate single-object VLM requests. Preserve stable target order
+when the active object changes. Defaults live in
+`master_node/config/perception/scene_targets.yaml`; explicit scene object lists
+override them, with the requested active object always included. Keep single-
+object APIs available for explicit callers. Never treat returned center points
+as boxes or infer a missing object's grasp cloud from its old location. Retain
+unseen-object directory hints and frozen destination/grid/placed geometry.
+Inventory is non-actuating and does not implement automatic camera look recovery.

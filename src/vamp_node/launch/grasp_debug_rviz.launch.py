@@ -21,8 +21,7 @@ def generate_launch_description():
             "fixed_frame",
             default_value="base_link",
             description=(
-                "RViz-only fixed frame. Use camera_color_optical_frame when "
-                "running the standalone AnyPlace node without the grasp stack."
+                "Visualization-only fixed frame; use base_link for the arm stack."
             ),
         ),
         Node(

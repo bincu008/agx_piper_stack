@@ -4,6 +4,8 @@ sensor_msgs/Image[] object_masks
 string[] object_names
 string destination_name
 string orientation_policy
+# Requested lift before transfer; zero preserves the existing 5 cm default.
+float32 lift_distance_m
 ---
 bool success
 string status

@@ -27,7 +27,7 @@ from rclpy.action import ActionClient
 from std_msgs.msg import String, Bool
 from cv_bridge import CvBridge
 from sensor_msgs.msg import JointState, Image, CameraInfo
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PointStamped
 from std_srvs.srv import Trigger, SetBool, Empty
 from std_msgs.msg import Float32MultiArray
 from rcl_interfaces.srv import SetParameters
@@ -39,7 +39,7 @@ from my_actions.srv import (
     ExecutePipeline, FlushPipeline, Get3DCoordinate, GetNBVPose, GetWorldState,
     GetObstacleLocation, LookAt, MoveRelative, PlanAPF, ResolveObject,
     PlanCartesianGraspApproach, RefineGrasp, ToggleContinuousNavigation,
-    UpdateObjectObservation,
+    UpdateObjectObservation, PlanNextBestView, HeldMotionStage,
 )
 from rclpy.serialization import deserialize_message, serialize_message
 from task_pipeline.node import PipelineNode
@@ -279,6 +279,7 @@ class PiperMasterControl(Node):
         self.current_rgb = None
         self.current_camera_info = None
         self.current_gripper_status = None
+        self.gripper_contact_evidence = None
         self.current_arm_status = None
         self.cached_grasp_plans = {}
         self.refined_grasp_plans = {}
@@ -652,6 +653,9 @@ class PiperMasterControl(Node):
     def gripper_callback(self, msg):
         self.current_gripper_status = msg
         self.gripper_feedback_time = time.monotonic()
+        evidence = getattr(self, 'gripper_contact_evidence', None)
+        if evidence is not None:
+            evidence.update(msg, self.gripper_feedback_time, self.gripper_feedback_time)
 
     def arm_status_callback(self, msg):
         self.current_arm_status = msg
@@ -1149,6 +1153,7 @@ class PiperMasterControl(Node):
             gripper_width=width, gripper_force=force)
         if accepted:
             self.gripper_command_time = time.monotonic()
+            self.gripper_contact_evidence = None
             self.get_logger().info(
                 f'[GRIPPER] Commanded width={width:.3f}m force={force:.1f}N '
                 'via /control/joint_states')
@@ -1193,6 +1198,7 @@ class PiperMasterControl(Node):
             stamp = getattr(self, 'gripper_feedback_time', 0)
             if (stamp > getattr(self, 'gripper_command_time', float('inf')) and
                     evidence.update(self.current_gripper_status, stamp, time.monotonic())):
+                self.gripper_contact_evidence = evidence
                 return True
             time.sleep(.02)
         status = self.current_gripper_status
@@ -1680,86 +1686,20 @@ class PiperMasterControl(Node):
             self.state = "IDLE"
 
     def look_at_target_callback(self, request, response):
-        if self.state != "IDLE":
-            response.success = False
+        """Keep the legacy look-at facade on the shared next-view operations."""
+        target = PointStamped()
+        target.header.frame_id = 'base_link'
+        target.point.x, target.point.y, target.point.z = (
+            request.look_at_x, request.look_at_y, request.look_at_z)
+        planned = self.step_runtime._call('plan_next_best_view',
+            PlanNextBestView.Request(target=target, camera_distance_m=.45))
+        if not planned.success:
+            self.get_logger().warning('[NBV] '+planned.status)
             return response
-            
-        self.get_logger().info(f"[MASTER NODE] Requesting NBV to look at target: ({request.look_at_x:.3f}, {request.look_at_y:.3f}, {request.look_at_z:.3f})")
-
-        if not self.get_nbv_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error("Vision get_nbv_candidates service not available!")
-            response.success = False
-            return response
-            
-        if not self.look_at_ik_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error("VAMP look_at_ik service not available!")
-            response.success = False
-            return response
-
-        # 1. Fetch unoccluded NBV candidates
-        req_nbv = GetNBVPose.Request()
-        req_nbv.target_x = request.look_at_x
-        req_nbv.target_y = request.look_at_y
-        req_nbv.target_z = request.look_at_z
-        req_nbv.radius = 0.3 # 30cm radius
-        
-        future_nbv = self.get_nbv_client.call_async(req_nbv)
-        while rclpy.ok() and not future_nbv.done():
-            time.sleep(0.05)
-            
-        res_nbv = future_nbv.result()
-        if not res_nbv.success or len(res_nbv.candidate_x) == 0:
-            self.get_logger().error("[MASTER NODE] Vision Node failed to find any unoccluded NBV candidates.")
-            response.success = False
-            return response
-            
-        self.get_logger().info(f"[MASTER NODE] Found {len(res_nbv.candidate_x)} unoccluded NBV candidates. Testing IK...")
-        
-        # 2. Iterate candidates for reachable IK
-        best_joints = None
-        for i in range(len(res_nbv.candidate_x)):
-            req_ik = LookAt.Request()
-            req_ik.look_at_x = request.look_at_x
-            req_ik.look_at_y = request.look_at_y
-            req_ik.look_at_z = request.look_at_z
-            req_ik.current_pose_x = res_nbv.candidate_x[i]
-            req_ik.current_pose_y = res_nbv.candidate_y[i]
-            req_ik.current_pose_z = res_nbv.candidate_z[i]
-            if not self.populate_look_at_ik_request(
-                    req_ik,
-                    (res_nbv.candidate_x[i], res_nbv.candidate_y[i],
-                     res_nbv.candidate_z[i]),
-                    (request.look_at_x, request.look_at_y,
-                     request.look_at_z)):
-                continue
-            if self.current_joint_states and len(self.current_joint_states.position) >= 6:
-                req_ik.current_joints = list(self.current_joint_states.position[:6])
-            else:
-                req_ik.current_joints = [0.0] * 6
-            
-            future = self.look_at_ik_client.call_async(req_ik)
-            while rclpy.ok() and not future.done():
-                time.sleep(0.05)
-                
-            res_ik = future.result()
-            if res_ik.success and len(res_ik.joint_angles) == 6:
-                best_joints = res_ik.joint_angles
-                self.get_logger().info(f"[MASTER NODE] Candidate {i} is reachable! Handing off to move_to_joints...")
-                break
-                
-        if best_joints is None:
-            self.get_logger().error("[MASTER NODE] VAMP failed to find IK solution for any NBV candidates.")
-            response.success = False
-            return response
-
-        # Use existing move_to_joints behavior by wrapping request
-        move_req = ToggleContinuousNavigation.Request()
-        move_req.target_joints = best_joints
-        move_res = ToggleContinuousNavigation.Response()
-        
-        move_res = self.move_to_joints_callback(move_req, move_res)
-        response.success = move_res.success
-        response.joint_angles = best_joints
+        executed = self.step_runtime._call('execute_next_best_view',
+            HeldMotionStage.Request(plan_revision=planned.plan_revision))
+        response.success = executed.success
+        response.joint_angles = list(planned.path_flat[-6:])
         return response
 
     def move_relative_callback(self, request, response):

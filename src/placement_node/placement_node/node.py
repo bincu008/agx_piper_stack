@@ -727,6 +727,9 @@ class PlacementNode(Node):
             policy = request.orientation_policy.strip().lower()
             if policy not in ("upright", "free"):
                 raise RuntimeError(f"INVALID_ORIENTATION_POLICY: {policy}")
+            lift_distance = float(request.lift_distance_m or .05)
+            if not np.isfinite(lift_distance) or lift_distance <= 0:
+                raise ValueError('INVALID_LAYOUT_LIFT_DISTANCE')
             layout_support_mode = str(self.get_parameter('layout_support_mode').value)
             if policy == 'free' and layout_support_mode == 'floor_slots':
                 layout_support_mode = 'auto'
@@ -1161,7 +1164,7 @@ class PlacementNode(Node):
                     plan_request.validation_batch_size = 8
                     plan_request.retry_motion_failures = True
                     plan_request.plan_pick_place_motion = True
-                    plan_request.lift_distance_m = 0.05
+                    plan_request.lift_distance_m = lift_distance
                     if self.get_parameter("layout_debug_show_candidates").value:
                         self._publish_trial_candidates(header, name, candidates,
                             object_center, packing_points, plan_request.grasp_candidate, bottom_points)
@@ -1180,6 +1183,9 @@ class PlacementNode(Node):
                         try:
                             (directory / f"layout_object_{index + 1}_plan_request.cdr").write_bytes(
                                 serialize_message(plan_request))
+                            if plan_result is not None:
+                                (directory / f"layout_object_{index + 1}_plan_response.cdr").write_bytes(
+                                    serialize_message(plan_result))
                         except OSError as exception:
                             self.get_logger().warn(f"[LAYOUT] final request debug save failed: {exception}")
                     if plan_result is None or not plan_result.success:
@@ -1468,7 +1474,7 @@ class PlacementNode(Node):
     def _get_floor_slots(self, request, response):
         with self._slot_lock:
             rows = [dict(layout_id=key, layout=entry['layout'],
-                         reserved_cells=[list(c) for c in sorted(entry['reserved'])],
+                         reserved_cells=[[int(v) for v in c] for c in sorted(entry['reserved'])],
                          occupied_region_count=len(entry.get('occupied_xy', ())))
                     for key, entry in self._slot_layouts.items()]
         response.success, response.status = True, 'FLOOR_SLOT_MEMORY_READY'
@@ -1523,7 +1529,7 @@ class PlacementNode(Node):
                             return response
                         if not getattr(request, 'validate_only', False):
                             occupied.update(footprint_mask)
-                            entry['reserved'].update(map(tuple, used))
+                            entry['reserved'].update(tuple(int(v) for v in cell) for cell in used)
                             entry['commits'].add(fingerprint)
                     self._publish_floor_slots(header, entry['layout'], entry['reserved'], used, z,
                                              entry.get('occupied_xy', ()))
@@ -1569,6 +1575,15 @@ class PlacementNode(Node):
             bottom = self._cloud_xyz(request.bottom_cloud) if request.bottom_cloud.width else None
             top = self._cloud_xyz(request.stack_support_cloud) if request.stack_support_cloud.width else None
             clouds = {name: self._cloud_xyz(getattr(request, name)) for name in cloud_fields}
+            if request.destination_base_cloud.width:
+                base = request.destination_base_cloud
+                if base.header.frame_id != 'base_link' or len(base.data) > 16*1024*1024:
+                    raise ValueError('INVALID_CACHED_DESTINATION_BASE')
+                # Keep the immutable tray as the container/grid reference. The
+                # composite destination is published and also blocks the scene.
+                composite = clouds['destination_cloud']
+                clouds['destination_cloud'] = self._cloud_xyz(base)
+                clouds['scene_cloud'] = np.vstack((clouds['scene_cloud'], composite))
             support_mode = request.support_mode or str(self.get_parameter('layout_support_mode').value)
             slot_key = None
             if support_mode == 'floor_slots':
@@ -1644,7 +1659,14 @@ class PlacementNode(Node):
             if self._wait_for_future(future, 3.):
                 remembered = future.result()
                 if (remembered.success and remembered.observation_header == cloud.header):
-                    return self._cloud_xyz(remembered.object_cloud)
+                    points = self._cloud_xyz(remembered.object_cloud)
+                    if 'placed' in {field.name for field in remembered.object_cloud.fields}:
+                        # Legacy layout paths must retain the same tray base
+                        # for their grid identity, even as mapped content grows.
+                        flags = point_cloud2.read_points(
+                            remembered.object_cloud, field_names=('placed',))['placed']
+                        points = points[flags.reshape(-1) == 0]
+                    return points
         return fallback
 
     def _placement_callback(self, request, response):

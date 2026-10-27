@@ -1,6 +1,6 @@
 string object_name
 uint64 plan_revision
-# pregrasp, approach, lift; only complete validated segments
+# look, pregrasp, approach, lift, transfer, descent; complete validated segments
 string segment
 ---
 bool success

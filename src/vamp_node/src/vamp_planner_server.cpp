@@ -1,3 +1,5 @@
+#include "my_actions/srv/plan_camera_retreat.hpp"
+#include "vamp_node/empty_hand_withdrawal.hpp"
 #include "vamp_node/pipeline_timing.hpp"
 #include "vamp_node/payload_checked_robot.hpp"
 #include "vamp_node/upright_motion.hpp"
@@ -38,6 +40,7 @@
 #include "vamp_node/grasp_position_offset.hpp"
 #include "vamp_node/shallow_grasp.hpp"
 #include "vamp_node/payload_escape.hpp"
+#include "vamp_node/guided_joint_lift.hpp"
 #include "vamp_node/contact_surface_alignment.hpp"
 #include "vamp_node/local_grasp_refiner.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -111,6 +114,16 @@ namespace vamp_node
 class VampPlannerServer : public rclcpp::Node
 {
 private:
+  static void setFkPoseMessage(const Eigen::Isometry3f &fk,
+                              geometry_msgs::msg::PoseStamped &message) {
+    message.pose.position.x=fk.translation().x();
+    message.pose.position.y=fk.translation().y();
+    message.pose.position.z=fk.translation().z();
+    const Eigen::Quaternionf rotation(fk.linear());
+    message.pose.orientation.x=rotation.x();message.pose.orientation.y=rotation.y();
+    message.pose.orientation.z=rotation.z();message.pose.orientation.w=rotation.w();
+  }
+
   struct AntipodalContacts {
     Eigen::Vector3f left = Eigen::Vector3f::Zero();
     Eigen::Vector3f right = Eigen::Vector3f::Zero();
@@ -286,6 +299,7 @@ private:
   rclcpp::Service<my_actions::srv::ToggleContinuousNavigation>::SharedPtr toggle_nav_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_map_srv_;
   rclcpp::Service<my_actions::srv::PlanAPF>::SharedPtr plan_apf_srv_;
+  rclcpp::Service<my_actions::srv::PlanCameraRetreat>::SharedPtr retreat_srv_;
   rclcpp::Service<my_actions::srv::LookAt>::SharedPtr look_at_ik_srv_;
   rclcpp::Service<my_actions::srv::FindGraspCandidates>::SharedPtr grasp_candidates_srv_;
   rclcpp::Service<my_actions::srv::FindCloudGrasps>::SharedPtr cloud_grasps_srv_;
@@ -765,6 +779,10 @@ public:
       "/vamp_planner/plan_apf",
       std::bind(&VampPlannerServer::handlePlanAPF, this, std::placeholders::_1, std::placeholders::_2));
 
+    retreat_srv_ = this->create_service<my_actions::srv::PlanCameraRetreat>(
+      "/vamp_planner/plan_camera_retreat",
+      std::bind(&VampPlannerServer::handlePlanCameraRetreat, this,
+                std::placeholders::_1, std::placeholders::_2));
     look_at_ik_srv_ = this->create_service<my_actions::srv::LookAt>(
       "/vamp_planner/look_at_ik",
       std::bind(&VampPlannerServer::handleLookAtIK, this, std::placeholders::_1, std::placeholders::_2));
@@ -3631,10 +3649,249 @@ private:
       response->failure_reason.c_str());
   }
 
+  void handleEmptyHandLift(
+    const std::shared_ptr<my_actions::srv::PlanPlacement::Request> request,
+    std::shared_ptr<my_actions::srv::PlanPlacement::Response> response)
+  {
+    const auto fail=[&](const std::string &reason) {
+      response->success=response->motion_success=false;
+      response->status=response->motion_status=reason;
+      response->lift_path_flat.clear();
+    };
+    const auto &cloud=request->placement_scene;
+    const float rise=request->lift_distance_m==0.F ? .05F : request->lift_distance_m;
+    if (!request->lift_only || !request->use_layout_scene || request->source_object_cloud.width ||
+        !jointsWithinPiperLimits(request->start_joints) ||
+        !std::isfinite(rise) || rise<.01F || rise>.10F ||
+        !std::isfinite(request->jaw_opening_m) || request->jaw_opening_m<0.F ||
+        request->jaw_opening_m>.10F || cloud.header.frame_id!="base_link" ||
+        rclcpp::Time(cloud.header.stamp).nanoseconds()<=0 || !cloud.width || !cloud.height ||
+        cloud.is_bigendian || cloud.point_step<12 || cloud.row_step!=cloud.width*cloud.point_step ||
+        cloud.data.size()!=static_cast<size_t>(cloud.row_step)*cloud.height ||
+        cloud.data.size()>16*1024*1024) { fail("INVALID_EMPTY_HAND_LIFT_INPUT");return; }
+    for (const auto *name:{"x","y","z"})
+      if (!std::any_of(cloud.fields.begin(),cloud.fields.end(),[&](const auto &f) {
+        return f.name==name && f.count==1 && f.datatype==sensor_msgs::msg::PointField::FLOAT32 &&
+          f.offset<=cloud.point_step-4;
+      })) {fail("INVALID_WITHDRAWAL_CLOUD_FIELDS");return;}
+    const bool labelled=std::any_of(cloud.fields.begin(),cloud.fields.end(),[&](const auto &f) {
+      return f.name=="released_object" && f.count==1 &&
+        f.datatype==sensor_msgs::msg::PointField::UINT8 && f.offset<cloud.point_step;
+    });
+    std::unique_ptr<sensor_msgs::PointCloud2ConstIterator<uint8_t>> label;
+    if (labelled) label=std::make_unique<sensor_msgs::PointCloud2ConstIterator<uint8_t>>(cloud,"released_object");
+    std::vector<Point> environment;
+    std::vector<uint8_t> released;
+    sensor_msgs::PointCloud2ConstIterator<float> x(cloud,"x"),y(cloud,"y"),z(cloud,"z");
+    for (;x!=x.end();++x,++y,++z) {
+      if (std::isfinite(*x)&&std::isfinite(*y)&&std::isfinite(*z)) {
+        environment.push_back(Point{*x,*y,*z});released.push_back(label ? **label : 0);
+      }
+      if (label) ++*label;
+    }
+    if (environment.empty()) {fail("EMPTY_WITHDRAWAL_SCENE");return;}
+    const auto fk=[](const std::vector<float> &q) {
+      std::array<float,6> a{};std::copy_n(q.begin(),6,a.begin());return Robot::eefk(a);
+    };
+    const auto start_pose=fk(request->start_joints);
+    vamp_node::WithdrawalContacts contacts;
+    Eigen::Vector3f separating_direction=Eigen::Vector3f::Zero();
+    std::string reason;
+    const auto started=std::chrono::steady_clock::now();
+    const auto check=[&](const std::vector<float> &q,bool seed,bool terminal) {
+      if (std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count()>10.) {
+        reason="WITHDRAWAL_TIMEOUT";return false;
+      }
+      if (!jointsWithinPiperLimits(q)) {reason="WITHDRAWAL_JOINT_LIMIT";return false;}
+      const auto pose=fk(q);
+      if (pose.translation().z()<start_pose.translation().z()-.001F) {
+        reason="WITHDRAWAL_DESCENDS";return false;
+      }
+      // Operator-selected lift policy also covers the short empty-hand
+      // withdrawal. Keep self collision; the following distant retreat uses
+      // the original frozen scene with all robot/finger checks restored.
+      if (placement_bypass_robot_environment_during_lift_) {
+        if (!isCandidatePoseSafe(q,{})) {
+          reason="WITHDRAWAL_SELF_COLLISION";return false;
+        }
+        return true;
+      }
+      // Retain all arm/wrist/palm spheres and self checks. Only finger-scene
+      // checks below may admit the explicitly labelled pre-existing contacts.
+      if (!isCandidatePoseSafe(q,environment,nullptr,nullptr,nullptr,0.F,nullptr,
+                               request->jaw_opening_m,false)) {
+        reason="WITHDRAWAL_ARM_PALM_OR_SELF_COLLISION";return false;
+      }
+      Robot::ConfigurationBlock<1> c;
+      for (size_t j=0;j<6;++j)c[j][0]=q[j];
+      Robot::Spheres<1> spheres;Robot::template sphere_fk<1>(c,spheres);
+      const float travel=(pose.translation()-start_pose.translation()).norm();
+      const auto &index=exactCollisionIndex(environment);
+      if (!seed) contacts.begin();
+      for (size_t sphere=82;sphere<Robot::n_spheres;++sphere) {
+        const auto center=vamp_node::piperFingerSphereCenter(sphere,
+          Eigen::Vector3f(spheres.x[{sphere,0}],spheres.y[{sphere,0}],spheres.z[{sphere,0}]),
+          pose,request->jaw_opening_m);
+        const float radius=spheres.r[{sphere,0}]+.0025F;
+        if (!index.sphereClearWithPredicate(center,radius+(seed ? .002F : 0.F),
+          [&](size_t i,const Eigen::Vector3f &p) {
+          const float penetration=radius-(p-center).norm();
+          if (seed && released[i]) {
+            if (!vamp_node::piperFingerMeshBoundsContain(sphere,p,pose,request->jaw_opening_m,.0045F) ||
+                penetration<-.002F) return false;
+            if (contacts.seed(i,penetration)) {
+              if (penetration>0.F && (center-p).squaredNorm()>1.e-10F)
+                separating_direction+=(center-p).normalized()*penetration;
+              return false;
+            }
+            reason="WITHDRAWAL_INITIAL_FINGER_OVERLAP_TOO_DEEP";return true;
+          }
+          if (!vamp_node::piperFingerMeshBoundsContain(sphere,p,pose,request->jaw_opening_m) ||
+              penetration<=0.F) return false;
+          if (!released[i]) {reason="WITHDRAWAL_NEW_OBSTACLE_CONTACT";return true;}
+          const bool allowed=contacts.permits(i,penetration,travel,terminal);
+          if (!allowed) {
+            std::ostringstream detail;detail << "WITHDRAWAL_FINGER_CONTACT_REJECTED:sphere=" << sphere
+              << " depth=" << penetration << " travel=" << travel << " terminal=" << terminal;
+            reason=detail.str();
+          }
+          return !allowed;
+        })) return false;
+      }
+      if (!seed && !contacts.separating(travel)) {
+        std::ostringstream detail;
+        detail << "WITHDRAWAL_OVERLAP_NOT_SEPARATING initial=" << contacts.initialEnergy()
+               << " current=" << contacts.currentEnergy() << " travel=" << travel;
+        reason=detail.str();return false;
+      }
+      return true;
+    };
+    if (!check(request->start_joints,true,false)) {fail(reason);return;}
+    // Release withdrawal has no payload orientation constraint. Prefer a
+    // bounded joint ascent and require a fully scene-clear endpoint before
+    // restoring ordinary empty-hand retreat checks.
+    std::vector<Eigen::Vector3f> field_points;
+    for (const auto &p:environment) field_points.emplace_back(p[0],p[1],p[2]);
+    const vamp_node::PayloadEscapeField withdrawal_field(field_points);
+    const auto guide=[&](const Eigen::Isometry3f &pose) {
+      return withdrawal_field.evaluate({{pose.translation(),.06F,{}}}).force;
+    };
+    const auto initial_contacts=contacts;
+    for (float height : {rise,std::max(rise,.05F),std::max(rise,.08F)}) {
+      contacts=initial_contacts;
+      auto route=planGuidedJointLift(request->start_joints,height,static_cast<float>(M_PI),.15F,
+        fk,guide,[&](const auto &from,const auto &to) {
+          const auto saved=contacts;
+          std::vector<float> middle(6);
+          for (size_t j=0;j<6;++j) middle[j]=.5F*(from[j]+to[j]);
+          if (check(middle,false,false) && check(to,false,false)) return true;
+          contacts=saved;return false;
+        },0.F,.5F);
+      if (!route.success || !check(route.waypoint_joints.back(),false,true) ||
+          !isCandidatePoseSafe(route.waypoint_joints.back(),environment,
+            nullptr,nullptr,nullptr,0.F,nullptr,request->jaw_opening_m)) continue;
+      const auto &last=route.waypoint_joints.back();
+      response->lift_path_flat=request->start_joints;
+      for (const auto &q:route.waypoint_joints)
+        response->lift_path_flat.insert(response->lift_path_flat.end(),q.begin(),q.end());
+      std::copy_n(last.begin(),6,response->lift_joints.begin());
+      setFkPoseMessage(fk(last),response->lift_ee_pose);response->lift_ee_pose.header=cloud.header;
+      response->success=response->motion_success=true;
+      response->status=response->motion_status="FLEXIBLE_WITHDRAWAL_CLEAR_ENDPOINT_VALIDATED";
+      if (placement_bypass_robot_environment_during_lift_)
+        response->motion_status+=";WITHDRAWAL_ROBOT_ENVIRONMENT_CHECK_BYPASSED";
+      response->lift_seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+      return;
+    }
+    contacts=initial_contacts;
+    // Retain the original direct routes as fallbacks. A bowl wall can make vertical
+    // travel tangential to an opened finger: reverse the approach or follow
+    // measured contact normals before rising, rather than relaxing collisions.
+    std::vector<std::vector<Eigen::Vector3f>> routes{{Eigen::Vector3f(0.F,0.F,rise)}};
+    const Eigen::Vector3f away=-start_pose.linear().col(2);
+    if (away.z()>.5F && away.dot(Eigen::Vector3f::UnitZ())<.999F)
+      routes.push_back({away*(rise/away.z())});
+    for (Eigen::Vector3f direction:{away,separating_direction}) {
+      direction.z()=std::max(0.F,direction.z());
+      if (direction.norm()<1.e-5F) continue;
+      direction.normalize();
+      for (float distance:{.015F,.025F}) {
+        const Eigen::Vector3f escape=direction*distance;
+        routes.push_back({escape,Eigen::Vector3f(escape.x(),escape.y(),
+                                                std::max(rise,escape.z()))});
+      }
+    }
+    size_t route_index=0;
+    for (const auto &route:routes) {
+      ++route_index;
+      std::vector<std::vector<float>> waypoints;
+      auto segment_start=start_pose;
+      auto segment_joints=request->start_joints;
+      bool route_valid=true;
+      for (size_t leg=0;leg<route.size();++leg) {
+        auto goal=start_pose;goal.translation()+=route[leg];
+        const auto path=planCartesianApproach(segment_start,goal,segment_joints,.002F,.05F,
+          [&](const auto &desired,const auto &seed,auto &solved) {
+            PoseIkDiagnostics diagnostic;
+            return solvePiperPoseIK(desired,seed,solved,diagnostic,true,.0002F,.003F,800);
+          },[&](const auto &q,size_t,bool terminal) {
+            return check(q,false,terminal && leg+1==route.size());
+          });
+        if (!path.success) {
+          reason="WITHDRAWAL_"+path.failure_reason+":"+reason;
+          route_valid=false;break;
+        }
+        waypoints.insert(waypoints.end(),path.waypoint_joints.begin(),path.waypoint_joints.end());
+        segment_joints=waypoints.back();segment_start=fk(segment_joints);
+      }
+      if (!route_valid) {
+        RCLCPP_INFO(get_logger(),"[WITHDRAWAL ROUTE] route=%zu rejected=%s",route_index,reason.c_str());
+        continue;
+      }
+      std::vector<float> flat=request->start_joints;
+      auto previous=request->start_joints;
+      bool valid=true;
+      for (size_t k=0;k<waypoints.size();++k) {
+        const auto &target=waypoints[k];
+        const auto edge=vamp_node::planJointApproach(previous,target,fk,
+          [&](const auto &q,size_t,bool terminal) {
+            return check(q,false,terminal && k+1==waypoints.size());
+          });
+        if (!edge.success) {valid=false;reason="WITHDRAWAL_EDGE_REJECTED:"+reason;break;}
+        for (const auto &q:edge.waypoint_joints)flat.insert(flat.end(),q.begin(),q.end());
+        previous=target;
+      }
+      if (!valid) continue;
+      if (fk(previous).translation().z()<start_pose.translation().z()+rise-.002F) {
+        reason="WITHDRAWAL_HEIGHT_SHORTFALL";continue;
+      }
+      const auto actual=fk(previous);const Eigen::Quaternionf rotation(actual.linear());
+      response->lift_ee_pose.header=cloud.header;
+      auto &pose=response->lift_ee_pose.pose;
+      pose.position.x=actual.translation().x();pose.position.y=actual.translation().y();pose.position.z=actual.translation().z();
+      pose.orientation.x=rotation.x();pose.orientation.y=rotation.y();pose.orientation.z=rotation.z();pose.orientation.w=rotation.w();
+      std::copy_n(previous.begin(),6,response->lift_joints.begin());
+      response->lift_path_flat=flat;
+      response->success=response->motion_success=true;
+      response->motion_status=placement_bypass_robot_environment_during_lift_ ?
+        "EMPTY_HAND_WITHDRAWAL_PLANNED;WITHDRAWAL_ROBOT_ENVIRONMENT_CHECK_BYPASSED" :
+        "EMPTY_HAND_WITHDRAWAL_VALIDATED";
+      if (contacts.size())response->motion_status+=";INITIAL_RELEASED_FINGER_CONTACT_SEPARATION";
+      if (route.size()>1)response->motion_status+=";OUTWARD_WITHDRAWAL_USED";
+      response->status=response->motion_status;
+      RCLCPP_INFO(get_logger(),"[WITHDRAWAL ROUTE] accepted=%zu legs=%zu",route_index,route.size());
+      response->lift_seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+      return;
+    }
+    fail(reason.empty() ? "NO_EMPTY_HAND_WITHDRAWAL_PATH" : reason);
+  }
+
   void handlePlanPlacement(
     const std::shared_ptr<my_actions::srv::PlanPlacement::Request> request,
     std::shared_ptr<my_actions::srv::PlanPlacement::Response> response)
   {
+    if (request->empty_hand) {handleEmptyHandLift(request,response);return;}
+
     PipelineProfile profile(pipeline_profiling_, "placement", [this](const std::string &data) {
       RCLCPP_INFO(this->get_logger(), "[PIPELINE PROFILE] %s", data.c_str());
     });
@@ -4511,7 +4768,43 @@ private:
             previous=joints; return true;
           });
         };
-        lift=calculate_lift(lift_goal);
+        // First try joint-space ascent with free XY/yaw and measured-object
+        // upright constraints. Joint-limit centering and APF guidance avoid
+        // prescribing an unreachable fixed-orientation vertical line.
+        const vamp_node::PayloadEscapeField lift_field(environment_points);
+        const Eigen::Vector3f payload_center=.5F*(minimum+maximum);
+        const auto guided_fk=[](const std::vector<float> &q) {
+          std::array<float,6> values{};std::copy_n(q.begin(),6,values.begin());
+          return Robot::eefk(values);
+        };
+        const auto guide=[&](const Eigen::Isometry3f &pose) {
+          const auto delta=pose*attachment_pose.inverse();
+          auto state=lift_field.evaluate({
+            {pose.translation(),.035F,{}},
+            {delta*payload_center,.5F*(maximum-minimum).norm(),{}}});
+          return state.force;
+        };
+        for (float bias : {0.F,.002F,-.002F}) {
+          lift_noise=initial_lift_noise;
+          lift=planGuidedJointLift(lift_start_joints,
+            std::max(.0001F,requested_lift_rise-(lift_start.translation().z()-source_pose.translation().z())),
+            keep_object_upright_ ? object_upright_tolerance_rad_ : .35F,
+            std::min(.25F,.06F+requested_lift_rise),guided_fk,guide,
+            [&](const auto &from,const auto &to) {
+              const auto saved=lift_noise;
+              std::vector<float> midpoint(6);
+              for (size_t j=0;j<6;++j) midpoint[j]=.5F*(from[j]+to[j]);
+              if (held_safe(midpoint) && held_safe(to)) return true;
+              lift_noise=saved;return false;
+            },bias,.5F);
+          if (lift.success) {
+            escape_status=";GUIDED_JOINT_LIFT_VALIDATED";
+            RCLCPP_INFO(this->get_logger(),"[PLACEMENT LIFT] guided joint ascent accepted waypoints=%zu",
+              lift.waypoint_joints.size());
+            break;
+          }
+        }
+        if (!lift.success) lift=calculate_lift(lift_goal);
         // A vertical departure can leave the arm's reachable workspace near
         // full extension or approach a rear wall. Try one bounded inward/upward departure;
         // preserve fixed orientation, continuity and every held-object check.
@@ -4968,7 +5261,7 @@ private:
           return;
         }
         lift.waypoint_joints.insert(lift.waypoint_joints.end(),escape_path.begin(),escape_path.end());
-        escape_status=";LIFT_APF_ESCAPE_VALIDATED";
+        escape_status+=";LIFT_APF_ESCAPE_VALIDATED";
         RCLCPP_INFO(this->get_logger(),"[PAYLOAD APF] accepted seconds=%.3f waypoints=%zu contact_cells=%zu penetration=%.2fmm",
           seconds_since(escape_started),escape_path.size(),segment_contacts.size(),best.penetration*1000.F);
       }
@@ -7590,6 +7883,23 @@ private:
         std::copy_n(ik.begin(), 6, validated_joints.begin());
         published_grasp = Robot::eefk(validated_joints);
       }
+      if (use_measured_contacts) {
+        const float face_error = vamp_node::finalJawFaceError(
+          published_grasp, left, right, opening);
+        if (face_error > .003F) {
+          ++rejected_contacts;
+          ++contact_rejection_reasons["final_contact_not_on_inner_faces"];
+          record_rejection(published_grasp, published_grasp.linear().col(1),
+            published_grasp.linear().col(2), opening,
+            "FINAL_CONTACT_NOT_ON_INNER_FACES");
+          continue;
+        }
+        if (selected_grasp_skill == LocalGraspSkill::kPinch &&
+            !vamp_node::finalGeometryRemainsPinch(true, opening, left, right,
+              static_cast<float>(pinch_max_opening_m_))) {
+          selected_grasp_skill = LocalGraspSkill::kPowerGrasp;
+        }
+      }
       candidate.grasp_pose.pose.position.x = published_grasp.translation().x();
       candidate.grasp_pose.pose.position.y = published_grasp.translation().y();
       candidate.grasp_pose.pose.position.z = published_grasp.translation().z();
@@ -7793,6 +8103,10 @@ private:
         hggd_candidate_variant_costs[candidate.id] =
           variant_selection_cost;
       }
+      if (use_measured_contacts) {
+        candidate.validation_status += ";FINAL_CONTACT_FACES_VALIDATED;FINAL_SKILL="+
+          candidate.affordance_family;
+      }
       response->candidates.push_back(candidate);
       ++seed_diagnostics.accepted;
       if (candidate.affordance_family == "PINCH") {
@@ -7929,7 +8243,8 @@ private:
       std::stable_sort(
         response->candidates.begin(), response->candidates.end(),
         [](const auto &left, const auto &right) {
-          return left.ranking_score > right.ranking_score;
+          return vamp_node::preferFinalPinch(left.affordance_family == "PINCH",
+            left.ranking_score, right.affordance_family == "PINCH", right.ranking_score);
         });
       const auto valid_pool_for_log = response->candidates;
       if (pure_learned) {
@@ -8076,8 +8391,9 @@ private:
         std::stable_sort(
           feasible.begin(), feasible.end(),
           [](const auto &left, const auto &right) {
-            return left.candidate.ranking_score >
-              right.candidate.ranking_score;
+            return vamp_node::preferFinalPinch(left.candidate.affordance_family == "PINCH",
+              left.candidate.ranking_score, right.candidate.affordance_family == "PINCH",
+              right.candidate.ranking_score);
           });
         response->candidates.clear();
         response->candidates.reserve(feasible.size());
@@ -8415,6 +8731,131 @@ private:
     }
     
     RCLCPP_ERROR(this->get_logger(), "[VAMP ENGINE] Failed to find ANY valid fallback pose between 30cm and 40cm!");
+  }
+
+  void handlePlanCameraRetreat(
+    const std::shared_ptr<my_actions::srv::PlanCameraRetreat::Request> request,
+    std::shared_ptr<my_actions::srv::PlanCameraRetreat::Response> response)
+  {
+    response->status="INVALID_RETREAT_INPUT";
+    const auto &cloud=request->collision_scene;
+    if (request->start_joints.size()!=6 || (!request->clearance_only && request->candidate_tcp_poses.empty()) ||
+        request->candidate_tcp_poses.size()>24 || cloud.header.frame_id!="base_link" ||
+        rclcpp::Time(cloud.header.stamp).nanoseconds()<=0 || !cloud.width ||
+        cloud.is_bigendian || cloud.point_step<12 || cloud.row_step!=cloud.width*cloud.point_step ||
+        cloud.data.size()!=static_cast<size_t>(cloud.row_step)*cloud.height ||
+        cloud.data.size()>16*1024*1024 || !std::isfinite(request->jaw_opening_m) ||
+        request->jaw_opening_m<0.F || request->jaw_opening_m>.10F) return;
+    for (const auto *name : {"x","y","z"}) {
+      if (!std::any_of(cloud.fields.begin(),cloud.fields.end(),[&](const auto &f) {
+          return f.name==name && f.datatype==sensor_msgs::msg::PointField::FLOAT32 &&
+            f.count==1 && f.offset<=cloud.point_step-4;
+        })) return;
+    }
+    std::vector<Point> environment;
+    sensor_msgs::PointCloud2ConstIterator<float> x(cloud,"x"), y(cloud,"y"), z(cloud,"z");
+    for (;x!=x.end();++x,++y,++z)
+      if (std::isfinite(*x)&&std::isfinite(*y)&&std::isfinite(*z))
+        environment.push_back(Point{*x,*y,*z});
+    if (environment.empty()) return;
+    const auto started=std::chrono::steady_clock::now();
+    const auto safe=[&](const std::vector<float> &q) {
+      if (std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count()>15.) return false;
+      if (q.size()!=6) return false;
+      for (size_t j=0;j<6;++j)
+        if (!std::isfinite(q[j]) || q[j]<kPiperJointLower[j]-1.e-5F ||
+            q[j]>kPiperJointUpper[j]+1.e-5F) return false;
+      return isCandidatePoseSafe(q,environment,nullptr,nullptr,nullptr,0.F,nullptr,
+                                 request->jaw_opening_m);
+    };
+    if (!safe(request->start_joints)) {
+      for (size_t j=0;j<6;++j) {
+        const float q=request->start_joints[j];
+        if (!std::isfinite(q) || q<kPiperJointLower[j]-1.e-5F || q>kPiperJointUpper[j]+1.e-5F) {
+          response->status="RETREAT_RELEASE_JOINT_LIMIT:joint="+std::to_string(j+1);return;
+        }
+      }
+      response->status="RETREAT_RELEASE_COLLISION:"+describeCandidateCollision(
+        request->start_joints,environment,nullptr,nullptr,nullptr,0.F,nullptr,
+        request->jaw_opening_m); return;
+    }
+    const auto fk=[](const std::vector<float> &q) {
+      std::array<float,6> a{};std::copy_n(q.begin(),6,a.begin());return Robot::eefk(a);
+    };
+    if (request->clearance_only) {
+      std::vector<Eigen::Vector3f> points;
+      for (const auto &p:environment) points.emplace_back(p[0],p[1],p[2]);
+      const vamp_node::PayloadEscapeField field(points);
+      const auto route=planGuidedJointLift(request->start_joints,.02F,
+        static_cast<float>(M_PI),.15F,fk,
+        [&](const auto &pose) {return field.evaluate({{pose.translation(),.06F,{}}}).force;},
+        [&](const auto &from,const auto &to) {
+          std::vector<float> middle(6);
+          for (size_t j=0;j<6;++j) middle[j]=.5F*(from[j]+to[j]);
+          return safe(middle) && safe(to);
+        },0.F,1.F);
+      if (!route.success) {response->status="CLEARANCE_RETREAT_REJECTED:"+route.failure_reason;return;}
+      response->path_flat=request->start_joints;
+      for (const auto &q:route.waypoint_joints)
+        response->path_flat.insert(response->path_flat.end(),q.begin(),q.end());
+      setFkPoseMessage(fk(route.waypoint_joints.back()),response->tcp_pose);
+      response->tcp_pose.header=cloud.header;
+      response->success=true;response->status="CLEARANCE_RETREAT_VALIDATED";return;
+    }
+    response->status="NO_REACHABLE_RETREAT";
+    for (size_t index=0;index<request->candidate_tcp_poses.size();++index) {
+      if (std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count()>15.) {
+        response->status="RETREAT_PLANNING_TIMEOUT";return;
+      }
+      const auto &pose=request->candidate_tcp_poses[index];
+      Eigen::Quaternionf rotation(pose.orientation.w,pose.orientation.x,
+                                  pose.orientation.y,pose.orientation.z);
+      Eigen::Isometry3f desired=Eigen::Isometry3f::Identity();
+      desired.translation()=Eigen::Vector3f(pose.position.x,pose.position.y,pose.position.z);
+      if (!rotation.coeffs().allFinite() || rotation.norm()<1.e-5F ||
+          !desired.translation().allFinite()) continue;
+      desired.linear()=rotation.normalized().toRotationMatrix();
+      PoseIkDiagnostics diagnostics;
+      std::vector<float> goal;
+      if (!solvePiperPoseIK(desired,request->start_joints,goal,diagnostics) || !safe(goal)) continue;
+      using RetreatRRTC=vamp::planning::RRTC<PayloadPiper,rake,Robot::resolution>;
+      PayloadPiper::ScopedValidator validator(safe);
+      EnvironmentVector empty;
+      vamp::planning::RRTCSettings settings;
+      settings.max_iterations=std::max(1,placement_transfer_max_iterations_);
+      settings.max_samples=settings.max_iterations;settings.range=.1F;
+      auto rng=std::make_shared<vamp::rng::Halton<PayloadPiper>>();
+      const auto result=RetreatRRTC::solve(Robot::Configuration(request->start_joints),
+        Robot::Configuration(goal),empty,settings,rng);
+      if (result.path.empty()) continue;
+      std::vector<float> flat;
+      auto previous=request->start_joints;
+      bool valid=true;
+      for (const auto &waypoint:result.path) {
+        const auto a=waypoint.to_array();
+        const std::vector<float> target(a.begin(),a.begin()+6);
+        const auto edge=vamp_node::planJointApproach(previous,target,fk,
+          [&](const auto &q,size_t,bool) { return safe(q); });
+        if (!edge.success) {valid=false;break;}
+        for (const auto &q:edge.waypoint_joints) flat.insert(flat.end(),q.begin(),q.end());
+        previous=target;
+      }
+      if (!valid || flat.empty()) continue;
+      response->success=true;response->status="RETREAT_FROZEN_SCENE_VALIDATED";
+      response->selected_index=index;response->path_flat=request->start_joints;
+      response->path_flat.insert(response->path_flat.end(),flat.begin(),flat.end());
+      const auto actual=fk(previous);
+      const Eigen::Quaternionf actual_rotation(actual.linear());
+      response->tcp_pose.pose.position.x=actual.translation().x();
+      response->tcp_pose.pose.position.y=actual.translation().y();
+      response->tcp_pose.pose.position.z=actual.translation().z();
+      response->tcp_pose.pose.orientation.x=actual_rotation.x();
+      response->tcp_pose.pose.orientation.y=actual_rotation.y();
+      response->tcp_pose.pose.orientation.z=actual_rotation.z();
+      response->tcp_pose.pose.orientation.w=actual_rotation.w();
+      response->tcp_pose.header=cloud.header;
+      return;
+    }
   }
 
   void handleLookAtIK(const std::shared_ptr<my_actions::srv::LookAt::Request> request,

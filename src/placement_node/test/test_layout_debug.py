@@ -232,3 +232,20 @@ def test_mapped_destination_requires_same_verified_observation():
     # ROS messages can share assigned Header objects; replace current explicitly.
     current.header=Header(frame_id='base_link');current.header.stamp.sec=42
     assert PlacementNode._mapped_destination(node,'tray',current,fallback) is fallback
+
+
+@pytest.mark.parametrize('height', [-.2, float('nan'), float('inf')])
+def test_invalid_layout_lift_is_rejected_before_scene_search(height):
+    """Bad requested heights must not start packing or change reservations."""
+    from my_actions.srv import PlanObjectLayout
+    from sensor_msgs.msg import Image
+    published = []
+    node = SimpleNamespace(
+        _status_pub=SimpleNamespace(publish=published.append),
+        get_logger=lambda: SimpleNamespace(error=lambda *args: None))
+    query = PlanObjectLayout.Request(
+        object_names=['bowl'], object_masks=[Image()], orientation_policy='upright',
+        lift_distance_m=height)
+    result = PlacementNode._layout_callback(node, query, PlanObjectLayout.Response())
+    assert not result.success and 'INVALID_LAYOUT_LIFT_DISTANCE' in result.status
+    assert len(published) == 1

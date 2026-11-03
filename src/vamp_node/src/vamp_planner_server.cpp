@@ -1,9 +1,7 @@
 #include "my_actions/srv/plan_camera_retreat.hpp"
-#include "vamp_node/empty_hand_withdrawal.hpp"
+#include "vamp_node/vamp_utils.hpp"
 #include "vamp_node/pipeline_timing.hpp"
-#include "vamp_node/payload_checked_robot.hpp"
 #include "vamp_node/upright_motion.hpp"
-#include "vamp_node/foreground_components.hpp"
 #include <cstdlib>
 #include <cstdint>
 #include <memory>
@@ -30,14 +28,10 @@
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "vamp_node/hggd_mcu_adapter.hpp"
-#include "vamp_node/grasp_diversity.hpp"
 #include "vamp_node/rim_seed.hpp"
-#include "vamp_node/piper_finger_geometry.hpp"
 #include "vamp_node/known_cloud_grasp_generator.hpp"
-#include "vamp_node/planar_body_mask.hpp"
 #include "vamp_node/deterministic_ik.hpp"
 #include "vamp_node/cartesian_grasp_approach.hpp"
-#include "vamp_node/grasp_position_offset.hpp"
 #include "vamp_node/shallow_grasp.hpp"
 #include "vamp_node/payload_escape.hpp"
 #include "vamp_node/guided_joint_lift.hpp"
@@ -64,10 +58,8 @@
 #include "my_actions/srv/plan_cartesian_grasp_approach.hpp"
 #include "my_actions/srv/plan_placement.hpp"
 #include "my_actions/srv/pin_layout_observation.hpp"
-#include "vamp_node/placement_ranking.hpp"
 #include "vamp_node/placement_geometry.hpp"
 #include "vamp_node/layout_scene_cache.hpp"
-#include "vamp_node/organized_xyz_reader.hpp"
 #include "vamp_node/placement_point_index.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
@@ -320,8 +312,6 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr object_world_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr segmented_target_cloud_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr segmented_target_image_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr segmented_target_mask_pub_;
   std::mutex segmented_target_mutex_;
   sensor_msgs::msg::PointCloud2::SharedPtr latest_segmented_target_cloud_;
   sensor_msgs::msg::Image::SharedPtr latest_segmented_target_image_;
@@ -329,23 +319,6 @@ private:
   sensor_msgs::msg::PointCloud2::SharedPtr latest_object_support_surface_;
   std::mutex placement_plan_mutex_;
   std::optional<my_actions::srv::PlanPlacement::Response> cached_placement_plan_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr grasp_markers_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr angle_trial_markers_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
-    valid_grasp_markers_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr known_cloud_proposals_markers_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
-    hggd_raw_proposals_markers_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr hggd_proposals_markers_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr grasp_debug_markers_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr hggd_heatmap_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr refined_grasp_debug_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
-    placement_plan_markers_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
-    refined_placed_object_cloud_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
-    refined_placed_support_surface_pub_;
 
 public:
   explicit VampPlannerServer(const rclcpp::NodeOptions & options = rclcpp::NodeOptions())
@@ -727,37 +700,6 @@ public:
     segmented_target_cloud_pub_ =
       this->create_publisher<sensor_msgs::msg::PointCloud2>(
       "/vamp_planner/segmented_target_cloud", visual_qos);
-    segmented_target_image_pub_ =
-      this->create_publisher<sensor_msgs::msg::Image>(
-      "/vamp_planner/segmented_target_image", visual_qos);
-    segmented_target_mask_pub_ =
-      this->create_publisher<sensor_msgs::msg::Image>(
-      "/vamp_planner/segmented_target_mask", visual_qos);
-    grasp_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/vamp_planner/grasp_candidates_markers", visual_qos);
-    angle_trial_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/vamp_planner/grasp_angle_trials", visual_qos);
-    valid_grasp_markers_pub_ =
-      this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/vamp_planner/valid_grasp_candidates_markers", visual_qos);
-    known_cloud_proposals_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/vamp_planner/known_cloud_proposals_markers", visual_qos);
-    hggd_raw_proposals_markers_pub_ =
-      this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/vamp_planner/hggd_raw_proposals_markers", visual_qos);
-    hggd_proposals_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/vamp_planner/hggd_proposals_markers", visual_qos);
-    grasp_debug_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/vamp_planner/grasp_debug_markers", visual_qos);
-    hggd_heatmap_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-      "/vamp_planner/hggd_heatmap", visual_qos);
-    refined_grasp_debug_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-      "/vamp_planner/refined_grasp_debug", visual_qos);
-    placement_plan_markers_pub_ =
-      this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/vamp_planner/placement_plan_markers", visual_qos);
-    refined_placed_object_cloud_pub_ =
-      this->create_publisher<sensor_msgs::msg::PointCloud2>(
-      "/vamp_planner/refined_placed_object_cloud", visual_qos);
-    refined_placed_support_surface_pub_ =
-      this->create_publisher<sensor_msgs::msg::PointCloud2>(
-      "/vamp_planner/refined_placed_support_surface", visual_qos);
     // Services for Path Planning & Collision Checking
     check_replan_srv_ = this->create_service<my_actions::srv::CheckAndReplan>(
       "/vamp_planner/check_and_replan",
@@ -2257,219 +2199,6 @@ private:
       latest_segmented_target_image_ =
         std::make_shared<sensor_msgs::msg::Image>(output);
     }
-    segmented_target_image_pub_->publish(output);
-
-  }
-
-  void publishGraspMarkers(
-      const std::vector<my_actions::msg::GraspCandidate> &candidates,
-      const rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr &publisher = nullptr,
-      const std::string &namespace_prefix = "grasp_candidate_",
-      const bool pre_ranking = false) {
-    visualization_msgs::msg::MarkerArray array;
-    visualization_msgs::msg::Marker clear;
-    clear.header.frame_id = "base_link";
-    clear.header.stamp = this->now();
-    clear.ns = "grasp_candidates";
-    clear.action = visualization_msgs::msg::Marker::DELETEALL;
-    array.markers.push_back(clear);
-    for (const auto &candidate : candidates) {
-      const std::string candidate_ns = namespace_prefix + std::to_string(candidate.id);
-      const std::array<std::array<float, 3>, 5> colors{{
-        {{0.10f, 0.90f, 0.20f}}, {{0.10f, 0.55f, 1.00f}}, {{1.00f, 0.65f, 0.05f}},
-        {{0.85f, 0.15f, 0.90f}}, {{0.10f, 0.85f, 0.85f}}
-      }};
-      const auto &color = colors[(candidate.id - 1) % colors.size()];
-      const Eigen::Quaternionf robot_orientation(
-        static_cast<float>(candidate.grasp_pose.pose.orientation.w),
-        static_cast<float>(candidate.grasp_pose.pose.orientation.x),
-        static_cast<float>(candidate.grasp_pose.pose.orientation.y),
-        static_cast<float>(candidate.grasp_pose.pose.orientation.z));
-      // Render the actual IK pose. The pregrasp retreat and measured contact
-      // line can differ from the final hand axes; using either here makes an
-      // unsafe pose appear aligned in RViz.
-      const Eigen::Matrix3f grasp_rotation =
-        robot_orientation.normalized().toRotationMatrix();
-      const Eigen::Vector3f approach_axis = grasp_rotation.col(2);
-      const Eigen::Vector3f closing_axis = grasp_rotation.col(1);
-      const Eigen::Quaternionf marker_orientation(
-        visualGripperRotation(closing_axis, approach_axis));
-      const Eigen::Vector3f tcp_position(
-        static_cast<float>(candidate.grasp_pose.pose.position.x),
-        static_cast<float>(candidate.grasp_pose.pose.position.y),
-        static_cast<float>(candidate.grasp_pose.pose.position.z));
-      const Eigen::Vector3f hand_base = tcp_position -
-        approach_axis * static_cast<float>(grasp_tcp_offset_m_);
-      for (int contact = 0; contact < 2; ++contact) {
-        const auto &point = contact == 0 ? candidate.contact_left : candidate.contact_right;
-        visualization_msgs::msg::Marker finger;
-        finger.header = candidate.grasp_pose.header;
-        finger.ns = candidate_ns;
-        finger.id = static_cast<int>(candidate.id * 100 + contact);
-        finger.type = visualization_msgs::msg::Marker::CUBE;
-        finger.action = visualization_msgs::msg::Marker::ADD;
-        finger.pose = candidate.grasp_pose.pose;
-        finger.pose.orientation.x = marker_orientation.x();
-        finger.pose.orientation.y = marker_orientation.y();
-        finger.pose.orientation.z = marker_orientation.z();
-        finger.pose.orientation.w = marker_orientation.w();
-        // jaw_opening_m is the inner-face separation. Place each marker's
-        // centre another half finger-width outward so the rendered solid does
-        // not penetrate the object merely because it is centred on contact.
-        const float side = contact == 0 ? 1.0F : -1.0F;
-        const Eigen::Vector3f finger_center = hand_base +
-          approach_axis * static_cast<float>(finger_length_m_ * 0.5) +
-          side * closing_axis * static_cast<float>(
-            candidate.jaw_opening_m * 0.5 + finger_width_m_ * 0.5);
-        finger.pose.position.x = finger_center.x();
-        finger.pose.position.y = finger_center.y();
-        finger.pose.position.z = finger_center.z();
-        finger.scale.x = finger_width_m_;
-        finger.scale.y = finger_height_m_;
-        finger.scale.z = finger_length_m_;
-        finger.color.r = color[0]; finger.color.g = color[1]; finger.color.b = color[2];
-        finger.color.a = pre_ranking ? 0.25F : 0.55F;
-        array.markers.push_back(finger);
-
-        visualization_msgs::msg::Marker marker = finger;
-        marker.id = static_cast<int>(candidate.id * 100 + 10 + contact);
-        marker.type = visualization_msgs::msg::Marker::SPHERE;
-        marker.pose.orientation.w = 1.0;
-        marker.pose.position = point;
-        marker.scale.x = marker.scale.y = marker.scale.z = 0.012;
-        marker.color.r = 1.0f; marker.color.g = 0.2f; marker.color.b = 0.1f;
-        marker.color.a = pre_ranking ? 0.45F : 1.0F;
-        array.markers.push_back(marker);
-      }
-      // Accepted candidates also show the actual IK-resolved pre-grasp hand.
-      // A translucent pair distinguishes it from the solid final grasp. Raw
-      // backend proposal layers remain uncluttered because they have their
-      // own explicit publisher.
-      if (!publisher) {
-        const Eigen::Quaternionf pregrasp_robot_orientation(
-          static_cast<float>(candidate.pregrasp_pose.pose.orientation.w),
-          static_cast<float>(candidate.pregrasp_pose.pose.orientation.x),
-          static_cast<float>(candidate.pregrasp_pose.pose.orientation.y),
-          static_cast<float>(candidate.pregrasp_pose.pose.orientation.z));
-        const Eigen::Matrix3f pregrasp_rotation =
-          pregrasp_robot_orientation.normalized().toRotationMatrix();
-        const Eigen::Vector3f pregrasp_closing = pregrasp_rotation.col(1);
-        const Eigen::Vector3f pregrasp_approach = pregrasp_rotation.col(2);
-        const Eigen::Quaternionf pregrasp_marker_orientation(
-          visualGripperRotation(pregrasp_closing, pregrasp_approach));
-        const Eigen::Vector3f pregrasp_tcp(
-          static_cast<float>(candidate.pregrasp_pose.pose.position.x),
-          static_cast<float>(candidate.pregrasp_pose.pose.position.y),
-          static_cast<float>(candidate.pregrasp_pose.pose.position.z));
-        const Eigen::Vector3f pregrasp_hand_base = pregrasp_tcp -
-          pregrasp_approach * static_cast<float>(grasp_tcp_offset_m_);
-        const float pregrasp_opening = static_cast<float>(std::min(
-          maximum_gripper_width_,
-          static_cast<double>(candidate.jaw_opening_m) +
-            pregrasp_opening_clearance_m_));
-        for (int finger_index = 0; finger_index < 2; ++finger_index) {
-          const float side = finger_index == 0 ? 1.0F : -1.0F;
-          visualization_msgs::msg::Marker pregrasp_finger;
-          pregrasp_finger.header = candidate.pregrasp_pose.header;
-          pregrasp_finger.ns = candidate_ns;
-          pregrasp_finger.id = static_cast<int>(
-            candidate.id * 100 + 30 + finger_index);
-          pregrasp_finger.type = visualization_msgs::msg::Marker::CUBE;
-          pregrasp_finger.action = visualization_msgs::msg::Marker::ADD;
-          pregrasp_finger.pose = candidate.pregrasp_pose.pose;
-          pregrasp_finger.pose.orientation.x = pregrasp_marker_orientation.x();
-          pregrasp_finger.pose.orientation.y = pregrasp_marker_orientation.y();
-          pregrasp_finger.pose.orientation.z = pregrasp_marker_orientation.z();
-          pregrasp_finger.pose.orientation.w = pregrasp_marker_orientation.w();
-          const Eigen::Vector3f center = pregrasp_hand_base +
-            pregrasp_approach * static_cast<float>(finger_length_m_ * 0.5) +
-            side * pregrasp_closing *
-              (pregrasp_opening * 0.5F +
-               static_cast<float>(finger_width_m_ * 0.5));
-          pregrasp_finger.pose.position.x = center.x();
-          pregrasp_finger.pose.position.y = center.y();
-          pregrasp_finger.pose.position.z = center.z();
-          pregrasp_finger.scale.x = finger_width_m_;
-          pregrasp_finger.scale.y = finger_height_m_;
-          pregrasp_finger.scale.z = finger_length_m_;
-          pregrasp_finger.color.r = 0.75F;
-          pregrasp_finger.color.g = 0.90F;
-          pregrasp_finger.color.b = 1.00F;
-          pregrasp_finger.color.a = 0.30F;
-          array.markers.push_back(pregrasp_finger);
-        }
-      }
-      visualization_msgs::msg::Marker approach_marker;
-      approach_marker.header = candidate.grasp_pose.header;
-      approach_marker.ns = candidate_ns;
-      approach_marker.id = static_cast<int>(candidate.id * 100 + 20);
-      approach_marker.type = visualization_msgs::msg::Marker::ARROW;
-      approach_marker.action = visualization_msgs::msg::Marker::ADD;
-      approach_marker.points = {candidate.pregrasp_pose.pose.position, candidate.grasp_pose.pose.position};
-      approach_marker.scale.x = 0.006; approach_marker.scale.y = 0.012; approach_marker.scale.z = 0.018;
-      approach_marker.color.r = color[0]; approach_marker.color.g = color[1];
-      approach_marker.color.b = color[2];
-      approach_marker.color.a = pre_ranking ? 0.45F : 1.0F;
-      array.markers.push_back(approach_marker);
-      visualization_msgs::msg::Marker label;
-      label.header = candidate.grasp_pose.header;
-      label.ns = candidate_ns;
-      label.action = visualization_msgs::msg::Marker::ADD;
-      label.pose = candidate.grasp_pose.pose;
-      label.id = static_cast<int>(candidate.id * 100 + 21);
-      label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-      label.pose.orientation.x = 0.0;
-      label.pose.orientation.y = 0.0;
-      label.pose.orientation.z = 0.0;
-      label.pose.orientation.w = 1.0;
-      label.pose.position.z += 0.045;
-      label.scale.z = 0.025;
-      label.color.r = color[0]; label.color.g = color[1]; label.color.b = color[2];
-      label.color.a = pre_ranking ? 0.65F : 1.0F;
-      label.text = (pre_ranking ? "V" : "#") +
-        std::to_string(candidate.id);
-      if (!publisher) {
-        const bool aligned = candidate.validation_status.find(
-          "PAD_SURFACE_ALIGNMENT_VALIDATED") != std::string::npos;
-        const bool fallback = candidate.validation_status.find(
-          "ANGLE_TUNING_FAILED_ORIGINAL_USED") != std::string::npos;
-        const float degrees = 180.0F / static_cast<float>(M_PI);
-        const float roll = std::atan2(grasp_rotation(2,1), grasp_rotation(2,2));
-        const float pitch = std::atan2(-grasp_rotation(2,0),
-          std::hypot(grasp_rotation(0,0), grasp_rotation(1,0)));
-        const float yaw = std::atan2(grasp_rotation(1,0), grasp_rotation(0,0));
-        std::ostringstream text;
-        text << label.text << "\n" << (aligned ? "Surface aligned" :
-          fallback ? "Original pose (angle fallback)" : "Angle tuning not reported")
-          << "\nRPY " << std::fixed << std::setprecision(1)
-          << roll*degrees << ", " << pitch*degrees << ", " << yaw*degrees << " deg";
-        label.text = text.str();
-        label.scale.z = 0.014;
-        for (int axis=0; axis<3; ++axis) {
-          auto axes = approach_marker;
-          axes.id = static_cast<int>(candidate.id*100+40+axis);
-          axes.points.clear();
-          axes.points.push_back(candidate.grasp_pose.pose.position);
-          auto end = candidate.grasp_pose.pose.position;
-          const Eigen::Vector3f direction = grasp_rotation.col(axis)*.04F;
-          end.x += direction.x(); end.y += direction.y(); end.z += direction.z();
-          axes.points.push_back(end);
-          axes.scale.x = .002; axes.scale.y = .004; axes.scale.z = .007;
-          axes.color.r = axis==0 ? 1.F : 0.F;
-          axes.color.g = axis==1 ? 1.F : 0.F;
-          axes.color.b = axis==2 ? 1.F : 0.F;
-          axes.color.a = 1.F;
-          array.markers.push_back(axes);
-        }
-      }
-      if (namespace_prefix == "angle_trial_") {
-        label.text = candidate.validation_status;
-        label.scale.z = .011;
-        label.pose.position.z += .025 * static_cast<double>((candidate.id-1)%3);
-      }
-      array.markers.push_back(label);
-    }
-    (publisher ? publisher : grasp_markers_pub_)->publish(array);
   }
 
   struct HandleOrientation {
@@ -2589,59 +2318,6 @@ private:
     pair.quality = 0.002F;  // Prefer direct silhouette edges when available.
     pair.body_model_supported = true;
     return pair.left.allFinite() && pair.right.allFinite();
-  }
-
-  struct RejectedGraspPose {
-    Eigen::Isometry3f pose = Eigen::Isometry3f::Identity();
-    Eigen::Vector3f closing = Eigen::Vector3f::UnitY();
-    Eigen::Vector3f approach = Eigen::Vector3f::UnitZ();
-    float opening = 0.060f;
-    std::string reason;
-  };
-
-  void publishRejectedGraspMarkers(const std::vector<RejectedGraspPose> &rejected) {
-    visualization_msgs::msg::MarkerArray array;
-    visualization_msgs::msg::Marker clear;
-    clear.header.frame_id = "base_link";
-    clear.header.stamp = this->now();
-    clear.ns = "grasp_debug_rejected";
-    // RViz checks namespace/ID uniqueness even for DELETEALL entries.
-    // Keep this control marker distinct from rejected pose index zero.
-    clear.id = -1;
-    clear.action = visualization_msgs::msg::Marker::DELETEALL;
-    array.markers.push_back(clear);
-    for (size_t index = 0; index < rejected.size(); ++index) {
-      const auto &entry = rejected[index];
-      const std::string candidate_ns = "grasp_debug_rejected_" + std::to_string(index + 1);
-      Eigen::Quaternionf q(visualGripperRotation(entry.closing, entry.approach));
-      visualization_msgs::msg::Marker marker;
-      marker.header.frame_id = "base_link";
-      marker.header.stamp = this->now();
-      marker.ns = candidate_ns;
-      marker.id = static_cast<int>(index * 10);
-      marker.type = visualization_msgs::msg::Marker::CUBE;
-      marker.action = visualization_msgs::msg::Marker::ADD;
-      marker.pose.position.x = entry.pose.translation().x();
-      marker.pose.position.y = entry.pose.translation().y();
-      marker.pose.position.z = entry.pose.translation().z();
-      marker.pose.orientation.x = q.x(); marker.pose.orientation.y = q.y();
-      marker.pose.orientation.z = q.z(); marker.pose.orientation.w = q.w();
-      marker.scale.x = entry.opening + finger_width_m_ * 2.0;
-      marker.scale.y = finger_height_m_;
-      marker.scale.z = finger_length_m_;
-      marker.color.r = 1.0f; marker.color.g = 0.15f; marker.color.b = 0.05f; marker.color.a = 0.35f;
-      array.markers.push_back(marker);
-      visualization_msgs::msg::Marker label = marker;
-      label.id += 1;
-      label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-      label.pose.orientation.w = 1.0;
-      label.pose.position.z += 0.05;
-      label.scale.z = 0.022;
-      label.color.r = 1.0f; label.color.g = 0.8f; label.color.b = 0.1f; label.color.a = 1.0f;
-      label.text = "R" + std::to_string(index + 1) + ": " + entry.reason;
-      array.markers.push_back(label);
-    }
-    grasp_debug_markers_pub_->publish(array);
   }
 
   std::vector<Eigen::Vector3f> collectMaskedObjectPoints(
@@ -3621,14 +3297,6 @@ private:
         cv::putText(debug, response->failure_reason, cv::Point(10, 54),
           cv::FONT_HERSHEY_SIMPLEX, 0.52, color, 2);
       }
-      sensor_msgs::msg::Image debug_message;
-      debug_message.header = cloud->header;
-      debug_message.height = static_cast<uint32_t>(debug.rows);
-      debug_message.width = static_cast<uint32_t>(debug.cols);
-      debug_message.encoding = "bgr8";
-      debug_message.step = static_cast<uint32_t>(debug.cols * 3);
-      debug_message.data.assign(debug.datastart, debug.dataend);
-      refined_grasp_debug_pub_->publish(debug_message);
     }
     RCLCPP_INFO(
       this->get_logger(),
@@ -3902,19 +3570,6 @@ private:
       std::lock_guard<std::mutex> lock(placement_plan_mutex_);
       cached_placement_plan_.reset();
     }
-    visualization_msgs::msg::MarkerArray clear_markers;
-    visualization_msgs::msg::Marker clear;
-    clear.action = visualization_msgs::msg::Marker::DELETEALL;
-    clear_markers.markers.push_back(clear);
-    placement_plan_markers_pub_->publish(clear_markers);
-    sensor_msgs::msg::PointCloud2 clear_preview;
-    clear_preview.header.frame_id = "base_link";
-    clear_preview.header.stamp = now();
-    sensor_msgs::PointCloud2Modifier clear_modifier(clear_preview);
-    clear_modifier.setPointCloud2FieldsByString(1, "xyz");
-    clear_modifier.resize(0);
-    refined_placed_object_cloud_pub_->publish(clear_preview);
-    refined_placed_support_surface_pub_->publish(clear_preview);
 
     if (request->candidates.empty() && !request->lift_only) {
       response->status = "PLACEMENT_PLAN_NO_CANDIDATES";
@@ -5346,115 +5001,6 @@ private:
       if (!response->motion_success) { response->status=response->motion_status; return; }
     }
 
-    sensor_msgs::msg::PointCloud2 placed_cloud;
-    placed_cloud.header.frame_id = "base_link";
-    placed_cloud.header.stamp = this->now();
-    sensor_msgs::PointCloud2Modifier modifier(placed_cloud);
-    modifier.setPointCloud2FieldsByString(1, "xyz");
-    modifier.resize(source_points.size());
-    sensor_msgs::PointCloud2Iterator<float> placed_x(placed_cloud, "x");
-    sensor_msgs::PointCloud2Iterator<float> placed_y(placed_cloud, "y");
-    sensor_msgs::PointCloud2Iterator<float> placed_z(placed_cloud, "z");
-    for (const auto &source_point : source_points) {
-      const Eigen::Vector3f point = best->object_delta * source_point;
-      *placed_x = point.x(); *placed_y = point.y(); *placed_z = point.z();
-      ++placed_x; ++placed_y; ++placed_z;
-    }
-    refined_placed_object_cloud_pub_->publish(placed_cloud);
-
-    // Show the inferred source support contour at the accepted placement.
-    // Use the same resolved-IK object transform as placed_cloud so this view
-    // includes the actual placement offset accepted by the planner.
-    sensor_msgs::msg::PointCloud2::SharedPtr source_support_surface;
-    {
-      std::lock_guard<std::mutex> lock(object_support_surface_mutex_);
-      source_support_surface = latest_object_support_surface_;
-    }
-    if (source_support_surface &&
-      source_support_surface->header.frame_id == "base_link" &&
-      source_support_surface->width > 0 &&
-      source_support_surface->header.stamp.sec == source_cloud->header.stamp.sec &&
-      source_support_surface->header.stamp.nanosec == source_cloud->header.stamp.nanosec)
-    {
-      std::vector<Eigen::Vector3f> support_points;
-      sensor_msgs::PointCloud2ConstIterator<float> support_x(
-        *source_support_surface, "x");
-      sensor_msgs::PointCloud2ConstIterator<float> support_y(
-        *source_support_surface, "y");
-      sensor_msgs::PointCloud2ConstIterator<float> support_z(
-        *source_support_surface, "z");
-      for (; support_x != support_x.end();
-        ++support_x, ++support_y, ++support_z)
-      {
-        if (std::isfinite(*support_x) && std::isfinite(*support_y) &&
-          std::isfinite(*support_z))
-        {
-          support_points.emplace_back(*support_x, *support_y, *support_z);
-        }
-      }
-      sensor_msgs::msg::PointCloud2 placed_support;
-      placed_support.header = placed_cloud.header;
-      sensor_msgs::PointCloud2Modifier support_modifier(placed_support);
-      support_modifier.setPointCloud2FieldsByString(1, "xyz");
-      support_modifier.resize(support_points.size());
-      sensor_msgs::PointCloud2Iterator<float> placed_support_x(
-        placed_support, "x");
-      sensor_msgs::PointCloud2Iterator<float> placed_support_y(
-        placed_support, "y");
-      sensor_msgs::PointCloud2Iterator<float> placed_support_z(
-        placed_support, "z");
-      for (const auto &source_point : support_points) {
-        const Eigen::Vector3f point = best->object_delta * source_point;
-        *placed_support_x = point.x();
-        *placed_support_y = point.y();
-        *placed_support_z = point.z();
-        ++placed_support_x; ++placed_support_y; ++placed_support_z;
-      }
-      refined_placed_support_surface_pub_->publish(placed_support);
-    } else {
-      RCLCPP_WARN(
-        this->get_logger(),
-        "[PLACEMENT PLAN] Accepted object support contour unavailable or stale; "
-        "the placed support surface was not published.");
-    }
-
-    visualization_msgs::msg::MarkerArray markers;
-    markers.markers.push_back(clear);
-    visualization_msgs::msg::Marker approach;
-    approach.header = response->placement_ee_pose.header;
-    approach.ns = "selected_placement_approach";
-    approach.id = 1;
-    approach.type = visualization_msgs::msg::Marker::ARROW;
-    approach.action = visualization_msgs::msg::Marker::ADD;
-    approach.points = {
-      response->preplace_ee_pose.pose.position,
-      response->placement_ee_pose.pose.position};
-    approach.scale.x = 0.007;
-    approach.scale.y = 0.014;
-    approach.scale.z = 0.020;
-    approach.color.r = 0.1F; approach.color.g = 1.0F;
-    approach.color.b = 0.2F; approach.color.a = 1.0F;
-    markers.markers.push_back(approach);
-    const std::array<std::array<float, 3>, 3> colors{{
-      {{1.0F, 0.1F, 0.1F}}, {{0.1F, 1.0F, 0.1F}}, {{0.1F, 0.3F, 1.0F}}}};
-    for (int axis = 0; axis < 3; ++axis) {
-      visualization_msgs::msg::Marker marker;
-      marker.header = response->placement_ee_pose.header;
-      marker.ns = "selected_placement_ee";
-      marker.id = 10 + axis;
-      marker.type = visualization_msgs::msg::Marker::ARROW;
-      marker.action = visualization_msgs::msg::Marker::ADD;
-      geometry_msgs::msg::Point start = response->placement_ee_pose.pose.position;
-      geometry_msgs::msg::Point end = start;
-      end.x += best->resolved.linear()(0, axis) * 0.06F;
-      end.y += best->resolved.linear()(1, axis) * 0.06F;
-      end.z += best->resolved.linear()(2, axis) * 0.06F;
-      marker.points = {start, end};
-      marker.scale.x = 0.006; marker.scale.y = 0.012; marker.scale.z = 0.016;
-      marker.color.r = colors[axis][0]; marker.color.g = colors[axis][1];
-      marker.color.b = colors[axis][2]; marker.color.a = 1.0F;
-      markers.markers.push_back(marker);
-    }
     const Eigen::Vector3f hand_base = best->resolved.translation() -
       best->resolved.linear().col(2) * static_cast<float>(grasp_tcp_offset_m_);
     const Eigen::Quaternionf finger_rotation(visualGripperRotation(
@@ -5463,29 +5009,20 @@ private:
     response->placement_finger_dimensions.y = finger_height_m_;
     response->placement_finger_dimensions.z = finger_length_m_;
     for (int finger = 0; finger < 2; ++finger) {
-      visualization_msgs::msg::Marker marker;
-      marker.header = response->placement_ee_pose.header;
-      marker.ns = "selected_placement_fingers";
-      marker.id = 20 + finger;
-      marker.type = visualization_msgs::msg::Marker::CUBE;
-      marker.action = visualization_msgs::msg::Marker::ADD;
+      geometry_msgs::msg::Pose pose;
       const Eigen::Vector3f center = hand_base +
         best->resolved.linear().col(2) * static_cast<float>(finger_length_m_*0.5) +
         (finger == 0 ? 1.0F : -1.0F)*best->resolved.linear().col(1)*
           static_cast<float>((selected_grasp.jaw_opening_m + finger_width_m_)*0.5);
-      marker.pose.position.x = center.x();
-      marker.pose.position.y = center.y();
-      marker.pose.position.z = center.z();
-      marker.pose.orientation.x = finger_rotation.x();
-      marker.pose.orientation.y = finger_rotation.y();
-      marker.pose.orientation.z = finger_rotation.z();
-      marker.pose.orientation.w = finger_rotation.w();
-      marker.scale = response->placement_finger_dimensions;
-      marker.color.g = 1.0F; marker.color.a = 0.75F;
-      response->placement_finger_poses.push_back(marker.pose);
-      markers.markers.push_back(marker);
+      pose.position.x = center.x();
+      pose.position.y = center.y();
+      pose.position.z = center.z();
+      pose.orientation.x = finger_rotation.x();
+      pose.orientation.y = finger_rotation.y();
+      pose.orientation.z = finger_rotation.z();
+      pose.orientation.w = finger_rotation.w();
+      response->placement_finger_poses.push_back(pose);
     }
-    placement_plan_markers_pub_->publish(markers);
 
     std::ostringstream status;
     status << std::fixed << std::setprecision(1)
@@ -5893,15 +5430,7 @@ private:
             }
           }
         }
-        publishGraspMarkers(angle_trials, angle_trial_markers_pub_, "angle_trial_", true);
       });
-    publishGraspMarkers({}, angle_trial_markers_pub_, "angle_trial_", true);
-    publishGraspMarkers({});
-    publishGraspMarkers({}, valid_grasp_markers_pub_, "valid_grasp_candidate_", true);
-    publishGraspMarkers({}, known_cloud_proposals_markers_pub_, "known_cloud_proposal_");
-    publishGraspMarkers({}, hggd_raw_proposals_markers_pub_, "hggd_raw_proposal_");
-    publishGraspMarkers({}, hggd_proposals_markers_pub_, "hggd_proposal_");
-    publishRejectedGraspMarkers({});
     sensor_msgs::msg::PointCloud2::SharedPtr cloud;
     sensor_msgs::msg::Image::SharedPtr observation_image;
     sensor_msgs::msg::CameraInfo::SharedPtr camera_info;
@@ -6110,7 +5639,6 @@ private:
     correction = std::hypot(u - request->seed_u, v - request->seed_v);
     response->validated_target_mask = target_mask;
     publishObjectWorld(*cloud, target_mask);
-    segmented_target_mask_pub_->publish(target_mask);
     if (observation_image &&
         observation_image->width == target_mask.width &&
         observation_image->height == target_mask.height) {
@@ -6460,16 +5988,6 @@ private:
         // Heatmap is an inference diagnostic, not a validation result. Save
         // and publish it immediately so PCA/IK failure cannot suppress it.
         if (!heatmap.empty()) {
-          sensor_msgs::msg::Image message;
-          message.header = observation_image->header;
-          message.height = static_cast<uint32_t>(heatmap.rows);
-          message.width = static_cast<uint32_t>(heatmap.cols);
-          message.encoding = "bgr8";
-          message.is_bigendian = false;
-          message.step = static_cast<uint32_t>(heatmap.cols * 3);
-          message.data.assign(heatmap.datastart, heatmap.dataend);
-          hggd_heatmap_pub_->publish(message);
-          hggd_heatmap_output = "/vamp_planner/hggd_heatmap";
           const char *home = std::getenv("HOME");
           if (home != nullptr && *home != '\0') {
             const auto capture_dir = std::filesystem::path(home) /
@@ -6674,9 +6192,6 @@ private:
             std::make_move_iterator(aligned_hypotheses.end()));
           ++hggd_aligned_centers;
         }
-        publishGraspMarkers(
-          prefiltered_raw_hggd_markers,
-          hggd_raw_proposals_markers_pub_, "hggd_raw_proposal_");
         hggd_seed_selection_ms = std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - seed_selection_started).count();
         proposals = std::move(aligned_seeds);
@@ -6784,8 +6299,6 @@ private:
       marker.score = visual_proposal.quality;
       marker_group->push_back(marker);
     }
-    publishGraspMarkers(cloud_markers, known_cloud_proposals_markers_pub_, "known_cloud_proposal_");
-    publishGraspMarkers(hggd_markers, hggd_proposals_markers_pub_, "hggd_proposal_");
 
     std::vector<Point> env;
     std::vector<uint8_t> env_target_flags;
@@ -6823,7 +6336,6 @@ private:
           env_target_flags.begin(), env_target_flags.end(), uint8_t{1})),
         target_collision_clearance_m_);
     }
-    std::vector<RejectedGraspPose> rejected_debug;
     int rejected_score = 0, rejected_width = 0, rejected_antipodal = 0;
     int rejected_contacts = 0, rejected_finger_sweep = 0, rejected_ik = 0;
     std::unordered_map<std::string, int> contact_rejection_reasons;
@@ -6840,13 +6352,7 @@ private:
     int rejected_grasp_collision = 0, rejected_pregrasp_collision = 0;
     int retained_pregrasp_overrides = 0;
     size_t ranking_pool_candidate_count = 0;
-    const auto record_rejection = [&rejected_debug](
-        const Eigen::Isometry3f &pose, const Eigen::Vector3f &closing,
-        const Eigen::Vector3f &approach, float opening, const std::string &reason) {
-      if (rejected_debug.size() < 10) {
-        rejected_debug.push_back({pose, closing, approach, opening, reason});
-      }
-    };
+    const auto record_rejection = [](auto&&...) {};
     std::optional<vamp_node::GraspSupportPlane> grasp_support_plane;
     if (pure_hggd) {
       std::vector<Eigen::Vector3f> support_samples;
@@ -8364,9 +7870,6 @@ private:
           response->candidates.clear();
           response->success = false;
           response->status = "NO_PATH_REACHABLE_PREGRASP";
-          publishGraspMarkers(
-            response->candidates, valid_grasp_markers_pub_,
-            "valid_grasp_candidate_", true);
           RCLCPP_WARN(
             this->get_logger(),
             "[GRASP PREPLAN] all %zu collision-safe endpoint candidates "
@@ -8411,9 +7914,6 @@ private:
           total_preplanning_ms, grasp_path_length_weight_,
           response->candidates.front().id);
       }
-      publishGraspMarkers(
-        response->candidates, valid_grasp_markers_pub_,
-        "valid_grasp_candidate_", true);
       if (pure_hggd) {
         // Preserve ranked, validated alternatives through the shared API.
         // The prepared session selects the first complete motion solution.
@@ -8514,10 +8014,6 @@ private:
       }
     } else {
     }
-    publishGraspMarkers(response->candidates);
-    // Keep a bounded sample of feasibility failures visible alongside the
-    // final pool; raw GPD proposals use their dedicated marker topic.
-    publishRejectedGraspMarkers(rejected_debug);
     response->success = !response->candidates.empty();
     if (response->success) {
       if (enable_grasp_collision_check_) {

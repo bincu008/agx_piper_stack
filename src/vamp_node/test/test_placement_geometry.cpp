@@ -360,7 +360,7 @@ TEST(LayoutSceneCache, ExactCloudAndSupportPolicyControlReuse) {
     EXPECT_FLOAT_EQ(first->points[0].x(), 0.0F);
 }
 
-#include "vamp_node/organized_xyz_reader.hpp"
+#include "vamp_node/vamp_utils.hpp"
 
 TEST(OrganizedXYZReader, MatchesIteratorWithReorderedPaddedFieldsAndInvalidDepth) {
     sensor_msgs::msg::PointCloud2 cloud;
@@ -415,7 +415,6 @@ TEST(RimSeed, RejectsUnsupportedOrDistantSamples) {
     EXPECT_FALSE(vamp_node::supportedRimSeed(points, Eigen::Vector3f::Zero(), 0.03F));
 }
 
-#include "vamp_node/piper_finger_geometry.hpp"
 TEST(PiperFingerGeometry, PreservesPalmAndNominalOpening) {
     const auto pose=Eigen::Isometry3f::Identity();
     const Eigen::Vector3f center(.01F,.04F,.12F);

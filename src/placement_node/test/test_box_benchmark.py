@@ -3,7 +3,9 @@
 import numpy as np
 import pytest
 
-from placement_node.box_fixture import box_fixture, box_surface, box_top, box_contact_seeds, tray_floor_mask
+from placement_node.box_benchmark import (
+    box_fixture, box_surface, box_top, box_contact_seeds,
+    tray_floor_mask, replace_fixture_floor_noise)
 from placement_node.packing import search_heightmap_placements
 from placement_node.perception import extract_destination_cloud
 
@@ -364,7 +366,7 @@ def test_motion_failure_is_not_accepted_as_placement(monkeypatch, tmp_path):
 
 
 def test_virtual_support_replaces_only_duplicate_floor_noise():
-    from placement_node.box_fixture import replace_fixture_floor_noise
+    from placement_node.box_benchmark import replace_fixture_floor_noise
     box = box_surface([.24, .29, .04])
     original = np.array([[.22, .27, .0014], [.22, .27, -.002],
                          [.22, .27, .008], [.40, .27, .0014]])

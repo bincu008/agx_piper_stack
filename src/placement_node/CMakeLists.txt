@@ -33,6 +33,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_inference test/test_inference.py)
   ament_add_pytest_test(test_robobrain_api test/test_robobrain_api.py)
   ament_add_pytest_test(test_layout_debug test/test_layout_debug.py)
+  ament_add_pytest_test(test_prepare_held_scene test/test_prepare_held_scene.py)
 endif()
 
 ament_package()

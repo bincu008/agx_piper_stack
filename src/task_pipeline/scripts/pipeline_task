@@ -18,8 +18,7 @@ from task_pipeline.recipes import (cup_to_tray, grasp_and_lift, prepare_grasp_li
                                    prepare_pick_place, execute_cached_pick_place, pick_and_place)
 from my_actions.srv import PreparedGraspLift, PreparePickPlace
 from task_pipeline.registry import FUNCTIONS
-from task_pipeline.recipes import with_active_memory
-from task_pipeline.preparation_recovery import retry_preparation
+from task_pipeline.recipes import retry_preparation, with_active_memory
 from rclpy.serialization import deserialize_message
 
 
@@ -196,6 +195,34 @@ def main():
                 state = deserialize_message(bytes(item.response_cdr), FUNCTIONS['get_execution_state'].service_type.Response)
                 data['execution_state'] = dict(message_to_ordereddict(state))
         print(json.dumps(data, indent=2), flush=True)
+
+        api_purposes = {
+            'capture_observation': 'Capture synchronized RGB-D',
+            'pin_grasp_observation': 'Preserve grasp frame',
+            'pin_placement_observation': 'Preserve placement frame',
+            'verify_presence': 'RoboBrain presence check',
+            'ground_object': 'RoboBrain bounding box',
+            'segment_object': 'EdgeSAM mask',
+            'prepare_grasp_input': 'Prepare grasp inputs',
+            'calculate_grasps': 'HGGD generation and validation',
+            'update_object': 'Register object in master state',
+            'select_grasp': 'Select ranked grasp',
+            'cache_grasp_plan': 'Store selected grasp',
+            'find_placements': 'Search stable placements',
+            'plan_placement': 'Placement/pre-place IK and collision checks',
+            'commit_floor_slots': 'Reserve selected grid cells',
+        }
+        print("\n" + "=" * 95)
+        print(f"{'#':<3} | {'API':<27} | {'Purpose':<42} | {'Runtime (s)':<11} | {'Status'}")
+        print("-" * 95)
+        for i, step_info in enumerate(data['steps'], 1):
+            func = step_info['function']
+            target = step_info.get('target', '')
+            desc = api_purposes.get(func, func)
+            if target:
+                desc = f"{desc} — {target}"
+            print(f"{i:<3} | {func:<27} | {desc:<42} | {step_info['seconds']:<11.4f} | {step_info['status']}")
+        print("=" * 95 + "\n", flush=True)
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(data, indent=2) + '\n')

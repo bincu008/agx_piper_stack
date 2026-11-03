@@ -34,26 +34,24 @@ from my_actions.srv import (
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 
-from .grounding import grounding_request
-from .inference import infer_placements, make_dummy_box_cloud
+from .inference import infer_placements, make_dummy_box_cloud, grounding_request
 from .model import load_anyplace_checkpoint
-from task_pipeline.timing import publish_timing
+from task_pipeline.metrics import publish_timing
 from my_actions.msg import PipelineTiming
-from task_pipeline.grasp_input import affordance_from_description
 from task_pipeline.registry import endpoint
-from task_pipeline.placement import search_placements, validate_placements
+from task_pipeline.recipes import (
+    affordance_from_description, search_placements, validate_placements)
 
-from .held_scene import prepare_held_scene
 from .floor_slots import FloorSlots, layout_key
-from .packing import search_heightmap_placements, destination_support_mask
-from .packing_api import make_search_request, decode_search_response, diagnostics_json
+from .packing import (
+    search_heightmap_placements, destination_support_mask,
+    make_search_request, decode_search_response, diagnostics_json)
 from .perception import (
     construct_support_bottom, estimate_support_translation,
     extract_destination_cloud, parse_grounding_box, recover_depth_connected_boundary,
-    recover_semantic_source_mask, active_source_support_labels, exposed_stack_support_labels)
-from .transforms import (
+    recover_semantic_source_mask, active_source_support_labels, exposed_stack_support_labels,
     load_hand_eye_matrix, piper_base_to_camera, transform_points,
-    transform_pose, pose_matrix, attached_object_delta)
+    transform_pose, pose_matrix, attached_object_delta, prepare_held_scene)
 
 
 def robobrain_chat_endpoint(base_url: str) -> str:
@@ -73,6 +71,14 @@ def parse_robobrain_content(response: dict) -> str:
     if not isinstance(content, str):
         raise ValueError("choices[0].message.content is not text")
     return content
+
+
+class _NoOpPublisher:
+    """No-op publisher to eliminate unnecessary debug topic streaming."""
+    def publish(self, *args, **kwargs):
+        pass
+
+_NOOP_PUB = _NoOpPublisher()
 
 
 class PlacementNode(Node):
@@ -176,21 +182,15 @@ class PlacementNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._destination_pub = self.create_publisher(
             PointCloud2, "/placement/destination_cloud", transient)
-        self._object_pub = self.create_publisher(
-            PointCloud2, "/placement/best_placed_object", transient)
-        self._completed_object_pub = self.create_publisher(
-            PointCloud2, "/placement/completed_object_cloud", transient)
+        self._object_pub = _NOOP_PUB
+        self._completed_object_pub = _NOOP_PUB
         self._bottom_pub = self.create_publisher(
             PointCloud2, "/placement/artificial_bottom_cloud", transient)
-        self._trial_candidates_pub = self.create_publisher(
-            MarkerArray, '/placement/trial_candidates', transient)
+        self._trial_candidates_pub = _NOOP_PUB
         self._slot_pub = self.create_publisher(MarkerArray, '/placement/floor_slots', transient)
-        self._marker_pub = self.create_publisher(
-            MarkerArray, "/placement/placement_candidates", transient)
-        self._debug_pub = self.create_publisher(
-            Image, "/placement/grounding_debug", transient)
-        self._status_pub = self.create_publisher(
-            String, "/placement/status", transient)
+        self._marker_pub = _NOOP_PUB
+        self._debug_pub = _NOOP_PUB
+        self._status_pub = _NOOP_PUB
         self.create_subscription(
             PointCloud2, "/active_vision/observation_cloud",
             self._observation_cloud_callback, transient)
@@ -333,8 +333,10 @@ class PlacementNode(Node):
             header = Header()
             header.stamp = object_message.header.stamp
             header.frame_id = "base_link"
-            completed_message = point_cloud2.create_cloud_xyz32(
-                header, completed.tolist())
+            if self._completed_object_pub is not _NOOP_PUB:
+                completed_message = point_cloud2.create_cloud_xyz32(
+                    header, completed.tolist())
+                self._completed_object_pub.publish(completed_message)
             bottom_message = point_cloud2.create_cloud_xyz32(
                 header, bottom.tolist())
             with self._lock:
@@ -346,7 +348,6 @@ class PlacementNode(Node):
                     self._completed_object_stamp = stamp
                 else:
                     return
-            self._completed_object_pub.publish(completed_message)
             self._bottom_pub.publish(bottom_message)
             normal = diagnostics["plane_normal"]
             self.get_logger().info(
@@ -564,6 +565,8 @@ class PlacementNode(Node):
 
     def _publish_layout_markers(self, header, placed_objects):
         """Keep all accepted objects and their sequence labels visible in RViz."""
+        if self._marker_pub is _NOOP_PUB:
+            return
         markers = MarkerArray()
         delete = Marker()
         delete.action = Marker.DELETEALL
@@ -636,6 +639,8 @@ class PlacementNode(Node):
              pose.orientation.w])
 
     def _publish_candidates(self, header, candidates, object_points, dimensions):
+        if self._marker_pub is _NOOP_PUB and self._object_pub is _NOOP_PUB:
+            return
         _ = dimensions
         markers = MarkerArray()
         delete = Marker()
@@ -1299,9 +1304,10 @@ class PlacementNode(Node):
                     self._destination_pub.publish(
                         point_cloud2.create_cloud_xyz32(
                             header, np.vstack(accumulated).tolist()))
-                    self._object_pub.publish(
-                        point_cloud2.create_cloud_xyz32(
-                            header, placed_display.tolist()))
+                    if self._object_pub is not _NOOP_PUB:
+                        self._object_pub.publish(
+                            point_cloud2.create_cloud_xyz32(
+                                header, placed_display.tolist()))
                     self._bottom_pub.publish(
                         point_cloud2.create_cloud_xyz32(
                             header, active_footprint.tolist()))
@@ -1353,6 +1359,8 @@ class PlacementNode(Node):
 
     def _publish_trial_candidates(self, header, name, candidates, center, points, grasp, bottom=None):
         """Show proposed object footprints and rigidly attached gripper targets, not valid plans."""
+        if self._trial_candidates_pub is _NOOP_PUB:
+            return
         markers = MarkerArray(markers=[Marker(action=Marker.DELETEALL)])
         if bottom is not None and len(bottom) >= 3:
             indices = cv2.convexHull(np.ascontiguousarray(bottom[:, :2], np.float32),

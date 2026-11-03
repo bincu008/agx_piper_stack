@@ -6,7 +6,7 @@
 
 #include "vamp_node/known_cloud_grasp_generator.hpp"
 #include "vamp_node/deterministic_ik.hpp"
-#include "vamp_node/grasp_diversity.hpp"
+#include "vamp_node/vamp_utils.hpp"
 
 namespace {
 

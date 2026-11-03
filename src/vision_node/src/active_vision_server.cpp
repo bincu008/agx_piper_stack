@@ -1,10 +1,6 @@
-#include "vision_node/target_visibility.hpp"
+#include "vision_node/active_vision_utils.hpp"
 #include "my_actions/srv/check_target_visibility.hpp"
-#include "vision_node/nbv_preference.hpp"
 #include <onnxruntime_cxx_api.h>
-#include "vision_node/metric_scale.hpp"
-#include "vision_node/voxel_neighbors.hpp"
-#include "vision_node/perception_translation.hpp"
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "my_actions/srv/get_yolo_inference.hpp"
@@ -104,8 +100,6 @@ public:
       throw std::invalid_argument("perception_position_offset_base_m requires three finite metres");
     }
     perception_position_offset_base_m_ = Eigen::Vector3f(offset[0], offset[1], offset[2]);
-    corrected_depth_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-      "/active_vision/corrected_registered_depth", rclcpp::SensorDataQoS());
     RCLCPP_INFO(this->get_logger(), "[METRIC SCALE] measured/real=%.6f correction=%.6f before FK*X",
       perception_measurement_ratio_, 1. / perception_measurement_ratio_);
 
@@ -176,10 +170,6 @@ public:
     // this node reads from the TF tree.
     calibrated_camera_tf_broadcaster_ =
       std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-    gripper_self_mask_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-      "/active_vision/gripper_self_mask", map_qos);
-    gripper_self_filter_debug_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-      "/active_vision/gripper_self_filter_debug", map_qos);
     collision_alert_pub_ = this->create_publisher<std_msgs::msg::Bool>("/active_vision/collision_alert", 10);
 
     // Services
@@ -441,31 +431,8 @@ private:
   }
 
   void publishGripperSelfFilterDebug(
-    const cv::Mat &mask, const cv::Mat &rgb,
-    const std_msgs::msg::Header &header, double gripper_width_m) {
-    if (mask.empty()) return;
-    gripper_self_mask_pub_->publish(
-      *cv_bridge::CvImage(header, "mono8", mask).toImageMsg());
-    cv::Mat debug;
-    if (!rgb.empty() && rgb.size() == mask.size()) {
-      cv::Mat red_overlay(rgb.size(), CV_8UC3, cv::Scalar(0, 0, 255));
-      debug = rgb.clone();
-      cv::Mat blended;
-      cv::addWeighted(rgb, 0.45, red_overlay, 0.55, 0.0, blended);
-      blended.copyTo(debug, mask);
-    } else {
-      // A depth scan must always produce an inspectable mask even when no RGB
-      // frame satisfies the synchronization tolerance.
-      cv::cvtColor(mask, debug, cv::COLOR_GRAY2BGR);
-    }
-    std::ostringstream label;
-    label << "gripper self-mask width=" << std::fixed << std::setprecision(3)
-          << gripper_width_m << " m";
-    cv::putText(debug, label.str(), cv::Point(10, 28),
-                cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 255, 255), 2);
-    gripper_self_filter_debug_pub_->publish(
-      *cv_bridge::CvImage(header, "bgr8", debug).toImageMsg());
-  }
+    const cv::Mat &, const cv::Mat &,
+    const std_msgs::msg::Header &, double) {}
 
   void runYoloInference(const cv::Mat & captured_image,
                         const std_msgs::msg::Header & observation_header,
@@ -1461,9 +1428,6 @@ private:
     const auto msg = perception_measurement_ratio_ == 1. ? raw_msg :
       std::make_shared<const sensor_msgs::msg::PointCloud2>(
         correct_camera_measurements(*raw_msg, perception_measurement_ratio_));
-    if (corrected_depth_pub_->get_subscription_count() > 0) {
-      corrected_depth_pub_->publish(corrected_registered_depth(*msg));
-    }
     if (collision_monitor_active_) {
         sensor_msgs::PointCloud2ConstIterator<float> iter_x(*msg, "x");
         sensor_msgs::PointCloud2ConstIterator<float> iter_y(*msg, "y");
@@ -1581,8 +1545,6 @@ private:
     observation_camera_transform_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster>
     calibrated_camera_tf_broadcaster_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr gripper_self_mask_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr gripper_self_filter_debug_pub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr collision_monitor_sub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr collision_alert_pub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr trigger_scan_srv_;
@@ -1597,7 +1559,6 @@ private:
 
   Eigen::Vector3f perception_position_offset_base_m_ = Eigen::Vector3f::Zero();
   double perception_measurement_ratio_ = 1.;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr corrected_depth_pub_;
   sensor_msgs::msg::PointCloud2::ConstSharedPtr latest_pcd_;
   sensor_msgs::msg::JointState::ConstSharedPtr latest_pose_;
   sensor_msgs::msg::PointCloud2::ConstSharedPtr observation_pcd_;

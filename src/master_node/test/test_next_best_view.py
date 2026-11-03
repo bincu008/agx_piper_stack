@@ -300,7 +300,7 @@ def test_next_view_preview_shows_only_final_tcp_and_clears_failed_replacement():
 
 def test_frozen_retreat_scene_contains_achieved_object_not_source():
     """Predict release geometry without taking another camera observation."""
-    from test_prepared_plan_review import fixture as review_fixture
+    from test_prepared_grasp_lift import review_fixture
     from sensor_msgs_py import point_cloud2
 
     source, candidate, motion, nominal, center, points = review_fixture()

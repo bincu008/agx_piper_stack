@@ -5,7 +5,7 @@
 #include <limits>
 
 #include "vamp_node/cartesian_grasp_approach.hpp"
-#include "vamp_node/grasp_position_offset.hpp"
+#include "vamp_node/vamp_utils.hpp"
 
 namespace {
 

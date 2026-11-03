@@ -241,7 +241,7 @@ def test_thin_rim_remains_valid_during_held_lift():
 
 def test_held_feedback_uses_sustained_force_evidence_for_brief_dip():
     """An isolated low reading does not contradict the confirmed stable grasp."""
-    from master_node.contact_evidence import SettledContact
+    from master_node.held_motion import SettledContact
     held, events = fixture()
     gate = SettledContact()
     now = time.monotonic()
@@ -265,3 +265,78 @@ def test_held_feedback_uses_sustained_force_evidence_for_brief_dip():
     held.node.gripper_contact_evidence = loss
     with pytest.raises(RuntimeError, match='CONTACT_BELOW_HOLDING_THRESHOLD'):
         held.feedback([0.]*6)
+
+
+@pytest.mark.parametrize('width,opening,closing', [
+    (.05, .07, .03), (.01, .03, 0.), (.09, .10, .06)])
+def test_operator_gripper_targets(width, opening, closing):
+    from master_node.held_motion import grasp_gripper_widths
+    actual = grasp_gripper_widths(width)
+    assert actual == pytest.approx((opening, closing))
+
+
+@pytest.mark.parametrize('width', [-.01, .11, float('nan'), float('inf')])
+def test_invalid_grasp_width_rejected(width):
+    from master_node.held_motion import grasp_gripper_widths
+    with pytest.raises(ValueError, match='INVALID_GRASP_WIDTH'):
+        grasp_gripper_widths(width)
+
+
+def test_closing_spike_cannot_authorize_lift():
+    from master_node.held_motion import SettledContact
+    gate = SettledContact()
+    sample = SimpleNamespace(width=.01148, force=-1.)
+    assert not gate.update(sample, 1., 1.)
+    sample.force = .07
+    assert not gate.update(sample, 1.04, 1.04)
+    sample.width, sample.force = .00567, -1.026
+    assert not gate.update(sample, 1.1, 1.1)
+    assert not gate.update(sample, 1.2, 1.2)
+    assert gate.update(sample, 1.3, 1.3)
+
+
+def test_repeated_or_stale_sample_is_not_sustained_contact():
+    from master_node.held_motion import SettledContact
+    gate = SettledContact()
+    sample = SimpleNamespace(width=.00567, force=-1.)
+    for now in (1., 1.02, 1.04, 1.08):
+        assert not gate.update(sample, 1., now)
+    assert not gate.update(sample, 1., 1.3)
+
+
+def test_aperture_movement_resets_contact_window():
+    from master_node.held_motion import SettledContact
+    gate = SettledContact()
+    sample = SimpleNamespace(width=.011, force=-1.)
+    assert not gate.update(sample, 1., 1.)
+    sample.width = .008
+    assert not gate.update(sample, 1.2, 1.2)
+    sample.width = .0056
+    assert not gate.update(sample, 1.4, 1.4)
+
+
+def test_thin_rim_with_signed_noisy_force_confirms_without_opening_floor_rejection():
+    """Submillimetre rim contact tolerates short dips, not absent load."""
+    from master_node.held_motion import SettledContact
+    gate = SettledContact()
+    sample = SimpleNamespace(width=.00056, force=-.24)
+    for i, force in enumerate((-.24, -.26, -.121, -.28, -.24, -.26,
+                               -.389, -.24, -.23, -.25, -.12)):
+        sample.force = force
+        ready = gate.update(sample, 1.+i*.02, 1.+i*.02)
+    assert ready
+    assert not gate.confirmed(1.4)
+    for i in range(1, 20):
+        sample.force = -.15
+        ready = gate.update(sample, 1.2+i*.02, 1.2+i*.02)
+    assert not ready
+
+
+def test_fully_closed_or_unloaded_jaws_do_not_confirm_contact():
+    """A force spike at the closed stop or an open unloaded jaw is insufficient."""
+    from master_node.held_motion import SettledContact
+    for width, force in ((0., -1.), (.00005, -.3), (.00056, 0.)):
+        gate = SettledContact()
+        sample = SimpleNamespace(width=width, force=force)
+        for i in range(20):
+            assert not gate.update(sample, 1.+i*.02, 1.+i*.02)

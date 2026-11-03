@@ -1,6 +1,7 @@
 """Host the common API microstep queue and typed result memory in the master."""
 
 import copy
+import json
 import threading
 import time
 import uuid
@@ -18,10 +19,9 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.serialization import deserialize_message, serialize_message
 
 from task_pipeline.context import StepStore
-from task_pipeline.grasp_input import calculate_grasps_with_recovery
-from task_pipeline.preparation_recovery import pin_observation_with_recovery
 from task_pipeline.node import response_status, response_success, set_failure
-from task_pipeline.placement import validate_placements
+from task_pipeline.recipes import (
+    calculate_grasps_with_recovery, pin_observation_with_recovery, validate_placements)
 from task_pipeline.registry import FUNCTIONS
 
 
@@ -197,6 +197,7 @@ class MasterStepRuntime:
         return response
 
     def _run_step(self, request, response, on_complete=None):
+        """Execute a single typed pipeline step via /master/run_step."""
         trace = ApiCallTrace(
             operation_id=request.step_id, function_name=request.function_name,
             component='master', received_ns=time.monotonic_ns())
@@ -239,6 +240,7 @@ class MasterStepRuntime:
             self._active.release()
 
     def _submit(self, request, response):
+        """Queue a list of microsteps for batch execution via /master/submit_steps."""
         try:
             response.context_id, response.revision = self.store.submit(
                 request.context_id, request.steps, request.expected_revision)
@@ -249,6 +251,7 @@ class MasterStepRuntime:
         return response
 
     def _import(self, request, response):
+        """Store an externally computed typed step result via /master/store_step_result."""
         try:
             response.context_id, response.revision = self.store.store(
                 request.context_id, request.step_id, request.function_name,
@@ -260,6 +263,7 @@ class MasterStepRuntime:
         return response
 
     def _get(self, request, response):
+        """Return the state snapshot of an execution context via /master/get_step_context."""
         try:
             response.state_json, response.results = self.store.snapshot(
                 request.context_id, request.include_results)
@@ -270,6 +274,7 @@ class MasterStepRuntime:
         return response
 
     def _clear(self, request, response):
+        """Release an execution context from the master result store via /master/clear_step_context."""
         try:
             self.store.clear(request.context_id, request.expected_revision)
             response.success = True
@@ -279,6 +284,7 @@ class MasterStepRuntime:
         return response
 
     def _goal(self, goal):
+        """Evaluate accept/reject for /master/run_pipeline_steps action goals."""
         with self._goal_lock:
             if len(self._goals) >= 4 or goal.context_id in self._goals:
                 return GoalResponse.REJECT
@@ -290,9 +296,11 @@ class MasterStepRuntime:
             return GoalResponse.ACCEPT
 
     def _accepted(self, handle):
+        """Handle execution dispatch when goal is accepted."""
         handle.execute()
 
     def _execute(self, handle):
+        """Run the queued action pipeline steps with real-time feedback and failure recovery."""
         started = time.monotonic()
         result = RunPipelineSteps.Result(context_id=handle.request.context_id)
         attempted = {}
@@ -301,7 +309,6 @@ class MasterStepRuntime:
             memory = getattr(self.node, 'manipulation_memory', None)
             if memory is not None:
                 state, _ = self.store.snapshot(handle.request.context_id)
-                import json
                 pending = [s['step_id']+':'+s['function'] for s in json.loads(state)[0]['pending']]
                 memory.print_state(f'{step.step_id}:{step.function_name}:{status} pending={pending}')
             if status == 'RUNNING' and 'object_name' in (
@@ -326,7 +333,6 @@ class MasterStepRuntime:
                             'prepare_grasp_lift', 'get_prepared_grasp_lift',
                             'validate_prepared_grasp_lift'}
                 state, _ = self.store.snapshot(handle.request.context_id)
-                import json
                 prepared_waiting = any(step['function'] in relevant
                                        for step in json.loads(state)[0]['pending'])
                 failed = next((item for item in reversed(result.results) if not item.success), None)
@@ -334,6 +340,10 @@ class MasterStepRuntime:
                     self.store.flush_failed_queue(handle.request.context_id)
                     if (failed and attempted.get('function') == failed.function_name and
                             attempted.get('object')):
+                        recovery = self.node.execution_api.prepared_grasp_lift.recover_after_failure(
+                            attempted['object'])
+                        if recovery:
+                            result.status += ';'+recovery
                         recovery = self.node.execution_api.prepared_grasp_lift.recover_after_failure(
                             attempted['object'])
                         if recovery:

@@ -9,7 +9,7 @@ from urllib import request
 
 import cv2
 
-from placement_node.grounding import grounding_request
+from placement_node.inference import grounding_request
 from placement_node.perception import parse_grounding_box
 
 

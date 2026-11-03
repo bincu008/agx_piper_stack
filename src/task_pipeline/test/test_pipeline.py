@@ -16,7 +16,10 @@ from sensor_msgs.msg import Image, PointCloud2
 
 from task_pipeline.metrics import summarize
 from task_pipeline.node import PipelineNode
-from task_pipeline.placement import search_placements, validate_placements
+from task_pipeline.recipes import search_placements, validate_placements
+from task_pipeline.metrics import summarize_api_calls
+from task_pipeline.recipes import affordance_from_description, calculate_grasps_with_recovery
+from task_pipeline.recipes import pin_observation_with_recovery, retry_preparation
 from task_pipeline.registry import FUNCTIONS, catalog
 
 
@@ -211,6 +214,118 @@ def test_real_node_constructs_without_clobbering_rclpy_clients():
         rclpy.shutdown()
 
 
+def test_phases_cover_request_to_response_without_double_counting():
+    """All seven intervals cover the complete client call exactly once."""
+    call = dict(operation_id='one', function='search', started_ns=0, sent_ns=10,
+                response_received_ns=90, finished_ns=100, success=True)
+    stages = {'one': {
+        'dispatcher': SimpleNamespace(received_ns=20, finished_ns=80),
+        'master': SimpleNamespace(backend_started_ns=30, backend_finished_ns=70)}}
+    result = summarize_api_calls([call], stages)
+    phases = result['calls'][0]['phases_seconds']
+    assert result['complete_traces'] == 1
+    assert phases['backend'] == 40 / 1e9
+    assert sum(phases.values()) == pytest.approx(result['total_api_seconds'])
+
+
+@pytest.mark.parametrize('stages', [{}, {'one': {
+    'dispatcher': SimpleNamespace(received_ns=200, finished_ns=80),
+    'master': SimpleNamespace(backend_started_ns=30, backend_finished_ns=70)}}])
+def test_missing_or_inconsistent_stamps_are_reported_incomplete(stages):
+    """Do not invent transport intervals or subtract clocks from other hosts."""
+    call = dict(operation_id='one', function='search', started_ns=0, sent_ns=10,
+                response_received_ns=90, finished_ns=100, success=False)
+    result = summarize_api_calls([call], stages)
+    assert result['complete_traces'] == 0
+    assert result['functions'][0]['calls'] == 1
+    assert result['calls'][0]['success'] is False
+    assert result['total_api_seconds'] == 100 / 1e9
+
+
+def test_contact_intent():
+    assert affordance_from_description('white bowl') == 'AUTO'
+    assert affordance_from_description('upper RIM of bowl') == 'RIM'
+    assert affordance_from_description('outer edge of plate') == 'RIM'
+    assert affordance_from_description('cup handle') == 'HANDLE'
+    assert affordance_from_description('cup body') == 'BODY'
+
+
+def test_empty_auto_bowl_gets_one_rim_recovery_on_same_observation():
+    from my_actions.srv import FindGraspCandidates
+    query = FindGraspCandidates.Request(target_description='white bowl', affordance_type='AUTO')
+    query.observation_header.stamp.sec = 42
+    calls = []
+
+    def backend(request):
+        calls.append(request)
+        return FindGraspCandidates.Response(success=request.affordance_type == 'RIM',
+                                           status='NO_VALID_GEOMETRIC_GRASP')
+
+    result = calculate_grasps_with_recovery(query, backend)
+    assert result.success and 'AUTO_TO_RIM_RECOVERY' in result.status
+    assert len(calls) == 2 and calls[1].observation_header == query.observation_header
+    assert calls[1].target_description == query.target_description
+    assert query.affordance_type == 'AUTO'
+
+
+def test_recovery_does_not_loop_or_retry_invalid_inputs():
+    from my_actions.srv import FindGraspCandidates
+    for intent, status, expected in [('RIM', 'NO_VALID_GEOMETRIC_GRASP', 1),
+                                     ('AUTO', 'OBSERVATION_MISMATCH', 1),
+                                     ('AUTO', 'NO_VALID_GEOMETRIC_GRASP', 2)]:
+        calls = []
+
+        def backend(request):
+            calls.append(request)
+            return FindGraspCandidates.Response(success=False, status=status)
+
+        result = calculate_grasps_with_recovery(FindGraspCandidates.Request(
+            target_description='white bowl', affordance_type=intent), backend)
+        assert not result.success and len(calls) == expected
+
+
+def _make_result(function, status, success=False):
+    """Build a completed action result without ROS transport."""
+    return SimpleNamespace(success=success, results=[SimpleNamespace(
+        function_name=function, status=status)])
+
+
+def test_geometric_failure_is_bounded():
+    """Retry only within the configured calculation attempt limit."""
+    failed = _make_result('calculate_grasps', 'NO_VALID_GEOMETRIC_GRASP')
+    assert retry_preparation(failed, 1, 3)
+    assert not retry_preparation(failed, 3, 3)
+    failed_lift = _make_result('prepare_grasp_lift', 'NO_COMPLETE_GRASP_LIFT_PLAN: lift IK')
+    assert retry_preparation(failed_lift, 1, 3)
+
+
+def test_actuator_unknown_and_invalid_inputs_are_not_retried():
+    """Preserve unknown-state and input-error stop behavior."""
+    for function, status in [('execute_prepared_grasp_lift', 'STATE_UNKNOWN'),
+                             ('calculate_grasps', 'OBSERVATION_MISMATCH'),
+                             ('prepare_grasp_lift', 'CURRENT_JOINT_FEEDBACK: invalid')]:
+        assert not retry_preparation(_make_result(function, status), 1, 3)
+    passed = _make_result('calculate_grasps', 'NO_VALID_GEOMETRIC_GRASP', True)
+    assert not retry_preparation(passed, 1, 3)
+
+
+def test_pin_waits_only_for_same_frame_and_is_bounded():
+    """Pending delivery retries never replace the source observation."""
+    request = object()
+    calls = []
+    waits = []
+
+    def backend(query):
+        calls.append(query)
+        return SimpleNamespace(success=len(calls) == 3,
+                               status='LAYOUT_OBSERVATION_PENDING')
+
+    assert pin_observation_with_recovery(request, backend, waits.append).success
+    assert len(calls) == 3 and all(query is request for query in calls)
+    assert waits == [0.05, 0.10]
+
+
+
 def test_metrics_keep_input_modes_and_nested_scopes_separate():
     """Do not combine fixture grasps, HGGD or nested validation totals."""
     samples = [SimpleNamespace(
@@ -362,3 +477,115 @@ def test_in_process_proxy_does_not_duplicate_master_parameter_services():
         if node is not None:
             node.destroy_node()
         rclpy.shutdown()
+
+
+def test_phases_cover_request_to_response_without_double_counting():
+    """All seven intervals cover the complete client call exactly once."""
+    call = dict(operation_id='one', function='search', started_ns=0, sent_ns=10,
+                response_received_ns=90, finished_ns=100, success=True)
+    stages = {'one': {
+        'dispatcher': SimpleNamespace(received_ns=20, finished_ns=80),
+        'master': SimpleNamespace(backend_started_ns=30, backend_finished_ns=70)}}
+    result = summarize_api_calls([call], stages)
+    phases = result['calls'][0]['phases_seconds']
+    assert result['complete_traces'] == 1
+    assert phases['backend'] == 40 / 1e9
+    assert sum(phases.values()) == pytest.approx(result['total_api_seconds'])
+
+
+@pytest.mark.parametrize('stages', [{}, {'one': {
+    'dispatcher': SimpleNamespace(received_ns=200, finished_ns=80),
+    'master': SimpleNamespace(backend_started_ns=30, backend_finished_ns=70)}}])
+def test_missing_or_inconsistent_stamps_are_reported_incomplete(stages):
+    """Do not invent transport intervals or subtract clocks from other hosts."""
+    call = dict(operation_id='one', function='search', started_ns=0, sent_ns=10,
+                response_received_ns=90, finished_ns=100, success=False)
+    result = summarize_api_calls([call], stages)
+    assert result['complete_traces'] == 0
+    assert result['functions'][0]['calls'] == 1
+    assert result['calls'][0]['success'] is False
+    assert result['total_api_seconds'] == 100 / 1e9
+
+
+def test_contact_intent():
+    assert affordance_from_description('white bowl') == 'AUTO'
+    assert affordance_from_description('upper RIM of bowl') == 'RIM'
+    assert affordance_from_description('outer edge of plate') == 'RIM'
+    assert affordance_from_description('cup handle') == 'HANDLE'
+    assert affordance_from_description('cup body') == 'BODY'
+
+
+def test_empty_auto_bowl_gets_one_rim_recovery_on_same_observation():
+    from my_actions.srv import FindGraspCandidates
+    query = FindGraspCandidates.Request(target_description='white bowl', affordance_type='AUTO')
+    query.observation_header.stamp.sec = 42
+    calls = []
+
+    def backend(request):
+        calls.append(request)
+        return FindGraspCandidates.Response(success=request.affordance_type == 'RIM',
+                                           status='NO_VALID_GEOMETRIC_GRASP')
+
+    result = calculate_grasps_with_recovery(query, backend)
+    assert result.success and 'AUTO_TO_RIM_RECOVERY' in result.status
+    assert len(calls) == 2 and calls[1].observation_header == query.observation_header
+    assert calls[1].target_description == query.target_description
+    assert query.affordance_type == 'AUTO'
+
+
+def test_recovery_does_not_loop_or_retry_invalid_inputs():
+    from my_actions.srv import FindGraspCandidates
+    for intent, status, expected in [('RIM', 'NO_VALID_GEOMETRIC_GRASP', 1),
+                                     ('AUTO', 'OBSERVATION_MISMATCH', 1),
+                                     ('AUTO', 'NO_VALID_GEOMETRIC_GRASP', 2)]:
+        calls = []
+
+        def backend(request):
+            calls.append(request)
+            return FindGraspCandidates.Response(success=False, status=status)
+
+        result = calculate_grasps_with_recovery(FindGraspCandidates.Request(
+            target_description='white bowl', affordance_type=intent), backend)
+        assert not result.success and len(calls) == expected
+
+
+def _make_result(function, status, success=False):
+    """Build a completed action result without ROS transport."""
+    return SimpleNamespace(success=success, results=[SimpleNamespace(
+        function_name=function, status=status)])
+
+
+def test_geometric_failure_is_bounded():
+    """Retry only within the configured calculation attempt limit."""
+    failed = _make_result('calculate_grasps', 'NO_VALID_GEOMETRIC_GRASP')
+    assert retry_preparation(failed, 1, 3)
+    assert not retry_preparation(failed, 3, 3)
+    failed_lift = _make_result('prepare_grasp_lift', 'NO_COMPLETE_GRASP_LIFT_PLAN: lift IK')
+    assert retry_preparation(failed_lift, 1, 3)
+
+
+def test_actuator_unknown_and_invalid_inputs_are_not_retried():
+    """Preserve unknown-state and input-error stop behavior."""
+    for function, status in [('execute_prepared_grasp_lift', 'STATE_UNKNOWN'),
+                             ('calculate_grasps', 'OBSERVATION_MISMATCH'),
+                             ('prepare_grasp_lift', 'CURRENT_JOINT_FEEDBACK: invalid')]:
+        assert not retry_preparation(_make_result(function, status), 1, 3)
+    passed = _make_result('calculate_grasps', 'NO_VALID_GEOMETRIC_GRASP', True)
+    assert not retry_preparation(passed, 1, 3)
+
+
+def test_pin_waits_only_for_same_frame_and_is_bounded():
+    """Pending delivery retries never replace the source observation."""
+    request = object()
+    calls = []
+    waits = []
+
+    def backend(query):
+        calls.append(query)
+        return SimpleNamespace(success=len(calls) == 3,
+                               status='LAYOUT_OBSERVATION_PENDING')
+
+    assert pin_observation_with_recovery(request, backend, waits.append).success
+    assert len(calls) == 3 and all(query is request for query in calls)
+    assert waits == [0.05, 0.10]
+

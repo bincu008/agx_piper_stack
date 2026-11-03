@@ -388,7 +388,7 @@ def test_satisfied_look_sends_no_actuator_commands():
 
 def test_established_thin_rim_contact_survives_lift_transfer_and_descent():
     """Exercise the real held gate across all stages after a lower settled load."""
-    from master_node.contact_evidence import SettledContact
+    from master_node.held_motion import SettledContact
     trial, req, events, calls = full_fixture()
     assert trial.prepare(req, PreparePickPlace.Response()).success
 

@@ -23,7 +23,7 @@ def generate_launch_description():
                                        'config', 'calibration', 'perception_scale.json')
 
     def configure_metric_scale(context):
-        from master_node.metric_calibration import load_metric_ratio
+        from master_node.calibration import load_metric_ratio
         path = LaunchConfiguration('perception_scale_path').perform(context)
         ratio = load_metric_ratio(path)
         return [DeclareLaunchArgument('perception_measurement_ratio',
@@ -33,7 +33,7 @@ def generate_launch_description():
                                             'config', 'calibration', 'grasp_position_offset.json')
 
     def configure_grasp_offset(context):
-        from master_node.metric_calibration import load_grasp_offset
+        from master_node.calibration import load_grasp_offset
         path = LaunchConfiguration('grasp_offset_path').perform(context)
         offset = load_grasp_offset(path)
         return [DeclareLaunchArgument('grasp_position_offset_base_m', default_value=str(offset))]
@@ -459,438 +459,192 @@ def generate_launch_description():
         }],
     )
 
-    return LaunchDescription([
-        DeclareLaunchArgument(
-            'hand_eye_calibration_path',
-            default_value=default_calibration_path,
-            description=(
-                'Camera-to-tool X-matrix YAML shared by perception, master, '
-                'and placement nodes.'
-            ),
-        ),
-        DeclareLaunchArgument('pipeline_profiling', default_value='false',
-                              description='Log per-request IK, collision and engine timings.'),
-        DeclareLaunchArgument('api_dispatch_in_master', default_value='true',
-                              description='Host API dispatch in the master; '
-                                          'false restores RPC proxy.'),
-        DeclareLaunchArgument('numeric_threads', default_value='1',
-                              description='BLAS/OpenMP threads per Python planning process.'),
-        DeclareLaunchArgument('inference_profile', default_value='server',
-                              choices=list(profiles),
-                              description='Select server or lmstudio endpoint defaults.'),
-        DeclareLaunchArgument(
-            'api_server_ip', default_value=profile_default('api_server_ip'),
-            description='Inference host; overrides the selected profile.'),
-        DeclareLaunchArgument(
-            'api_server_port', default_value=profile_default('api_server_port')),
-        DeclareLaunchArgument(
-            'api_server_url',
-            default_value=[
-                'http://', api_server_ip, ':', api_server_port, '/v1'],
-            description='OpenAI-compatible RoboBrain API base URL.'),
-        DeclareLaunchArgument('model_name', default_value=profile_default('model_name')),
-        DeclareLaunchArgument(
-            'request_timeout_sec', default_value=profile_default('request_timeout_sec')),
-        DeclareLaunchArgument('vlm_max_tokens', default_value='256'),
-        DeclareLaunchArgument('vlm_temperature', default_value='0.0'),
-        DeclareLaunchArgument('vlm_image_max_dimension', default_value='1024'),
-        DeclareLaunchArgument('stack_minimum_coverage', default_value='0.6'),
-        DeclareLaunchArgument('placement_candidate_count', default_value='16',
-                              description='Ranked single-object placement pose budget'),
-        DeclareLaunchArgument('anyplace_candidate_count',
-                              default_value=LaunchConfiguration('placement_candidate_count'),
-                              description='Legacy alias for placement_candidate_count'),
-        DeclareLaunchArgument('layout_support_mode', default_value='floor_slots'),
-        DeclareLaunchArgument('floor_slot_share_unused_space', default_value='false'),
-        DeclareLaunchArgument('perception_scale_path', default_value=default_metric_path),
-        OpaqueFunction(function=configure_metric_scale),
-        DeclareLaunchArgument('grasp_offset_path', default_value=default_grasp_offset_path),
-        OpaqueFunction(function=configure_grasp_offset),
-        DeclareLaunchArgument('floor_slot_adaptive', default_value='true'),
-        DeclareLaunchArgument('floor_slot_max_size_m', default_value='0.125'),
-        DeclareLaunchArgument('floor_slot_min_size_m', default_value='0.06'),
-        DeclareLaunchArgument('floor_slot_large_square_scale', default_value='1.5'),
-        DeclareLaunchArgument('layout_candidate_count', default_value='16'),
-        DeclareLaunchArgument('placement_fast_ik', default_value='true'),
-        DeclareLaunchArgument('placement_position_tolerance_m', default_value='0.005'),
-        DeclareLaunchArgument('placement_motion_orientation_policy', default_value='keep_upright', description='Held motion: keep_upright or free; separate from endpoint orientation.'),
-        DeclareLaunchArgument('placement_motion_upright_tolerance_rad', default_value='0.08726646'),
-        DeclareLaunchArgument('placement_target_orientation_tolerance_rad', default_value='0.17453293'),
-        DeclareLaunchArgument('placement_descent_orientation_tolerance_rad', default_value='0.01'),
-        DeclareLaunchArgument('placement_descent_step_m', default_value='0.002'),
-        DeclareLaunchArgument('placement_descent_max_joint_step_rad', default_value='0.05'),
-        DeclareLaunchArgument('placement_contact_distance_m', default_value='0.006'),
-        DeclareLaunchArgument('anyplace_refinement_steps', default_value='50'),
-        DeclareLaunchArgument(
-            'placement_backend',
-            default_value='heightmap',
-            description=(
-                "Placement candidate backend: 'heightmap' for deterministic "
-                "packing or 'anyplace' for the retained diffusion model."
-            ),
-        ),
-        DeclareLaunchArgument(
-            'anyplace_checkpoint_path',
-            default_value='',
-            description=(
-                'Optional AnyPlace checkpoint. Not used by the default '
-                'height-map placement backend.'
-            )),
-        DeclareLaunchArgument(
-            'grasp_plan_cache_ttl_sec',
-            default_value='60',
-            description=(
-                'Maximum age of the RViz-reviewed #1 grasp that [GRASP] may '
-                'execute; valid range is 1-60 seconds.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'world_perception_backend',
-            default_value='robobrain',
-            description=(
-                "World inventory backend: 'yolo' for fast asynchronous "
-                "instance perception, or 'robobrain' for VLM perception."
-            ),
-        ),
-        DeclareLaunchArgument(
-            'grasp_target_mask_backend',
-            default_value='edgesam',
-            choices=['edgesam'],
-            description='Target mask: RoboBrain grounding followed by EdgeSAM.',
-        ),
-        DeclareLaunchArgument('prepared_execution_timeout_sec', default_value='300.0'),
-        DeclareLaunchArgument(
-            'allow_physical_grasp_execution',
-            default_value='false',
-            description=(
-                'Publish pre-grasp, grasp, gripper, and retreat commands. '
-                'Leave false until RViz validation is complete.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'allow_model_based_body_grasp_execution',
-            default_value='false',
-            description=(
-                'Permit only collision-checked CUP_BODY_MODEL candidates to '
-                'execute. This does not relax measured-contact checks for '
-                'other grasp types.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'require_positive_grasp_score_for_grasp',
-            default_value='true',
-            description=(
-                'Require the legacy GPD classifier decision for physical '
-                'execution. Set false only when measured-contact, IK, and '
-                'collision validation are enabled.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'require_measured_contacts_for_grasp',
-            default_value='true',
-            description=(
-                'Require a measured opposing contact pair and clear finger '
-                'sweep before physical execution.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'enable_view_repositioning',
-            default_value='false',
-            description=(
-                'Permit an off-screen GRAB request to move only to a '
-                'calibrated NBV before grasp planning.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'enable_grasp_collision_check',
-            default_value='true',
-            description=(
-                'Endpoint collision validation for grasp candidates. '
-                'Physical GRAB remains rejected unless this is true.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'allow_pregrasp_collision_override',
-            default_value='false',
-            description=(
-                'Retain a grasp-safe candidate whose pre-grasp endpoint '
-                'intersects only the explicit local target-contact volume. '
-                'All other VAMP collision checks remain blocking.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'grasp_allowed_contact_radius_m',
-            default_value='0.035',
-            description=(
-                'Radius around the selected handle contact center excluded '
-                'from VAMP only during grasp approach/retreat.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'pregrasp_target_exclusion_radius_m',
-            default_value='0.0',
-            description=(
-                'Disabled by default. When positive, excludes only the '
-                'selected target within this radius while planning to the '
-                'pre-grasp pose. The robot geometry and all other obstacles '
-                'remain collision checked.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'gripper_open_force_n',
-            default_value='1.0',
-            description='Piper gripper opening force in the driver range 0.5-3.0 N.',
-        ),
-        DeclareLaunchArgument(
-            'gripper_close_force_n',
-            default_value='1.0',
-            description='Piper gripper closing force in the driver range 0.5-3.0 N.',
-        ),
-        DeclareLaunchArgument(
-            'gripper_close_compression_m',
-            default_value='0.003',
-            description=(
-                'Distance commanded below the measured target thickness to '
-                'establish contact; replaces the unsafe fixed 20 mm closure.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'post_grasp_lift_m',
-            default_value='0.10',
-            description=(
-                'Base-frame vertical lift after gripper contact is confirmed; '
-                'VAMP pose IK and path validation are required.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'gripper_min_open_feedback_m',
-            default_value='0.01',
-            description=(
-                'Minimum gripper feedback opening considered not closed; '
-                'used when the absolute width encoder is uncalibrated.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'grasp_candidate_backend', default_value='hggd', choices=['hggd'],
-            description='Deployed proposal engine: HGGD.'),
-        DeclareLaunchArgument('hggd_model_directory', default_value=''),
-        DeclareLaunchArgument('placement_allow_separating_contact_departure',
-                              default_value='true'),
-        DeclareLaunchArgument('placement_departure_contact_tolerance_m',
-                              default_value='0.001'),
-        DeclareLaunchArgument('placement_bypass_robot_environment_during_lift',
-                              default_value='true', description='Skip robot/finger '
-                              'scene collisions during initial closed grasp and lift; '
-                              'retain self/object-arm and restore checks for transfer.'),
-        DeclareLaunchArgument('placement_bypass_attached_collision_during_lift',
-                              default_value='true', description='Skip held-object '
-                              'environment collision during lift only; '
-                              'all other stages retain checks.'),
-        DeclareLaunchArgument('placement_noise_max_points', default_value='32'),
-        DeclareLaunchArgument('placement_noise_max_voxels', default_value='10'),
-        DeclareLaunchArgument('hggd_cpu_threads', default_value='4'),
-        DeclareLaunchArgument('hggd_maximum_proposals', default_value='100'),
-        DeclareLaunchArgument('maximum_candidates_to_test', default_value='600'),
-        DeclareLaunchArgument('maximum_valid_candidates', default_value='100'),
-        DeclareLaunchArgument('planning_joint_limit_tolerance_degrees', default_value='0.0',
-                              description='Commanded IK/sampling limit margin; nominal by default.'),
-        DeclareLaunchArgument('joint_limit_tolerance_degrees', default_value='2.0'),
-        DeclareLaunchArgument('final_approach_check_finger_environment', default_value='false'),
-        DeclareLaunchArgument('grasp_visualization_limit', default_value='100'),
-        DeclareLaunchArgument('hggd_diversity_position_m', default_value='0.030'),
-        DeclareLaunchArgument('hggd_diversity_approach_degrees', default_value='20.0'),
-        DeclareLaunchArgument('hggd_diversity_closing_degrees', default_value='30.0'),
-        DeclareLaunchArgument('deterministic_ik', default_value='true'),
-        DeclareLaunchArgument('deterministic_ik_seed_count', default_value='32'),
-        DeclareLaunchArgument(
-            'final_approach_translation_step_m', default_value='0.002',
-            description=(
-                'Maximum Cartesian translation per final-approach waypoint.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'final_approach_max_joint_step_rad', default_value='0.08',
-            description=(
-                'Maximum change of any joint between adjacent waypoints.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'final_approach_contact_phase_m', default_value='0.006',
-            description=(
-                'Final distance where only intended inner-pad target contact '
-                'may be excluded from collision rejection.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'grasp_tcp_offset_m',
-            default_value='-0.0615',
-            description=(
-                "Offset from GPD's finger-region base to Piper gripper_base "
-                'along the grasp approach axis.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'grasp_observation_cache_size',
-            default_value='20',
-            description=(
-                'Number of synchronized clouds retained while RoboBrain '
-                'prepares a grasp request.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'maximum_ranking_pool_candidates',
-            default_value='300',
-            description='Maximum valid candidates included in dynamic ranking.',
-        ),
-        DeclareLaunchArgument(
-            'natural_wide_opening_weight',
-            default_value='1.0',
-            description='Weight of the valid-pool-relative jaw-width penalty.',
-        ),
-        DeclareLaunchArgument(
-            'enable_grasp_path_preplanning',
-            default_value='true',
-            description=(
-                'Plan collision-free paths to all retained HGGD pre-grasps '
-                'before final ranking.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'grasp_path_length_weight',
-            default_value='0.5',
-            description='Penalty weight for normalized pre-grasp path length.',
-        ),
-        DeclareLaunchArgument(
-            'require_measured_antipodal_contacts',
-            default_value='true',
-            description=(
-                'Require opposing measured target-cloud contacts and clear '
-                'finger closing volume.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'antipodal_normal_cosine',
-            default_value='0.90',
-            description='Minimum contact-normal alignment (0.90 is about 26 degrees).',
-        ),
-        DeclareLaunchArgument(
-            'antipodal_normal_radius_m',
-            default_value='0.008',
-            description='Radius used to estimate each measured contact normal.',
-        ),
-        DeclareLaunchArgument(
-            'antipodal_min_normal_neighbors',
-            default_value='10',
-            description='Minimum local points required for a measured contact normal.',
-        ),
-        DeclareLaunchArgument(
-            'grasp_contact_depth_m',
-            default_value='0.070',
-            description='Contact plane depth from the 70 mm finger base.',
-        ),
-        DeclareLaunchArgument(
-            'target_collision_clearance_m',
-            default_value='0.050',
-            description='Radius around measured contacts where inner jaw pads may touch '
-                        'the segmented target.',
-        ),
-        DeclareLaunchArgument(
-            'aligned_zero_pose_yaw_limit_degrees',
-            default_value='10.0',
-            description='Maximum zero-pose approach azimuth change.',
-        ),
-        DeclareLaunchArgument(
-            'aligned_zero_pose_pitch_limit_degrees',
-            default_value='90.0',
-            description='Maximum zero-pose approach elevation change.',
-        ),
-        DeclareLaunchArgument(
-            'aligned_zero_pose_roll_limit_degrees',
-            default_value='90.0',
-            description='Maximum zero-pose jaw rotation about its approach.',
-        ),
-        DeclareLaunchArgument(
-            'handle_approach_roll_limit_degrees',
-            default_value='100.0',
-            description='Maximum jaw roll about each candidate approach axis.',
-        ),
-        DeclareLaunchArgument(
-            'handle_approach_roll_step_degrees',
-            default_value='10.0',
-            description='Angular spacing of handle jaw-roll hypotheses.',
-        ),
-        DeclareLaunchArgument(
-            'handle_visible_approach_min_cosine',
-            default_value='0.25',
-            description='Minimum dot product with the camera-visible free-space approach.',
-        ),
-        DeclareLaunchArgument(
-            'handle_approach_dedup_degrees',
-            default_value='5.0',
-            description='Minimum angular separation between handle approach variants.',
-        ),
-        DeclareLaunchArgument(
-            'silhouette_min_tangent_anisotropy',
-            default_value='1.15',
-            description='Minimum local mask PCA aspect ratio for a handle-thickness trace.',
-        ),
-        DeclareLaunchArgument(
-            'pregrasp_offset_m',
-            default_value='0.156',
-            description=(
-                'Preferred Cartesian standoff; planner falls back across '
-                'reachable, target-visible offsets from 0.05 to 0.195 m.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'pregrasp_position_tolerance_m',
-            default_value='0.008',
-            description=(
-                'Position tolerance used only for pre-grasp IK.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'pregrasp_orientation_tolerance_degrees',
-            default_value='16.0',
-            description=(
-                'Maximum orientation relaxation used only for pre-grasp IK.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'pregrasp_opening_clearance_m',
-            default_value='0.020',
-            description=(
-                'Extra jaw opening used for pre-grasp and finger-sweep '
-                'validation.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'target_contact_surface_tolerance_m',
-            default_value='0.006',
-            description=(
-                'Silhouette contact registration tolerance in metres. Only '
-                'points immediately beside intended contacts are tolerated; '
-                'outer finger-body and scene collision checks remain active.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'pinch_max_opening_m',
-            default_value='0.050',
-            description=(
-                'Largest geometry-measured feature width classified as a pinch.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'pinch_min_free_gap_m',
-            default_value='0.013',
-            description=(
-                'Required free gap beside a narrow feature for a 10 mm jaw '
-                'plus clearance.'
-            ),
-        ),
-        core_container,
-        vlm,
-        pipeline,
-        master,
-        placement,
-    ])
+    def _declare(spec):
+        kwargs = {'default_value': spec[1]}
+        if len(spec) > 2 and spec[2]:
+            kwargs['description'] = spec[2]
+        if len(spec) > 3 and spec[3]:
+            kwargs['choices'] = spec[3]
+        return DeclareLaunchArgument(spec[0], **kwargs)
+
+    args_part1 = [
+        ('hand_eye_calibration_path', default_calibration_path,
+         'Camera-to-tool X-matrix YAML shared by perception, master, and placement nodes.'),
+        ('pipeline_profiling', 'false', 'Log per-request IK, collision and engine timings.'),
+        ('api_dispatch_in_master', 'true', 'Host API dispatch in the master; false restores RPC proxy.'),
+        ('numeric_threads', '1', 'BLAS/OpenMP threads per Python planning process.'),
+        ('inference_profile', 'server', 'Select server or lmstudio endpoint defaults.', list(profiles)),
+        ('api_server_ip', profile_default('api_server_ip'), 'Inference host; overrides the selected profile.'),
+        ('api_server_port', profile_default('api_server_port')),
+        ('api_server_url', ['http://', api_server_ip, ':', api_server_port, '/v1'],
+         'OpenAI-compatible RoboBrain API base URL.'),
+        ('model_name', profile_default('model_name')),
+        ('request_timeout_sec', profile_default('request_timeout_sec')),
+        ('vlm_max_tokens', '256'),
+        ('vlm_temperature', '0.0'),
+        ('vlm_image_max_dimension', '1024'),
+        ('stack_minimum_coverage', '0.6'),
+        ('placement_candidate_count', '16', 'Ranked single-object placement pose budget'),
+        ('anyplace_candidate_count', LaunchConfiguration('placement_candidate_count'),
+         'Legacy alias for placement_candidate_count'),
+        ('layout_support_mode', 'floor_slots'),
+        ('floor_slot_share_unused_space', 'false'),
+    ]
+
+    args_part2 = [
+        ('floor_slot_adaptive', 'true'),
+        ('floor_slot_max_size_m', '0.125'),
+        ('floor_slot_min_size_m', '0.06'),
+        ('floor_slot_large_square_scale', '1.5'),
+        ('layout_candidate_count', '16'),
+        ('placement_fast_ik', 'true'),
+        ('placement_position_tolerance_m', '0.005'),
+        ('placement_motion_orientation_policy', 'keep_upright',
+         'Held motion: keep_upright or free; separate from endpoint orientation.'),
+        ('placement_motion_upright_tolerance_rad', '0.08726646'),
+        ('placement_target_orientation_tolerance_rad', '0.17453293'),
+        ('placement_descent_orientation_tolerance_rad', '0.01'),
+        ('placement_descent_step_m', '0.002'),
+        ('placement_descent_max_joint_step_rad', '0.05'),
+        ('placement_contact_distance_m', '0.006'),
+        ('anyplace_refinement_steps', '50'),
+        ('placement_backend', 'heightmap',
+         "Placement candidate backend: 'heightmap' for deterministic packing or 'anyplace' for the retained diffusion model."),
+        ('anyplace_checkpoint_path', '',
+         'Optional AnyPlace checkpoint. Not used by the default height-map placement backend.'),
+        ('grasp_plan_cache_ttl_sec', '60',
+         'Maximum age of the RViz-reviewed #1 grasp that [GRASP] may execute; valid range is 1-60 seconds.'),
+        ('world_perception_backend', 'robobrain',
+         "World inventory backend: 'yolo' for fast asynchronous instance perception, or 'robobrain' for VLM perception."),
+        ('grasp_target_mask_backend', 'edgesam',
+         'Target mask: RoboBrain grounding followed by EdgeSAM.', ['edgesam']),
+        ('prepared_execution_timeout_sec', '300.0'),
+        ('allow_physical_grasp_execution', 'false',
+         'Publish pre-grasp, grasp, gripper, and retreat commands. Leave false until RViz validation is complete.'),
+        ('allow_model_based_body_grasp_execution', 'false',
+         'Permit only collision-checked CUP_BODY_MODEL candidates to execute. This does not relax measured-contact checks for other grasp types.'),
+        ('require_positive_grasp_score_for_grasp', 'true',
+         'Require the legacy GPD classifier decision for physical execution. Set false only when measured-contact, IK, and collision validation are enabled.'),
+        ('require_measured_contacts_for_grasp', 'true',
+         'Require a measured opposing contact pair and clear finger sweep before physical execution.'),
+        ('enable_view_repositioning', 'false',
+         'Permit an off-screen GRAB request to move only to a calibrated NBV before grasp planning.'),
+        ('enable_grasp_collision_check', 'true',
+         'Endpoint collision validation for grasp candidates. Physical GRAB remains rejected unless this is true.'),
+        ('allow_pregrasp_collision_override', 'false',
+         'Retain a grasp-safe candidate whose pre-grasp endpoint intersects only the explicit local target-contact volume. All other VAMP collision checks remain blocking.'),
+        ('grasp_allowed_contact_radius_m', '0.035',
+         'Radius around the selected handle contact center excluded from VAMP only during grasp approach/retreat.'),
+        ('pregrasp_target_exclusion_radius_m', '0.0',
+         'Disabled by default. When positive, excludes only the selected target within this radius while planning to the pre-grasp pose. The robot geometry and all other obstacles remain collision checked.'),
+        ('gripper_open_force_n', '1.0', 'Piper gripper opening force in the driver range 0.5-3.0 N.'),
+        ('gripper_close_force_n', '1.0', 'Piper gripper closing force in the driver range 0.5-3.0 N.'),
+        ('gripper_close_compression_m', '0.003',
+         'Distance commanded below the measured target thickness to establish contact; replaces the unsafe fixed 20 mm closure.'),
+        ('post_grasp_lift_m', '0.10',
+         'Base-frame vertical lift after gripper contact is confirmed; VAMP pose IK and path validation are required.'),
+        ('gripper_min_open_feedback_m', '0.01',
+         'Minimum gripper feedback opening considered not closed; used when the absolute width encoder is uncalibrated.'),
+        ('grasp_candidate_backend', 'hggd', 'Deployed proposal engine: HGGD.', ['hggd']),
+        ('hggd_model_directory', ''),
+        ('placement_allow_separating_contact_departure', 'true'),
+        ('placement_departure_contact_tolerance_m', '0.001'),
+        ('placement_bypass_robot_environment_during_lift', 'true',
+         'Skip robot/finger scene collisions during initial closed grasp and lift; retain self/object-arm and restore checks for transfer.'),
+        ('placement_bypass_attached_collision_during_lift', 'true',
+         'Skip held-object environment collision during lift only; all other stages retain checks.'),
+        ('placement_noise_max_points', '32'),
+        ('placement_noise_max_voxels', '10'),
+        ('hggd_cpu_threads', '4'),
+        ('hggd_maximum_proposals', '100'),
+        ('maximum_candidates_to_test', '600'),
+        ('maximum_valid_candidates', '100'),
+        ('planning_joint_limit_tolerance_degrees', '0.0',
+         'Commanded IK/sampling limit margin; nominal by default.'),
+        ('joint_limit_tolerance_degrees', '2.0'),
+        ('final_approach_check_finger_environment', 'false'),
+        ('grasp_visualization_limit', '100'),
+        ('hggd_diversity_position_m', '0.030'),
+        ('hggd_diversity_approach_degrees', '20.0'),
+        ('hggd_diversity_closing_degrees', '30.0'),
+        ('deterministic_ik', 'true'),
+        ('deterministic_ik_seed_count', '32'),
+        ('final_approach_translation_step_m', '0.002',
+         'Maximum Cartesian translation per final-approach waypoint.'),
+        ('final_approach_max_joint_step_rad', '0.08',
+         'Maximum change of any joint between adjacent waypoints.'),
+        ('final_approach_contact_phase_m', '0.006',
+         'Final distance where only intended inner-pad target contact may be excluded from collision rejection.'),
+        ('grasp_tcp_offset_m', '-0.0615',
+         "Offset from GPD's finger-region base to Piper gripper_base along the grasp approach axis."),
+        ('grasp_observation_cache_size', '20',
+         'Number of synchronized clouds retained while RoboBrain prepares a grasp request.'),
+        ('maximum_ranking_pool_candidates', '300',
+         'Maximum valid candidates included in dynamic ranking.'),
+        ('natural_wide_opening_weight', '1.0',
+         'Weight of the valid-pool-relative jaw-width penalty.'),
+        ('enable_grasp_path_preplanning', 'true',
+         'Plan collision-free paths to all retained HGGD pre-grasps before final ranking.'),
+        ('grasp_path_length_weight', '0.5',
+         'Penalty weight for normalized pre-grasp path length.'),
+        ('require_measured_antipodal_contacts', 'true',
+         'Require opposing measured target-cloud contacts and clear finger closing volume.'),
+        ('antipodal_normal_cosine', '0.90',
+         'Minimum contact-normal alignment (0.90 is about 26 degrees).'),
+        ('antipodal_normal_radius_m', '0.008',
+         'Radius used to estimate each measured contact normal.'),
+        ('antipodal_min_normal_neighbors', '10',
+         'Minimum local points required for a measured contact normal.'),
+        ('grasp_contact_depth_m', '0.070',
+         'Contact plane depth from the 70 mm finger base.'),
+        ('target_collision_clearance_m', '0.050',
+         'Radius around measured contacts where inner jaw pads may touch the segmented target.'),
+        ('aligned_zero_pose_yaw_limit_degrees', '10.0',
+         'Maximum zero-pose approach azimuth change.'),
+        ('aligned_zero_pose_pitch_limit_degrees', '90.0',
+         'Maximum zero-pose approach elevation change.'),
+        ('aligned_zero_pose_roll_limit_degrees', '90.0',
+         'Maximum zero-pose jaw rotation about its approach.'),
+        ('handle_approach_roll_limit_degrees', '100.0',
+         'Maximum jaw roll about each candidate approach axis.'),
+        ('handle_approach_roll_step_degrees', '10.0',
+         'Angular spacing of handle jaw-roll hypotheses.'),
+        ('handle_visible_approach_min_cosine', '0.25',
+         'Minimum dot product with the camera-visible free-space approach.'),
+        ('handle_approach_dedup_degrees', '5.0',
+         'Minimum angular separation between handle approach variants.'),
+        ('silhouette_min_tangent_anisotropy', '1.15',
+         'Minimum local mask PCA aspect ratio for a handle-thickness trace.'),
+        ('pregrasp_offset_m', '0.156',
+         'Preferred Cartesian standoff; planner falls back across reachable, target-visible offsets from 0.05 to 0.195 m.'),
+        ('pregrasp_position_tolerance_m', '0.008',
+         'Position tolerance used only for pre-grasp IK.'),
+        ('pregrasp_orientation_tolerance_degrees', '16.0',
+         'Maximum orientation relaxation used only for pre-grasp IK.'),
+        ('pregrasp_opening_clearance_m', '0.020',
+         'Extra jaw opening used for pre-grasp and finger-sweep validation.'),
+        ('target_contact_surface_tolerance_m', '0.006',
+         'Silhouette contact registration tolerance in metres. Only points immediately beside intended contacts are tolerated; outer finger-body and scene collision checks remain active.'),
+        ('pinch_max_opening_m', '0.050',
+         'Largest geometry-measured feature width classified as a pinch.'),
+        ('pinch_min_free_gap_m', '0.013',
+         'Required free gap beside a narrow feature for a 10 mm jaw plus clearance.'),
+    ]
+
+    return LaunchDescription(
+        [_declare(spec) for spec in args_part1] +
+        [
+            DeclareLaunchArgument('perception_scale_path', default_value=default_metric_path),
+            OpaqueFunction(function=configure_metric_scale),
+            DeclareLaunchArgument('grasp_offset_path', default_value=default_grasp_offset_path),
+            OpaqueFunction(function=configure_grasp_offset),
+        ] +
+        [_declare(spec) for spec in args_part2] +
+        [
+            core_container,
+            vlm,
+            pipeline,
+            master,
+            placement,
+        ]
+    )

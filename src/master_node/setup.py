@@ -34,7 +34,7 @@ setup(
     entry_points={
         'console_scripts': [
             'piper_master_control = master_node.piper_master_control:main',
-            'calibrate_plate = master_node.calibrate_plate:main',
+            'calibrate_plate = master_node.calibration:calibrate_plate_main',
         ],
     },
 )

@@ -12,7 +12,7 @@ from my_actions.srv import (
 
 from rclpy.callback_groups import ReentrantCallbackGroup
 
-from task_pipeline.grasp_input import affordance_from_description
+from task_pipeline.recipes import affordance_from_description
 
 from .grasp_stages import GraspStages
 from .held_motion import HeldMotion
@@ -47,6 +47,7 @@ class ExecutionAPI:
             node.create_service(kind, '/master/' + name, callback, callback_group=self.group)
 
     def _prepare(self, request, response):
+        """Validate observation masks and calculate seed coordinates via /master/prepare_grasp_input."""
         image, mask = request.image, request.mask
         box = list(request.pixel_box)
         if (image.width != mask.width or image.height != mask.height or
@@ -97,6 +98,7 @@ class ExecutionAPI:
                     f'([{math.degrees(lower):.3f}, {math.degrees(upper):.3f}] deg)')
 
     def _move(self, request, response):
+        """Command empty-hand arm motion to specified target joints via /master/move_to."""
         admitted = self._lock.acquire(blocking=False)
         try:
             if not admitted:
@@ -118,6 +120,7 @@ class ExecutionAPI:
         return response
 
     def _trajectory(self, request, response):
+        """Validate and execute empty-hand joint trajectory via /master/execute_trajectory."""
         admitted = self._lock.acquire(blocking=False)
         claimed_state = False
         try:
@@ -171,6 +174,7 @@ class ExecutionAPI:
         return response
 
     def _gripper(self, request, response):
+        """Command Piper gripper opening width and force via /master/set_gripper."""
         admitted = self._lock.acquire(blocking=False)
         claimed_state = False
         try:
@@ -216,6 +220,7 @@ class ExecutionAPI:
                  candidate.validation_status.startswith('CUP_BODY_MODEL_')))
 
     def _select(self, request, response):
+        """Select highest-ranking safe grasp proposal via /master/select_grasp."""
         valid = [candidate for candidate in request.candidates if self._safe(candidate)]
         if valid:
             # Keep the engine's existing ranking order.
@@ -227,6 +232,7 @@ class ExecutionAPI:
         return response
 
     def _save(self, request, response):
+        """Cache validated candidate grasp plans in the master store via /master/cache_grasp_plan."""
         admitted = self._lock.acquire(blocking=False)
         try:
             if not admitted:
@@ -292,6 +298,7 @@ class ExecutionAPI:
         return response
 
     def _cached(self, request, response):
+        """Retrieve the freshest cached grasp plan for an object via /master/get_cached_grasp."""
         with self._cache_lock:
             self._cache = {key: value for key, value in self._cache.items()
                            if time.monotonic() - value[0] <= min(60, value[1].ttl_seconds or 60)}
@@ -314,6 +321,7 @@ class ExecutionAPI:
         return response
 
     def _state(self, request, response):
+        """Query current joint states, TCP pose, and gripper opening via /master/get_arm_state."""
         if self.node.current_joint_states is None or self.node.current_tcp_pose is None:
             response.status = 'ARM_STATE_UNAVAILABLE'
             return response

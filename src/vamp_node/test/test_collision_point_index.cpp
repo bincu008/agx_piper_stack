@@ -74,7 +74,7 @@ TEST(CollisionPointIndex, BoundsClippingPreservesOriginalCellPredicateSemantics)
   EXPECT_FALSE(called);
 }
 
-#include "vamp_node/foreground_components.hpp"
+#include "vamp_node/vamp_utils.hpp"
 
 TEST(ForegroundComponents, RetainsConnectedFarWallWithoutWideningDepthBand) {
     const std::vector<Eigen::Vector3f> front{{0,0,0},{.005F,0,0},{.01F,0,0}};

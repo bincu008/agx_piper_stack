@@ -210,3 +210,103 @@ def test_signed_force_contact_and_release(monkeypatch):
     for force in (float('nan'), float('inf'), -float('inf'), -.1):
         node.current_gripper_status.force = force
         assert not PiperMasterControl._wait_for_gripper_contact(node, timeout_sec=.001)
+
+
+def test_offset_applies_strictly_to_joint6_once():
+    from master_node.calibration import driver_joint_target
+    nominal = [0.1, -0.2, 0.3, -0.4, 0.5, -0.6]
+    sent = driver_joint_target(nominal, 0.05)
+    assert sent[:5] == nominal[:5]
+    assert abs(sent[5] - (-0.55)) < 1.e-6
+
+
+def test_invalid_nominal_target_rejected():
+    import pytest
+    from master_node.calibration import driver_joint_target
+    for bad in ([0.0] * 5, [0.0] * 7, [0.0, float('nan'), 0.0, 0.0, 0.0, 0.0]):
+        with pytest.raises(ValueError):
+            driver_joint_target(bad, 0.0)
+
+
+def test_load_command_offset_requires_finite_number(tmp_path):
+    import json
+    import pytest
+    from master_node.calibration import load_command_offset
+    path = tmp_path / 'cal.json'
+    path.write_text(json.dumps({'joint6_command_offset_rad': -0.035}))
+    assert abs(load_command_offset(str(path)) - (-0.035)) < 1.e-6
+    for bad in ({}, {'joint6_command_offset_rad': '0.1'}, {'joint6_command_offset_rad': True}):
+        path.write_text(json.dumps(bad))
+        with pytest.raises(ValueError):
+            load_command_offset(str(path))
+
+
+def test_feedback_reference_matches_nominal_and_sent():
+    from master_node.calibration import feedback_reference
+    node = SimpleNamespace(_last_nominal_arm_command=[0.0] * 6,
+                           _last_sent_arm_command=[0.0, 0.0, 0.0, 0.0, 0.0, 0.05])
+    assert feedback_reference(node, [0.0] * 6) == [0.0, 0.0, 0.0, 0.0, 0.0, 0.05]
+    assert feedback_reference(node, [0.1] * 6) == [0.1] * 6
+
+
+def test_command_pose_reference_rotates_tool_yaw_without_mutating_source():
+    from geometry_msgs.msg import PoseStamped
+    from scipy.spatial.transform import Rotation
+    from master_node.calibration import command_pose_reference
+    source = PoseStamped()
+    source.pose.orientation.w = 1.0
+    corrected = command_pose_reference(source, 0.1)
+    assert source.pose.orientation.z == 0.0
+    rot = Rotation.from_quat([corrected.pose.orientation.x, corrected.pose.orientation.y,
+                              corrected.pose.orientation.z, corrected.pose.orientation.w])
+    angle = rot.as_rotvec()
+    assert abs(angle[2] - 0.1) < 1.e-6
+
+
+def test_tilted_circle_recovers_uniform_ratio_and_preserves_axis_uncertainty():
+    import numpy as np
+    import pytest
+    from master_node.calibration import measure_plate
+    yy, xx = np.mgrid[:320, :400]
+    rays = np.stack(((xx - 200) / 500., (yy - 160) / 500., np.ones_like(xx)), axis=2)
+    normal = np.array([0., .4, .916515])
+    center = np.array([0., 0., .5])
+    points = rays * ((normal @ center) / (rays @ normal))[:, :, None]
+    mask = np.linalg.norm(points - center, axis=2) <= .087
+    report = measure_plate(points * 1.05 / 1.036, mask, .174, 1.036)
+    assert report['perception_measurement_ratio'] == pytest.approx(1.05, abs=.015)
+    assert report['rim_plane_inlier_fraction'] > .98
+    assert not report['axis_calibration_independent']
+
+
+def test_invalid_json_ratio_is_rejected(tmp_path):
+    import json
+    import pytest
+    from master_node.calibration import load_metric_ratio
+    path = tmp_path / 'scale.json'
+    for ratio in [0., -1., '1.03', True, float('nan')]:
+        path.write_text(json.dumps({'perception_measurement_ratio': ratio}))
+        with pytest.raises(ValueError):
+            load_metric_ratio(str(path))
+
+
+def test_valid_json_ratio(tmp_path):
+    import json
+    from master_node.calibration import load_metric_ratio
+    path = tmp_path / 'scale.json'
+    path.write_text(json.dumps({'perception_measurement_ratio': .98}))
+    assert load_metric_ratio(str(path)) == .98
+
+
+def test_grasp_offset_uses_explicit_base_frame_and_metres(tmp_path):
+    import json
+    import pytest
+    from master_node.calibration import load_grasp_offset
+    path = tmp_path / 'offset.json'
+    path.write_text(json.dumps({'frame_id': 'base_link',
+                                'grasp_position_offset_base_m': [-.005, .005, .005]}))
+    assert load_grasp_offset(str(path)) == [-.005, .005, .005]
+    path.write_text(json.dumps({'frame_id': 'tool',
+                                'grasp_position_offset_base_m': [-.005, .005, .005]}))
+    with pytest.raises(ValueError):
+        load_grasp_offset(str(path))

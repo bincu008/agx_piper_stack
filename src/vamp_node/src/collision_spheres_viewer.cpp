@@ -6,7 +6,7 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <agx_arm_msgs/msg/gripper_status.hpp>
 #include <vamp/robots/piper.hh>
-#include "vamp_node/piper_finger_geometry.hpp"
+#include "vamp_node/vamp_utils.hpp"
 
 class CollisionSpheresViewer : public rclcpp::Node
 {
@@ -28,9 +28,12 @@ private:
   void publish(const sensor_msgs::msg::JointState &msg)
   {
     using Robot = vamp::robots::Piper;
+    static const std::array<std::string, 6> joint_names = {
+      "joint1", "joint2", "joint3", "joint4", "joint5", "joint6"
+    };
     std::array<float, 6> q{};
     for (size_t j = 0; j < 6; ++j) {
-      const auto name = "joint"+std::to_string(j+1);
+      const auto &name = joint_names[j];
       const auto found = std::find(msg.name.begin(), msg.name.end(), name);
       if (found == msg.name.end()) return;
       const auto index = std::distance(msg.name.begin(), found);
@@ -45,6 +48,7 @@ private:
     const auto pose = Robot::eefk(q);
     const float opening = (now()-grip_time_).seconds() < .5 ? opening_ : -1.F;
     visualization_msgs::msg::MarkerArray output;
+    output.markers.reserve(Robot::n_spheres * 2);
     for (size_t s = 0; s < Robot::n_spheres; ++s) {
       visualization_msgs::msg::Marker marker;
       marker.header = msg.header;

@@ -94,7 +94,7 @@ def test_three_object_layout_keeps_each_actual_placement_gripper():
 
 
 def test_rigid_attachment_preserved_with_rotated_placement():
-    from placement_node.transforms import attached_object_delta, pose_matrix
+    from placement_node.perception import attached_object_delta, pose_matrix
     grasp = pose_matrix([0.2, 0.1, 0.3], [0, 0, 0, 1])
     placed = pose_matrix([0.4, -0.1, 0.2], [0, 0, np.sqrt(0.5), np.sqrt(0.5)])
     source_point = np.array([0.25, 0.12, 0.31, 1])

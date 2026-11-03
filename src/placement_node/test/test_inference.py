@@ -6,8 +6,7 @@ from placement_node.inference import (
 from placement_node.packing import search_heightmap_placements
 from placement_node.perception import (
     construct_support_bottom, estimate_support_translation,
-    extract_destination_cloud, parse_grounding_box)
-from placement_node.transforms import (
+    extract_destination_cloud, parse_grounding_box,
     piper_base_to_camera, transform_points, transform_pose)
 
 

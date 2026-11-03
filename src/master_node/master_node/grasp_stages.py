@@ -1,6 +1,6 @@
 """Expose ordered grasp stages while retaining strict contact and motion checks."""
 
-from master_node.gripper_widths import grasp_gripper_widths
+from master_node.held_motion import grasp_gripper_widths
 
 import copy
 import math
@@ -13,7 +13,7 @@ from my_actions.srv import (
 from rclpy.serialization import deserialize_message
 
 
-from master_node.joint_command_calibration import command_pose_reference
+from master_node.calibration import command_pose_reference
 
 
 class GraspStages:

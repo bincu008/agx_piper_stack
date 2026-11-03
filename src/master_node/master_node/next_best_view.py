@@ -22,8 +22,8 @@ from sensor_msgs_py import point_cloud2
 
 from visualization_msgs.msg import Marker, MarkerArray
 
-from .gripper_widths import grasp_gripper_widths
-from .prepared_plan_review import endpoint_markers, placed_clouds, pose_matrix, transform_pose
+from .held_motion import grasp_gripper_widths
+from .prepared_grasp_lift import endpoint_markers, placed_clouds, pose_matrix, transform_pose
 
 
 class NextBestView:

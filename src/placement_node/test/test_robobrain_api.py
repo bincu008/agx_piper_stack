@@ -23,7 +23,7 @@ def test_invalid_openai_response_is_rejected(response):
 
 
 def test_selected_grounding_request():
-    from placement_node.grounding import grounding_request
+    from placement_node.inference import grounding_request
     payload = grounding_request('robobrain2.5-4b', 'original-image', 'the cup')
     assert payload['temperature'] == 0
     assert payload['seed'] == 1234

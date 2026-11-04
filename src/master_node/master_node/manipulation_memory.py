@@ -198,7 +198,8 @@ def check_target_view(memory, request, response):
             query.target_cloud = target_cloud
         result = memory.call('check_target_visibility', query)
         for field in ('success', 'status', 'visible', 'observation_header',
-                      'sample_count', 'in_view_count', 'clear_count', 'visible_fraction'):
+                      'sample_count', 'in_view_count', 'clear_count', 'visible_fraction',
+                      'target_cell_id'):
             setattr(response, field, getattr(result, field))
     except Exception as error:
         response.success, response.visible = False, False
@@ -619,7 +620,9 @@ class ManipulationMemory:
             (srv.ResolveManipulationTarget, 'refresh_active_target', self.refresh),
             (srv.ResolveManipulationTarget, 'forget_active_target', self.forget),
             (srv.ResolveManipulationTarget, 'get_active_target', self.get_target),
+            (srv.StoreSegmentedTarget, 'store_segmented_target', self.store_segmented),
             (srv.GetManipulationMemory, 'get_manipulation_memory', self.inspect),
+            (srv.GetSpatialContext, 'get_spatial_context', self.spatial_context),
             (srv.CheckTargetView, 'check_target_view',
              lambda q, r: check_target_view(self, q, r)),
             (srv.FindGraspCandidates, 'calculate_active_grasps', self.grasps),
@@ -865,6 +868,92 @@ class ManipulationMemory:
             if admitted:
                 self.operation.release()
             self.print_state('resolve_target')
+
+    def spatial_context(self, request, response):
+        """Read the authoritative spatial map and assign remembered locations to it."""
+        try:
+            spatial = self.call('get_spatial_map', srv.GetSpatialMap.Request())
+            if not spatial.success:
+                raise RuntimeError(spatial.status)
+            response.map = spatial.map
+            pose = getattr(self.node, 'current_tcp_pose', None)
+            if pose is None:
+                raise RuntimeError('ARM_STATE_UNAVAILABLE')
+            response.tcp_pose = copy.deepcopy(pose)
+            memory = self.snapshot()
+            records = list(memory['directory'].values()) + memory['active_objects']
+            if memory['active_destination']:
+                records.append(memory['active_destination'])
+            unique = {self.key(record['name']): record for record in records}
+            for record in unique.values():
+                position = list(map(float, record['position']))
+                if not np.isfinite(position).all():
+                    continue
+                cell_id = ''
+                point = np.asarray(position, dtype=np.float32)
+                for cell in spatial.map.cells:
+                    low = np.array([getattr(cell.minimum, k) for k in ('x', 'y', 'z')],
+                                   dtype=np.float32)
+                    high = np.array([getattr(cell.maximum, k) for k in ('x', 'y', 'z')],
+                                    dtype=np.float32)
+                    if np.all(point >= low) and np.all(point < high):
+                        cell_id = cell.id
+                        break
+                response.object_names.append(record['name'])
+                response.object_positions.append(Point(**dict(zip(('x', 'y', 'z'), position))))
+                response.object_cell_ids.append(cell_id)
+            response.success, response.status = True, 'SPATIAL_CONTEXT_READY'
+        except Exception as error:
+            response.status = str(error)
+        return response
+
+    def store_segmented(self, request, response):
+        """Extract measured geometry from an existing mask without VLM inference."""
+        admitted = self.operation.acquire(blocking=False)
+        try:
+            if not admitted:
+                raise RuntimeError('ACTIVE_MEMORY_BUSY')
+            if (not request.image.data or not request.observation_cloud.data or
+                    request.mask.header != request.image.header or
+                    request.mask.encoding != 'mono8' or
+                    (request.mask.height, request.mask.width) !=
+                    (request.image.height, request.image.width)):
+                raise ValueError('SEGMENTED_TARGET_OBSERVATION_MISMATCH')
+            cloud, image, transform = (request.observation_cloud, request.image,
+                                       request.camera_transform)
+            if not request.name.strip() or request.role not in ('object', 'destination'):
+                raise ValueError('TARGET_NAME_AND_ROLE_REQUIRED')
+            if (cloud.header.frame_id != 'base_link' or cloud.height < 2 or
+                    image.header.stamp != cloud.header.stamp or
+                    (image.height, image.width) != (cloud.height, cloud.width) or
+                    transform.header.frame_id != 'base_link' or
+                    transform.header.stamp != cloud.header.stamp or
+                    not all(np.isfinite(getattr(transform.transform.translation, k))
+                            for k in ('x', 'y', 'z')) or
+                    not np.isfinite(sum(getattr(transform.transform.rotation, k)**2
+                                        for k in ('x', 'y', 'z', 'w'))) or
+                    abs(sum(getattr(transform.transform.rotation, k)**2
+                            for k in ('x', 'y', 'z', 'w'))-1.) > .001):
+                raise ValueError('TARGET_OBSERVATION_ASSOCIATION_MISMATCH')
+            mask = self.bridge.imgmsg_to_cv2(request.mask, 'mono8') > 0
+            if np.count_nonzero(mask) < 80:
+                raise ValueError('INSUFFICIENT_TARGET_MASK')
+            query = srv.ResolveManipulationTarget.Request(
+                name=request.name, role=request.role, refresh=True, image=request.image,
+                observation_cloud=request.observation_cloud,
+                camera_transform=request.camera_transform)
+            result = self._resolve(
+                query, srv.ResolveManipulationTarget.Response(), grounded_mask=mask)
+            for key in response.get_fields_and_field_types():
+                setattr(response, key, getattr(result, key))
+            return response
+        except Exception as error:
+            response.status = str(error)
+            return response
+        finally:
+            if admitted:
+                self.operation.release()
+            self.print_state('store_segmented_target')
 
     def get_target(self, request, response):
         """Read the active typed snapshot without refreshing it."""

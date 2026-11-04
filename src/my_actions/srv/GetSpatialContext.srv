@@ -1,0 +1,10 @@
+# Read-only map, arm pose and remembered object cell membership.
+---
+bool success
+string status
+my_actions/SpatialMap map
+geometry_msgs/PoseStamped tcp_pose
+string[] object_names
+geometry_msgs/Point[] object_positions
+# Empty ID means outside the rectangular summary workspace.
+string[] object_cell_ids

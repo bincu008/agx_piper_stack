@@ -9,3 +9,10 @@ lmstudio:
   api_server_port: '1234'
   model_name: 'robobrain2.5-4b'
   request_timeout_sec: '120'
+# Ubuntu loopback endpoint forwarded over operator-authenticated SSH.
+# Keep the remote Qwen server on its own loopback interface.
+qwen_tunnel:
+  api_server_ip: '127.0.0.1'
+  api_server_port: '18092'
+  model_name: 'Qwen/Qwen3.5-9B'
+  request_timeout_sec: '120'

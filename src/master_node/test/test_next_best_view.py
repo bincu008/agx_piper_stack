@@ -368,3 +368,19 @@ def test_suitable_current_view_requires_no_camera_motion():
                        srv.PlanNextBestView.Response())
     assert response.success and response.status=='CURRENT_VIEW_ALREADY_SUITABLE'
     assert list(response.path_flat)==[0.]*6
+
+
+def test_cube_target_uses_shared_map_and_rejects_ambiguous_names():
+    """Cell centers come from ActiveVision; there is no duplicated grid formula."""
+    from geometry_msgs.msg import Point
+    from my_actions.msg import SpatialCell, SpatialMap
+    planner, _ = fixture()
+    planner.call = lambda name, query: srv.GetSpatialMap.Response(
+        success=True, map=SpatialMap(cells=[SpatialCell(
+            id='x0_y0_z0', center=Point(x=.15, y=-.45, z=.15))]))
+    name, target = planner.target(srv.PlanNextBestView.Request(target_cell_id='x0_y0_z0'))
+    assert name == 'x0_y0_z0' and np.allclose(target, [.15, -.45, .15])
+    with pytest.raises(ValueError, match='UNKNOWN_SPATIAL_CELL'):
+        planner.target(srv.PlanNextBestView.Request(target_cell_id='missing'))
+    with pytest.raises(ValueError, match='EXCLUSIVE'):
+        planner.target(srv.PlanNextBestView.Request(target_cell_id='x0_y0_z0', target_name='bowl'))

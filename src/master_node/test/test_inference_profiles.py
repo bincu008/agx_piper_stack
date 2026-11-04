@@ -43,3 +43,11 @@ def test_explicit_endpoint_and_model_override_profile():
 def test_invalid_profile_is_rejected():
     with pytest.raises(RuntimeError):
         launch_defaults('unknown')
+
+
+def test_qwen_tunnel_is_loopback_with_explicit_model():
+    """The VM uses its own authenticated SSH tunnel, not the Mac localhost."""
+    defaults = launch_defaults('qwen_tunnel')
+    assert defaults['api_server_url'] == 'http://127.0.0.1:18092/v1'
+    assert defaults['model_name'] == 'Qwen/Qwen3.5-9B'
+    assert defaults['allow_physical_grasp_execution'] == 'false'

@@ -333,10 +333,11 @@ class StepStore:
         return item, response
 
     def run_queue(self, context_id, cancelled=lambda: False, feedback=lambda *args: None,
-                  stop_before_step_id=''):
+                  stop_before_step_id='', expected_revision=0):
         """Deplete each attempted task; never consume failed dependency results."""
         with self._lock:
             ctx = self._context(context_id)
+            self._revision(ctx, expected_revision)
             if ctx.busy:
                 raise RuntimeError('CONTEXT_BUSY')
             if any('STATE_UNKNOWN' in item.status for item in ctx.results.values()):

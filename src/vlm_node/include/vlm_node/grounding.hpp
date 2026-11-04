@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cctype>
 #include <algorithm>
 #include <regex>
 #include <string>
@@ -8,6 +9,24 @@
 
 namespace vlm_node
 {
+
+// Unknown/error responses must never turn into evidence of visual absence.
+inline std::string presenceDecision(std::string reply)
+{
+    const auto begin=reply.find_first_not_of(" \t\r\n");
+    if (begin==std::string::npos) return "UNKNOWN";
+    reply=reply.substr(begin,reply.find_last_not_of(" \t\r\n")-begin+1);
+    std::transform(reply.begin(),reply.end(),reply.begin(),
+        [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return reply=="PRESENT" || reply=="ABSENT" ? reply : "UNKNOWN";
+}
+
+inline std::string presenceStatus(const std::string &reply)
+{
+    const auto decision=presenceDecision(reply);
+    return decision=="PRESENT" ? "PRESENT" :
+        decision=="ABSENT" ? "NOT_CONFIRMED_PRESENT" : "PRESENCE_UNKNOWN";
+}
 
 inline std::string wholeObjectGroundingTarget(const std::string &description)
 {

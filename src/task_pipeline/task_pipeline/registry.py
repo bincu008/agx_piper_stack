@@ -24,6 +24,8 @@ class Function:
 
 FUNCTIONS = {item.name: item for item in (
     Function('commit_floor_slots', srv.CommitFloorSlots, '/placement/commit_floor_slots'),
+    Function('get_spatial_map', srv.GetSpatialMap, '/active_vision/get_spatial_map'),
+    Function('get_spatial_context', srv.GetSpatialContext, '/master/get_spatial_context'),
     Function('capture_observation', srv.CaptureObservation,
              '/pipeline/_capture_observation', 'rgbd'),
     Function('run_step', srv.RunPipelineStep, '/master/run_step'),
@@ -55,6 +57,9 @@ FUNCTIONS = {item.name: item for item in (
         'execute_lift', 'execute_placement_transfer', 'execute_placement_descent',
         'release_placed_object')],
     Function('move_to', srv.MoveTo, '/master/move_to'),
+    Function('get_observe_view', srv.GetObserveView, '/master/get_observe_view', 'relative_camera'),
+    Function('solve_observe_view', srv.SolveObserveView, '/vamp_planner/solve_observe_view',
+             'frozen_scene'),
     Function('execute_trajectory', srv.ExecuteTrajectory, '/master/execute_trajectory'),
     Function('set_gripper', srv.GripperCommand, '/master/set_gripper'),
     Function('select_grasp', srv.SelectGrasp, '/master/select_grasp'),
@@ -63,6 +68,7 @@ FUNCTIONS = {item.name: item for item in (
     Function('get_arm_state', srv.GetArmState, '/master/get_arm_state'),
     Function('get_manipulation_memory', srv.GetManipulationMemory, '/master/get_manipulation_memory'),
     Function('get_floor_slots', srv.GetManipulationMemory, '/placement/get_floor_slots'),
+    Function('store_segmented_target', srv.StoreSegmentedTarget, '/master/store_segmented_target'),
     *[Function(name, srv.ResolveManipulationTarget, '/master/'+name) for name in (
         'resolve_target', 'refresh_active_target', 'forget_active_target', 'get_active_target')],
     Function('calculate_active_grasps', srv.FindGraspCandidates, '/master/calculate_active_grasps'),

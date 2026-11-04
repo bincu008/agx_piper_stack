@@ -1,0 +1,30 @@
+# Delta translation in current optical camera axes: +X right, +Y down, +Z forward.
+# Metres and radians; R_new = R_camera * Rz(yaw) * Ry(pitch) * Rx(roll).
+float64 dx
+float64 dy
+float64 dz
+float64 roll
+float64 pitch
+float64 yaw
+# Internal immutable inputs supplied by the master, not a physical command.
+float64[6] source_joints
+geometry_msgs/TransformStamped camera_transform
+# Row-major calibrated TCP-to-optical transform.
+float64[16] hand_eye_matrix
+sensor_msgs/PointCloud2 observation_cloud
+float32 jaw_opening_m
+---
+bool success
+string status
+bool moved_target
+# True only for a newly solved and collision-checked target; never for fallback.
+bool endpoint_safe
+float64[6] source_joints
+float64[6] target_joints
+std_msgs/Header observation_header
+geometry_msgs/PoseStamped requested_camera_pose
+geometry_msgs/PoseStamped achieved_camera_pose
+float32 translation_error_m
+float32 orientation_error_rad
+float32 achieved_fraction
+uint32 candidates_tested

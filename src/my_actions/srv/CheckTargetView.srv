@@ -19,3 +19,6 @@ uint32 sample_count
 uint32 in_view_count
 uint32 clear_count
 float32 visible_fraction
+
+# Deterministic membership in the shared coarse spatial map, empty outside.
+string target_cell_id

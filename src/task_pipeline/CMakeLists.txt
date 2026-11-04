@@ -6,6 +6,10 @@ ament_python_install_package(${PROJECT_NAME})
 install(PROGRAMS scripts/pipeline_node scripts/pipeline_task scripts/mock_bowl_cup DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/pipeline_mcp DESTINATION lib/${PROJECT_NAME})
 install(FILES ../../docs/mcp/WORKFLOW.md ../../docs/mcp/NANOBOT.md
+  ../../docs/mcp/PREPARATION_ONLY.md
+  ../../docs/mcp/LIVE_PERCEPTION.md
+  ../../docs/mcp/SPATIAL_MAP.md
+  ../../docs/mcp/AGENT_PIPELINE.md
   ../../docs/mcp/requirements.txt ../../docs/mcp/MOCK_VALIDATION.md
   DESTINATION share/${PROJECT_NAME}/mcp)
 if(BUILD_TESTING)
@@ -15,5 +19,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_context test/test_context.py)
   ament_add_pytest_test(test_recipe_obstacles test/test_recipe_obstacles.py)
   ament_add_pytest_test(test_mcp test/test_mcp.py)
+  ament_add_pytest_test(test_mcp_execution test/test_mcp_execution.py)
+  ament_add_pytest_test(test_mcp_preparation test/test_mcp_preparation.py)
 endif()
 ament_package()

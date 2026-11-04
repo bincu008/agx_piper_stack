@@ -7,6 +7,8 @@ The supported development environment is Ubuntu 24.04 ARM64.
 
 Start here:
 
+- [Authenticated MCP / Nanobot and guarded execution](docs/mcp/README.md)
+
 - [Available policies and backend choices](#available-policies-and-backend-choices): selectable behavior, engine choices and configuration interfaces.
 
 - [Launched nodes and file hierarchy](docs/CODE_MAP.md): which files own each node, API and service.

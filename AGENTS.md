@@ -1,5 +1,41 @@
 # Repository Guidelines
 
+## MCP guarded execution boundary (2026-11-03)
+
+Read [docs/mcp/WORKFLOW.md](docs/mcp/WORKFLOW.md) before MCP/execution changes.
+MCP 2.0 forwards only catalogued complete prepared pick/place stages through
+master safeguards. Preserve execution_ref, durable request IDs, private ledger,
+source/revision/phase/contact checks and unknown-state blocking. Default startup
+allows guarded action dispatch; --read-only restores disabled action cards.
+Never move hardware in automated tests. No remote reset, generic movement or
+physical retry/alternative is supported. Do not bypass uncertainty by replacing
+its ledger. Keep authentication/TLS and local cancellation/watchdog paths intact.
+
+## Agent-composed MCP pipeline update (2026-11-03)
+
+MCP 3.0 exposes non-actuating perception/memory/grasp/placement preparation through
+named tools and calculation-only run_step/submit_steps/run_steps. Read
+[agent pipeline contracts](docs/mcp/AGENT_PIPELINE.md). Use typed same-context
+result bindings; never accept caller CDR, image/cloud buffers or arbitrary
+endpoints. store_segmented_target extracts synchronized mask-selected geometry
+through existing memory semantics. Physical stages remain individually guarded;
+reject them from generic queues. Share the durable admission lock/ledger and
+retain preparation-unknown barriers; no remote safety reset. Action goals support
+expected_revision for an atomic queue-start check. Mock tests must use an isolated
+ROS domain and never dispatch arm/gripper commands.
+
+## Relative view and empty-hand movement update (2026-11-03)
+
+The operator authorized get_observe_view and MCP move_to as an exception to the
+older no-generic-movement scope above. get_observe_view is calculation only,
+consumes six camera-relative deltas, and delegates math/IK/full endpoint checking
+to C++. Use ActiveVision's synchronized manual FK*X only. Unsafe/unreachable
+views return exact current joints with moved_target=false, endpoint_safe=false;
+this does not prove current-pose safety. Missing/stale inputs remain failures.
+move_to stays empty-hand and plans/checks the path through existing VAMP/master,
+with durable MCP request IDs and unknown-state blocking. Never execute it on real
+hardware in development tests. Do not bypass scene checks to force a view.
+
 ## Project Structure & Module Organization
 
 This is a ROS 2/colcon workspace. Production packages live under `src/`:
@@ -995,3 +1031,40 @@ object APIs available for explicit callers. Never treat returned center points
 as boxes or infer a missing object's grasp cloud from its old location. Retain
 unseen-object directory hints and frozen destination/grid/placed geometry.
 Inventory is non-actuating and does not implement automatic camera look recovery.
+
+## Shared spatial grid (2026-11-03)
+
+ActiveVision owns the 16-cell 30cm base_link summary and its scan times. See
+[spatial contract](docs/mcp/SPATIAL_MAP.md). Use get_spatial_map/get_spatial_context
+and the shared returned bounds for object/cell reasoning. Do not create another
+grid formula in Python/MCP or replace fine collision geometry with coarse cells.
+Only valid synchronized depth rays update times, including empty traversed and
+hit cells; invalid depth/occluded cells do not. Cell age is not a safety or full
+coverage certificate. Camera pose remains manual FK*X; no computational TF lookup.
+plan_next_best_view accepts a cell ID and reuses existing IK/occlusion/path checks.
+
+## Live perception versus replay and memory (2026-11-03)
+
+Read docs/mcp/LIVE_PERCEPTION.md for the live domain-0 Qwen tunnel workflow.
+Never label replay or missing memory as fresh visual evidence. Missing memory,
+empty/uncertain inference and timeouts mean unknown, not absent. Bind one captured
+image into presence/grounding/segmentation for a consistent visual test. The
+qwen_tunnel profile uses Ubuntu's own loopback SSH forward, never the Mac's
+localhost implicitly. Keep passwords out of parameters/files/logs.
+For non-actuating live validation run MCP --perception-only --require-live-inputs,
+keep the master physical gate false and reuse existing hardware drivers; do not
+start controllers/motors. The graph guard rejects mock/duplicate/unverified raw
+publishers; capture still enforces freshness and synchronized manual FK*X.
+
+## Non-actuating MCP preparation (2026-11-03)
+
+Use --preparation-only --require-live-inputs for non-actuating view/grasp/full-task
+calculations; read docs/mcp/PREPARATION_ONLY.md and its actual verification matrix.
+This mode never constructs physical ROS transport, never changes the physical
+master gate and rejects physical APIs inside generic queues. Reuse the same
+ledger/typed source bindings; validate binding message types before forwarding
+because generated ROS Python setters may defer their checks. Require the master
+physical gate false, known idle empty hand and live source identity at admission.
+Registered publishers are not proof of fresh feedback. Report stale-feedback,
+JSON/model and planning failures honestly; do not fabricate success or restart
+hardware to make tests pass. Keep calculation-only and physical readiness distinct.

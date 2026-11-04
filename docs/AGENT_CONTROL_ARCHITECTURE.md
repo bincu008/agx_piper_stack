@@ -2,7 +2,8 @@
 
 Accepted design direction, 2026-10-13. Prepared-segment execution and queue
 pause support are implemented as described in the implementation update below.
-MCP transport and general TCP adjustment remain planned. Preserve the current
+Guarded prepared-execution MCP transport is implemented in
+[MCP integration](mcp/README.md). General TCP adjustment remains planned. Preserve the current
 planners and execution checks.
 
 ## Decision
@@ -160,3 +161,18 @@ check, and `--queue-pick-place` now cover the full prepared path through transfe
 descent and release using the same master-owned session. The queue pauses before
 pregrasp and retains all nine execution/commit tasks. Existing staged APIs remain
 compatibility paths; MCP transport and general TCP adjustment are still planned.
+
+Implementation update (2026-11-03): MCP 2.0 enables guarded prepared pick/place
+stage dispatch with source-bound execution references and durable request IDs.
+The master still owns robot execution; the gateway stores transport admission,
+receipts and unknown-state barriers. No generic motion, relative-camera jog,
+remote recovery or physical alternative/retry is exposed. See docs/mcp/WORKFLOW.md
+for scope and the one-attempt policy. Validation used fixtures and false-gate mock
+rejection only; physical execution remains untested.
+
+Implementation update (2026-11-03, MCP 2.1): get_observe_view calculates a nearby
+camera-relative endpoint with bounded relaxed IK and full endpoint checking;
+move_to is exposed as the existing guarded empty-hand joint-target operation.
+Math remains in C++, orchestration/master execution and shared catalog remain
+central. This is not generic unchecked TCP execution or a payload movement API.
+See docs/mcp/WORKFLOW.md for fallback/uncertainty and mock-only validation.

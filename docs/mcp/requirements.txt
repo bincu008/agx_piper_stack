@@ -1,0 +1,2 @@
+# Optional inspection transport, isolated from system ROS Python dependencies.
+mcp==1.30.0

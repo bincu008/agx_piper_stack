@@ -1,4 +1,6 @@
 #include "my_actions/srv/plan_camera_retreat.hpp"
+#include "my_actions/srv/solve_observe_view.hpp"
+#include "vamp_node/observe_view.hpp"
 #include "vamp_node/vamp_utils.hpp"
 #include "vamp_node/pipeline_timing.hpp"
 #include "vamp_node/upright_motion.hpp"
@@ -293,6 +295,7 @@ private:
   rclcpp::Service<my_actions::srv::PlanAPF>::SharedPtr plan_apf_srv_;
   rclcpp::Service<my_actions::srv::PlanCameraRetreat>::SharedPtr retreat_srv_;
   rclcpp::Service<my_actions::srv::LookAt>::SharedPtr look_at_ik_srv_;
+  rclcpp::Service<my_actions::srv::SolveObserveView>::SharedPtr observe_view_srv_;
   rclcpp::Service<my_actions::srv::FindGraspCandidates>::SharedPtr grasp_candidates_srv_;
   rclcpp::Service<my_actions::srv::FindCloudGrasps>::SharedPtr cloud_grasps_srv_;
   rclcpp::Service<my_actions::srv::RefineGrasp>::SharedPtr refine_grasp_srv_;
@@ -728,6 +731,10 @@ public:
     look_at_ik_srv_ = this->create_service<my_actions::srv::LookAt>(
       "/vamp_planner/look_at_ik",
       std::bind(&VampPlannerServer::handleLookAtIK, this, std::placeholders::_1, std::placeholders::_2));
+    observe_view_srv_ = this->create_service<my_actions::srv::SolveObserveView>(
+      "/vamp_planner/solve_observe_view",
+      std::bind(&VampPlannerServer::handleObserveView, this,
+                std::placeholders::_1, std::placeholders::_2));
     grasp_candidates_srv_ = this->create_service<my_actions::srv::FindGraspCandidates>(
       "/vamp_planner/find_grasp_candidates",
       std::bind(&VampPlannerServer::handleFindGraspCandidates, this, std::placeholders::_1, std::placeholders::_2));
@@ -8352,6 +8359,108 @@ private:
       response->tcp_pose.header=cloud.header;
       return;
     }
+  }
+
+  void handleObserveView(
+    const std::shared_ptr<my_actions::srv::SolveObserveView::Request> request,
+    std::shared_ptr<my_actions::srv::SolveObserveView::Response> response)
+  {
+    response->status = "INVALID_VIEW_INPUT";
+    const auto &cloud = request->observation_cloud;
+    if (cloud.header.frame_id != "base_link" || cloud.header != request->camera_transform.header ||
+        rclcpp::Time(cloud.header.stamp).nanoseconds() <= 0 || cloud.height < 2 ||
+        cloud.is_bigendian || cloud.point_step < 12 ||
+        cloud.row_step != cloud.width * cloud.point_step ||
+        cloud.data.size() != static_cast<size_t>(cloud.row_step) * cloud.height ||
+        cloud.data.size() > 16*1024*1024) return;
+    for (const auto *name : {"x", "y", "z"}) {
+      if (!std::any_of(cloud.fields.begin(), cloud.fields.end(), [&](const auto &f) {
+        return f.name == name && f.datatype == sensor_msgs::msg::PointField::FLOAT32 &&
+               f.count == 1 && f.offset <= cloud.point_step - 4;
+      })) return;
+    }
+    std::array<float,6> delta{{static_cast<float>(request->dx), static_cast<float>(request->dy),
+      static_cast<float>(request->dz), static_cast<float>(request->roll),
+      static_cast<float>(request->pitch), static_cast<float>(request->yaw)}};
+    for (float value : delta) if (!std::isfinite(value)) return;
+    if (Eigen::Vector3f(delta[0],delta[1],delta[2]).norm() > .20F) return;
+    for (size_t i=3; i<6; ++i) if (std::abs(delta[i]) > M_PI) return;
+    std::vector<float> start(request->source_joints.begin(), request->source_joints.end());
+    for (float value : start) if (!std::isfinite(value)) return;
+    if (!std::isfinite(request->jaw_opening_m) || request->jaw_opening_m < 0.F ||
+        request->jaw_opening_m > .10F) return;
+    Eigen::Isometry3f hand_eye = Eigen::Isometry3f::Identity();
+    for (size_t r=0; r<4; ++r) for (size_t c=0; c<4; ++c)
+      hand_eye.matrix()(r,c) = request->hand_eye_matrix[r*4+c];
+    const auto &transform = request->camera_transform.transform;
+    Eigen::Quaternionf rotation(transform.rotation.w, transform.rotation.x,
+                               transform.rotation.y, transform.rotation.z);
+    if (!hand_eye.matrix().allFinite() || !rotation.coeffs().allFinite() ||
+        rotation.norm() < 1.e-5F ||
+        (hand_eye.linear().transpose()*hand_eye.linear()-Eigen::Matrix3f::Identity()).norm() > .001F ||
+        std::abs(hand_eye.linear().determinant()-1.F) > .001F ||
+        (hand_eye.matrix().row(3)-Eigen::Vector4f(0,0,0,1).transpose()).norm() > .001F) return;
+    Eigen::Isometry3f camera = Eigen::Isometry3f::Identity();
+    camera.linear() = rotation.normalized().toRotationMatrix();
+    camera.translation() = Eigen::Vector3f(transform.translation.x, transform.translation.y,
+                                         transform.translation.z);
+    if (!camera.matrix().allFinite()) return;
+    const auto fk=[](const std::vector<float> &q) {
+      std::array<float,6> values{}; std::copy_n(q.begin(),6,values.begin());
+      return Robot::eefk(values);
+    };
+    const auto initial_camera = fk(start)*hand_eye;
+    if ((initial_camera.translation()-camera.translation()).norm() > .02F ||
+        Eigen::AngleAxisf(initial_camera.linear().transpose()*camera.linear()).angle() > .10F) {
+      response->status="CAMERA_JOINT_OBSERVATION_MISMATCH"; return;
+    }
+    // Freeze measured obstacles, removing only samples in the current robot's
+    // own sphere geometry plus the existing point-radius shell (not a contact bypass).
+    Robot::ConfigurationBlock<1> configuration;
+    for (size_t j=0; j<6; ++j) configuration[j][0]=start[j];
+    Robot::Spheres<1> spheres; Robot::template sphere_fk<1>(configuration,spheres);
+    std::vector<Point> environment;
+    sensor_msgs::PointCloud2ConstIterator<float> x(cloud,"x"),y(cloud,"y"),z(cloud,"z");
+    for (;x!=x.end();++x,++y,++z) {
+      if (!std::isfinite(*x)||!std::isfinite(*y)||!std::isfinite(*z)) continue;
+      bool self=false;
+      for (size_t sphere=0;sphere<Robot::n_spheres;++sphere) {
+        const float dx=*x-spheres.x[{sphere,0}],dy=*y-spheres.y[{sphere,0}],
+                    dz=*z-spheres.z[{sphere,0}],radius=spheres.r[{sphere,0}]+.0025F;
+        if (dx*dx+dy*dy+dz*dz <= radius*radius) {self=true;break;}
+      }
+      if (!self) environment.push_back(Point{*x,*y,*z});
+    }
+    if (environment.empty()) {response->status="EMPTY_VIEW_OBSTACLE_SCENE";return;}
+    const auto safe=[&](const std::vector<float> &q) {
+      for (size_t j=0;j<6;++j)
+        if (!std::isfinite(q[j])||q[j]<kPiperJointLower[j]-1.e-5F||
+            q[j]>kPiperJointUpper[j]+1.e-5F) return false;
+      return isCandidatePoseSafe(q,environment,nullptr,nullptr,nullptr,0.F,nullptr,
+                                 request->jaw_opening_m);
+    };
+    const auto result = calculateObserveView(start,camera,hand_eye,delta,
+      [&](const Eigen::Isometry3f &pose,const std::vector<float> &seed,float angle,
+          std::vector<float> &joints) {
+        PoseIkDiagnostics diagnostic;
+        return solvePiperPoseIK(pose,seed,joints,diagnostic,true,.002F,angle,350);
+      },safe,fk);
+    response->success=true;
+    response->status=result.status;
+    response->moved_target=result.moved;
+    response->endpoint_safe=result.endpoint_safe;
+    std::copy(start.begin(),start.end(),response->source_joints.begin());
+    std::copy(result.joints.begin(),result.joints.end(),response->target_joints.begin());
+    response->observation_header=cloud.header;
+    response->requested_camera_pose.header=cloud.header;
+    response->achieved_camera_pose.header=cloud.header;
+    setFkPoseMessage(result.requested,response->requested_camera_pose);
+    setFkPoseMessage(result.achieved,response->achieved_camera_pose);
+    response->translation_error_m=(result.requested.translation()-result.achieved.translation()).norm();
+    response->orientation_error_rad=Eigen::AngleAxisf(
+      result.requested.linear().transpose()*result.achieved.linear()).angle();
+    response->achieved_fraction=result.fraction;
+    response->candidates_tested=result.tested;
   }
 
   void handleLookAtIK(const std::shared_ptr<my_actions::srv::LookAt::Request> request,

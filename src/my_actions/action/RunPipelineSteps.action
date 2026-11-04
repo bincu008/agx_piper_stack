@@ -1,4 +1,6 @@
 string context_id
+# Zero preserves legacy behavior; nonzero rejects a changed queue before starting.
+uint64 expected_revision
 # Empty runs all remaining tasks; otherwise pause before this queued step.
 string stop_before_step_id
 ---

@@ -325,7 +325,8 @@ class MasterStepRuntime:
         try:
             result.status, result.results = self.store.run_queue(
                 handle.request.context_id, lambda: handle.is_cancel_requested, progress,
-                stop_before_step_id=handle.request.stop_before_step_id)
+                stop_before_step_id=handle.request.stop_before_step_id,
+                expected_revision=getattr(handle.request, 'expected_revision', 0))
             result.success = result.status in ('COMPLETE', 'PAUSED_AT_STEP_BOUNDARY')
             if result.status == 'STOPPED_ON_FAILURE':
                 relevant = {'execute_plan', 'gripper_open', 'gripper_close',

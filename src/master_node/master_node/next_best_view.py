@@ -171,6 +171,16 @@ class NextBestView:
 
     def target(self, request):
         """Resolve a named location hint or an explicit base-frame target."""
+        if request.target_cell_id:
+            if request.target_name or request.target.header.frame_id:
+                raise ValueError('CELL_TARGET_EXCLUSIVE_WITH_OBJECT_OR_POINT')
+            spatial = self.call('get_spatial_map', srv.GetSpatialMap.Request())
+            if not spatial.success:
+                raise RuntimeError(spatial.status)
+            cell = next((c for c in spatial.map.cells if c.id == request.target_cell_id), None)
+            if cell is None:
+                raise ValueError('UNKNOWN_SPATIAL_CELL')
+            return cell.id, np.array([cell.center.x, cell.center.y, cell.center.z])
         if request.target.header.frame_id:
             if request.target.header.frame_id != 'base_link':
                 raise ValueError('VIEW_TARGET_REQUIRES_BASE_LINK')
@@ -237,7 +247,7 @@ class NextBestView:
                 raise RuntimeError('ARM_STATE_UNAVAILABLE')
             start = list(joints.position[:6])
             self.execution._joints(start, command_feedback=True)
-            if request.allow_current_view:
+            if request.allow_current_view and not request.target_cell_id:
                 memory=self.node.manipulation_memory.snapshot()
                 role=('destination' if memory['active_destination'] and
                       memory['active_destination']['name'].casefold()==name.casefold() else 'object')

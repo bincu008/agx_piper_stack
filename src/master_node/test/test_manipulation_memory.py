@@ -618,3 +618,66 @@ def test_unknown_inventory_is_perceived_once_then_location_memory_is_used():
     assert result.success and result.status == 'SCENE_MEMORY_READY_NO_INFERENCE'
     assert calls == before and not any(result.observed)
     assert result.positions[result.names.index('bowl')].x != 0.
+
+
+def test_store_existing_segmentation_without_vlm():
+    """A bound mask creates active geometry without repeated grounding inference."""
+    memory, observation, calls, _, _ = fixture()
+    mask = np.zeros((32, 32), np.uint8)
+    mask[:, :16] = 255
+    message = memory.bridge.cv2_to_imgmsg(mask, 'mono8')
+    message.header = copy.deepcopy(observation.image.header)
+    result = memory.store_segmented(srv.StoreSegmentedTarget.Request(
+        name='bowl', role='object', image=observation.image, mask=message,
+        observation_cloud=observation.cloud, camera_transform=observation.camera_transform),
+        srv.StoreSegmentedTarget.Response())
+    assert result.success, result.status
+    assert result.object_cloud.width > 80
+    assert not calls
+    target = memory.get_target(srv.ResolveManipulationTarget.Request(name='bowl', role='object'),
+                               srv.ResolveManipulationTarget.Response())
+    assert target.success and target.object_cloud.width == result.object_cloud.width
+
+
+def test_invalid_segmented_observation_does_not_replace_destination():
+    """Reject stale masks before changing the retained destination/grid association."""
+    memory, observation, _, _, _ = fixture()
+    original = resolve(memory, 'tray', 'destination', observation)
+    assert original.success
+    destination = memory.destination
+    mask = memory.bridge.cv2_to_imgmsg(np.ones((32, 32), np.uint8)*255, 'mono8')
+    mask.header = copy.deepcopy(observation.image.header)
+    transform = copy.deepcopy(observation.camera_transform)
+    transform.header.stamp.sec += 1
+    result = memory.store_segmented(srv.StoreSegmentedTarget.Request(
+        name='other tray', role='destination', image=observation.image, mask=mask,
+        observation_cloud=observation.cloud, camera_transform=transform),
+        srv.StoreSegmentedTarget.Response())
+    assert not result.success and 'ASSOCIATION_MISMATCH' in result.status
+    assert memory.destination is destination
+
+
+def test_spatial_context_reuses_authoritative_layout_without_capture():
+    """Object cell membership comes from the returned map, with no inference."""
+    from geometry_msgs.msg import Point, PoseStamped
+    from my_actions.msg import SpatialCell, SpatialMap
+    memory, _, calls, _, _ = fixture()
+    assert resolve(memory, 'bowl').success
+    memory.node.current_tcp_pose = PoseStamped()
+    original = memory.call
+    cell = SpatialCell(id='x0_y2_z0', minimum=Point(x=0., y=0., z=0.),
+                       maximum=Point(x=.3, y=.3, z=.3))
+
+    def call(name, query):
+        if name == 'get_spatial_map':
+            return srv.GetSpatialMap.Response(success=True, map=SpatialMap(cells=[cell]))
+        return original(name, query)
+
+    memory.call = call
+    calls.clear()
+    result = memory.spatial_context(srv.GetSpatialContext.Request(),
+                                    srv.GetSpatialContext.Response())
+    assert result.success, result.status
+    assert result.object_names == ['bowl']
+    assert result.object_cell_ids == ['x0_y2_z0']
+    assert not calls

@@ -222,7 +222,7 @@ public:
                                                    16, image);
                     response->present = presenceResponseIsAffirmative(response->text);
                     response->success = response->present;
-                    response->status = response->present ? "PRESENT" : "NOT_CONFIRMED_PRESENT";
+                    response->status = vlm_node::presenceStatus(response->text);
                 } catch (const std::exception &error) { response->status = error.what(); }
             }, rclcpp::ServicesQoS(), cb_group_);
         active_target_client_ = this->create_client<my_actions::srv::ResolveManipulationTarget>(
@@ -742,8 +742,9 @@ private:
         return
             "Check whether the object or region described between <target> and "
             "</target> is clearly visible in the image. Respond with exactly "
-            "PRESENT if it is clearly visible. Respond with exactly ABSENT if "
-            "it is not visible, occluded beyond recognition, or you are "
+            "PRESENT if it is clearly visible. Respond with exactly ABSENT only "
+            "if the image clearly establishes it is not visible. Respond with "
+            "exactly UNKNOWN if occluded beyond recognition, ambiguous, or "
             "uncertain. Do not provide coordinates or any explanation. "
             "<target>" + target + "</target>";
     }
@@ -755,20 +756,16 @@ private:
             "and specifically requested object part needed to execute the "
             "instruction are clearly visible in the image. Respond with "
             "exactly PRESENT if both the target object and requested part are "
-            "clearly visible. Respond with exactly ABSENT if either is missing, "
-            "unrecognizable, or uncertain. Do not evaluate whether an action "
+            "clearly visible. Respond with exactly ABSENT only if the image "
+            "clearly establishes the target or part is missing. Respond with "
+            "exactly UNKNOWN if unrecognizable, occluded, or uncertain. "
+            "Do not evaluate whether an action "
             "itself is visible. Do not explain. <instruction>" + instruction +
             "</instruction>";
     }
 
     bool presenceResponseIsAffirmative(const std::string& response) {
-        std::string normalized = trim(response);
-        std::transform(
-            normalized.begin(), normalized.end(), normalized.begin(),
-            [](unsigned char character) {
-                return static_cast<char>(std::toupper(character));
-            });
-        return normalized == "PRESENT";
+        return vlm_node::presenceDecision(response) == "PRESENT";
     }
 
     void parseAndLogOfficialResponse(

@@ -1,5 +1,7 @@
 # Prefer the target's base-facing, steep top-down side. No actuation.
 string target_name
+# Optional cell ID from get_spatial_map; exclusive with explicit target/name.
+string target_cell_id
 # Optional explicit target; empty frame resolves active memory/name-location hints.
 geometry_msgs/PointStamped target
 # Camera-to-target distance, not TCP distance. Zero defaults to 0.45 m.

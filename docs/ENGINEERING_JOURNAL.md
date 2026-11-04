@@ -2308,3 +2308,318 @@ Diagnosis update for the 20 cm cup lift blocker:
 - Real inference first returned center points instead of boxes; strict parsing rejected it before mutation. Corrected the bounding-box prompt rather than inventing boxes or falling back to individual requests. Visual review then found a cropped bowl interior after switching active objects. Preserved target ordering and requested full rim/body/handle extent; final mask readback covers the bowl/cup consistently across both active-object selections. Absent objects retain directory hints but lose stale grasp geometry; the existing destination preserves its base, placed cloud and occupied grid. No automatic camera movement is added.
 - VERIFIED my_actions/master_node/task_pipeline builds and 315 functional tests (one skipped); new perception module passes targeted flake8. Tests cover all targets in both prompts, single observation association, missing objects, malformed replies, stable target order, no single-target fallback and retained destination occupancy. Isolated mock domain 87, physical gate false: final all-target observations for active bowl then active cup both returned 3/3 observed, in 11.646 and 9.803 s. Bowl/cup retained distinct IDs and 11,107 / 13,357 mask points; destination geometry retained its original source timestamp. Reports and mask overlays: ~/agx_piper_data/reports/scene_inventory_final_validation.json and scene_inventory_final_masks_0.png / _1.png.
 - Earlier full bowl/cup preparations also passed (43.062 / 58.677 s; batch perception 10.852 / 10.143 s), and cup cached handoff passed without actuation. These preceded the final full-extent prompt correction and are not proof of the final masks' physical grasp quality. Detailed logs/reports remain outside source. Only read-only inference and planning were run; the operator's live hardware stack was left untouched. Automatic look/re-capture for an unseen selected object and physical validation of this inventory path remain separate work.
+
+## 2026-11-02 — Nanobot MCP discovery and execution boundary
+
+- Problem: a remote agent needs ordered API contracts, but discovery alone cannot
+  enforce grasp verification, retries or safe continuation. No existing ROS MCP
+  server was found in this checkout/local deployment. Current ROS services lack
+  durable correlated task/attempt IDs and a structured recoverable-failure handoff.
+- Resolution: added a strictly read-only MCP adapter using the shared registry,
+  nested ROS-derived schemas, structured raw responses and discoverable workflow/
+  Nanobot resources. Explicit seven-tool allowlist is enforced independently at
+  dispatch; only read clients are constructed. Private binding requires TLS and
+  bearer authentication; public/wildcard binding is rejected. Existing planners,
+  master phases, physical gates, contact checks and cancellation remain unchanged.
+- VERIFIED: task_pipeline build, targeted lint and 18 isolated fixture tests pass.
+  Tests cover simulated valid/invalid ordering, verified-contact gating, supported
+  alternatives, three-attempt exhaustion across reconnect, stale/mismatched data,
+  async ACKs, cancellation, timeout, duplicates, disconnect/restart and protocol/
+  auth/schema enforcement. A durable SQLite admission prototype is fixture-tested
+  but has no ROS dispatcher and is NOT a live execution guarantee. Remote writes
+  remain disabled; correlated master attempt/recovery APIs are still required.
+- Real TLS MCP client initialized/listed tools/resources, fetched the catalog and
+  confirmed execution rejection at https://10.211.55.3:8765/mcp. The read-only
+  server is left running; no robot commands or hardware bringup were performed.
+  Reports: ~/agx_piper_data/reports/mcp_transport_validation.json and
+  mcp_tool_catalog.json; logs: ~/agx_piper_data/logs/mcp_*.log. Physical behavior
+  and the native macOS client's integration remain UNTESTED. One test-client
+  dependency deprecation warning is unrelated to robot behavior. See docs/mcp/.
+
+### 2026-11-02 — MCP checked against real ROS mock replay
+
+- Follow-up validation now uses packaged scene 1 on isolated ROS domain 89,
+  real LM Studio RoboBrain, EdgeSAM and HGGD, physical execution false. All seven
+  MCP inspection tools returned structured ROS-backed state. Standard ROS bowl
+  recipe completed 19 calculation/check steps twice (23.286 / 19.690 s), then
+  paused before look and all physical stages. The cached handoff check passed;
+  pending stages remained queued and no actuator API was dispatched.
+- Runtime blockers fixed: consolidated prepare_held_scene lacked the point_cloud2
+  import and crashed placement_node; bottom-preview code unconditionally used an
+  unassigned message when visualization was disabled. Added the missing local
+  import and removed the duplicate publish. Regression tests exercise organized
+  source/destination cloud conversion and disabled-preview cache retention. Final
+  replay produces the footprint without the previous warning. Both package builds
+  and 33 isolated regressions passed; undefined-name checks are clean.
+- OPEN: cup perception, HGGD and placement candidates pass, but complete grasp/
+  lift/place preparation still fails candidate-specific lift IK/APF/transfer or
+  placement reachability. A 43.945 s retry returned failure, not an executable
+  plan. No geometric tolerance, safety or motion policy was weakened to pass.
+- Private MCP endpoint remains read-only and is now attached to mock domain 89
+  for inspection. Hardware motion/contact and native macOS behavior remain
+  untested. See docs/mcp/MOCK_VALIDATION.md and reports mcp_mock_validation.json,
+  mcp_mock_bowl_final.json, mcp_mock_cup_pipeline_retry.json under ~/agx_piper_data/.
+
+### 2026-11-03 — Manipulation APIs visible through MCP discovery
+
+- Request: let the outside agent inspect physical manipulation APIs and their
+  order. Added nine existing ROS API cards to tools/list, with real input schemas,
+  underlying ROS response schemas/endpoints in _meta.rosPipeline, units,
+  prerequisites and explicit execution-disabled status. Seven inspection tools
+  remain callable; all nine manipulation calls return a structured no-dispatch
+  rejection. Visibility does not submit/run a task or enable the incomplete
+  execution adapter. Master safety, attempt/recovery gaps and physical gates are
+  unchanged.
+- VERIFIED: 27 isolated MCP regressions, targeted lint and task_pipeline build
+  passed. Authenticated TLS SDK check against the mock-connected domain-89 server
+  confirmed 16 visible tools, seven authorized reads and typed disabled responses
+  for all nine valid ROS-shaped action requests. No ROS actuator was dispatched.
+  MCP restarted as version 1.1.0. Report: ~/agx_piper_data/reports/
+  mcp_visibility_validation.json; generated catalog and reusable Nanobot guidance
+  updated. Physical execution remains unimplemented through MCP and untested.
+
+### 2026-11-03 — Guarded MCP prepared execution enabled
+
+- Request: make the nine manipulation APIs runnable by the external agent. Added
+  an admission/transport adapter over existing public master APIs, not a new
+  planner or robot queue. Every command binds an execution_ref to exact object,
+  plan revision and source header, plus a durable request_id. Initial admission
+  requires a complete validated prepared pick/place. Master phases, feedback,
+  contact, expiry, limits, collisions, physical gate and speed restoration remain
+  unchanged. Placement requires this task's confirmed close; slot commit requires
+  confirmed release and the frozen selected pose. No generic movement/reset or
+  arbitrary camera shift is exposed.
+- Durability: private SQLite/WAL ledger with process lock records admission before
+  dispatch and final receipts. Duplicates never replay actuators. Any uncertain
+  dispatched result, timeout/cancellation or interrupted process blocks all later
+  actions across reconnect/restart. One grasp attempt per task is supported,
+  stricter than the three-attempt ceiling; no safe physical failure/alternative
+  handoff exists, so autonomous retry is deliberately unavailable. Local ledger
+  reconciliation is still administrative review, not an implemented remote API.
+- VERIFIED: 41 isolated regressions passed (synthetic master, no ROS actuators),
+  including full HTTP/MCP sequence, correlated contact, stale/mismatched inputs,
+  duplicates/reopen, budget exhaustion, timeout/cancellation and crash ambiguity.
+  Lint and task_pipeline build passed. Actual TLS MCP 2.0.0 server on mock domain
+  89 advertises all 16 callable tools; all nine valid-shaped action requests were
+  rejected by the false master physical gate before dispatch or ledger admission.
+  Real ledger remained empty; no arm/gripper commands were sent. Report:
+  ~/agx_piper_data/reports/mcp_execution_validation.json. Hardware tracking/contact
+  and native macOS execution remain UNTESTED. Updated workflow/Nanobot prompt.
+- Camera-right 2 cm remains unsupported by a single MCP API. execute_plan look
+  follows a frozen view; a relative camera shift needs optical-frame translation,
+  calibrated manual geometry, IK and checked empty-hand motion. Do not substitute
+  a fixed joint/base-axis offset. Existing ROS solve_pose/plan_motion/
+  execute_trajectory building blocks remain unexposed for arbitrary camera jogs.
+
+### 2026-11-03 — Relative camera view calculation and MCP move_to
+
+- Added GetObserveView (six optical-camera deltas) and immutable SolveObserveView
+  backend through the shared catalog. Master captures synchronized manual FK*X,
+  checks fresh/stationary empty-hand feedback, and delegates geometry/IK to C++.
+  The endpoint uses full scene/self/arm/gripper checking. Bounded orientation
+  relaxation and half/quarter IK alternatives are explicit. Unsafe endpoints
+  immediately return exact source joints with TARGET_COLLISION; failed IK returns
+  NO_REACHABLE_CHANGE. Unchanged results never claim endpoint_safe. No stale-data
+  fallback, TF lookup, collision bypass or physical command is introduced.
+- Exposed existing empty-hand move_to through MCP 2.1.0 with target_joints and a
+  durable request_id, independent of prepared execution_ref. Its existing master/
+  VAMP path planning and physical gate remain; gateway rejects held/busy/unknown
+  state, checks fresh start/final feedback, and preserves no-replay uncertainty.
+  There are now 18 callable tools (seven reads, view calculation, ten actions).
+- Runtime blockers resolved: recorded closed-gripper width is -0.28 mm. Preserve
+  the raw measurement; bound only near-zero collision geometry to physical zero.
+  Invalid larger widths remain errors. Existing consolidated C++ utility tests
+  also lacked explicit sensor_msgs/VAMP dependencies; fixed their CMake links.
+- VERIFIED my_actions/master_node/task_pipeline/vamp_node builds; 52 Python tests
+  and all six selected C++ suites passed (including seven new view tests). Mock
+  scene/domain 89 calculated up/right 2 cm repeatedly as EXACT, endpoint_safe=true,
+  with ~2.9 mm position / 0.019 rad orientation error. Final TLS MCP repeats took
+  0.353 / 0.095 / 0.095 s; combined 1 cm up/right plus 0.05 rad roll also passed
+  (0.099 s). Zero delta returned NO_CHANGE. Pure orientation requests at this
+  recorded near-limit configuration can return NO_REACHABLE_CHANGE; no universal
+  reachability claim is made. A synthetic, unpublished dense obstacle fixture
+  exercised the real C++ checker and returned TARGET_COLLISION/current joints.
+- Actual MCP move_to was rejected by the false physical gate before dispatch.
+  Actuator success/duplicate/timeout behavior is fixture-tested only; physical
+  motion/tracking remains UNTESTED. No arm/gripper command was sent. Current
+  stack/MCP remain running on mock domain 89. Reports: observe_view_validation.json,
+  observe_view_rotations.json, observe_mcp_validation.json in ~/agx_piper_data/reports;
+  build/test logs use observe_* in ~/agx_piper_data/logs. Updated Nanobot guidance.
+
+### 2026-11-03 — End-to-end MCP placement coverage audit
+
+- RESOLVED in MCP 3.0.0 (details below). Original integration blocker: MCP exposed
+  18 tools, while capture,
+  perception, target-memory mutation, grasp input/candidate caching, slot search
+  and complete pick/place preparation are still ROS-only. The external agent can
+  execute an already prepared task but cannot prepare it from scratch or submit
+  a master queue. Existing list_functions documents the 97 ROS service functions
+  without authorizing them as MCP calls. A separate existing-mask-to-memory input
+  is missing publicly; resolve_target currently combines those steps internally.
+- Verified by read-only SDK discovery/catalog comparison and source tracing of
+  the real recipes/executor/memory hooks. Added docs/mcp/PLACEMENT_API_AUDIT.md with
+  exact APIs, blockers, automatic internal stages and the next exposure scope.
+  No API or safety change, inference, planning or physical operation performed.
+  Evidence: ~/agx_piper_data/reports/placement_mcp_api_audit.json. End-to-end
+  autonomous MCP preparation was not implemented at the time of that audit.
+
+
+### 2026-11-03 — Remote agent can compose complete manipulation preparation
+
+- Problem: MCP exposed execution but hid perception, cloud insertion, grasp/slot
+  search and preparation, so Nanobot could not build the full pipeline itself.
+- Resolution: exposed 39 actual non-actuating functions and three master pipeline
+  tools (60 total MCP tools). Added store_segmented_target to extract/store an
+  existing synchronized mask without repeated VLM inference. Data remains in the
+  existing StepStore; agents pass typed same-context handles. No duplicate planner,
+  robot queue or arbitrary CDR import. Queues reject physical functions; each
+  physical stage remains callable through the existing guarded action tools.
+- Retained source/revision/phase/contact gates and durable execution receipts.
+  Added exact queue-start revision checks, current idle/empty-hand admission,
+  background-job status/cancellation and persisted unknown-preparation blocking.
+  Restart/reconnect never replays ambiguous operations or resets grasp attempts.
+- VERIFIED: my_actions/task_pipeline/master_node builds; 115 isolated Python
+  checks passed, targeted new-module lint passed. Real TLS MCP on mock scene 1,
+  domain 89, completed bowl/tray RoboBrain→EdgeSAM→cloud memory→HGGD→grid→complete
+  pick/place/withdrawal/retreat preparation and cached handoff validation twice.
+  No physical commands sent. First 26-call run ~22.0s, including HGGD 10.84s,
+  placement search .94s and full preparation 2.63s. Existing explicit collision
+  bypass markers remain reported; this is not fully collision-validated motion.
+- Real master asynchronous queue completed after HTTP disconnection/reconnection;
+  duplicate submission/start returned receipts, stale revision was rejected and
+  physical function injection through generic run_step was refused. Cancellation,
+  actuator ordering/contact/timeout and failure recovery use isolated fixtures;
+  physical tracking/contact and native Nanobot adaptation remain UNTESTED.
+- Evidence: ~/agx_piper_data/reports/mcp_agent_pipeline_validation.json,
+  mcp_queue_validation.json and mcp_tool_catalog.json; logs under the same data
+  directory. Updated workflow resource, full API guide and Nanobot adaptation
+  prompt. Completed calculation contexts still require bounded local cleanup;
+  no remote unknown-state reset/reconciliation tool was added.
+
+- Final verification: task_pipeline 148 tests and master_node 222 tests reported
+  zero errors/failures (one existing skipped master test). Final full MCP mock
+  preparation repeated successfully in 20.23s across 26 calls, including HGGD
+  11.03s, placement search .80s and full preparation 2.75s. Final summary is
+  ~/agx_piper_data/reports/mcp_integration_summary.json. Mock stack/MCP remain
+  running; real hardware drivers were not started.
+
+### 2026-11-03 — Shared coarse spatial knowledge for the remote agent
+
+- Problem: the agent could read poses but had no common spatial layout or scan
+  age, and point-only occupancy would incorrectly leave observed empty air as
+  unseen. Independent grid formulas would also disagree across APIs.
+- Resolution: ActiveVision now owns a 16-cell 30cm base_link index of its existing
+  synchronized perception world. Sampled valid depth rays refresh traversed empty
+  and hit cells, never blocked cells behind the surface; at least three rays must
+  qualify. Only last scan time persists per cell. Layout and current coverage are
+  derived. Invalid/self-masked depth is ignored; calibration reload clears times.
+  Existing fine obstacle, FOV, collision and execution checks are unchanged.
+- Added get_spatial_map and get_spatial_context; visibility responses report
+  target_cell_id, and plan_next_best_view accepts an exclusive target_cell_id.
+  The master reads returned bounds/centers rather than inventing another grid.
+  MCP 3.1.0 exposes 62 tools and a reusable spatial-map resource/Nanobot guide.
+- Mock domain 89, physical execution disabled: map and camera directions returned,
+  eight cells were observed, bowl memory mapped to x0_y2_z0, geometric visibility
+  returned READY, and x1_y1_z0 produced a complete empty-hand view plan in ~.71s.
+  The first requested bowl-cell view had no reachable solution; an explicit next
+  cell succeeded. This remains a bounded planning failure, not guaranteed reach
+  to every cell. No checks were weakened and no physical command was sent.
+- Evidence: ~/agx_piper_data/reports/spatial_map_validation.json and matching
+  logs/spatial_* files. Scan timestamps represent sampled partial observation,
+  not proof of full-cell coverage, empty space or safe motion. Physical gaze and
+  tracking remain UNTESTED. Final package verification recorded below.
+- Final VERIFIED: my_actions/vision_node/master_node/task_pipeline builds passed.
+  Package results: vision_node 15, task_pipeline 148, master_node 224 tests,
+  zero errors/failures and one existing skip. C++ regressions include empty-cell
+  traversal, occlusion, invalid depth/camera, stale times, boundary hits and fixed
+  cell layout. The final mock MCP run again matched bowl cell IDs across context
+  and visibility and planned x1_y1_z0. Spatial resource and 62-tool discovery were
+  verified over private authenticated TLS. Final summary:
+  ~/agx_piper_data/reports/spatial_integration_summary.json. Mock stack and MCP
+  remain running; no physical execution was dispatched.
+
+### 2026-11-03 — Live MCP perception routed to authenticated remote Qwen
+
+- Problem: MCP/replay used domain 89 while live Orbbec/arm feedback used domain 0;
+  VLM still selected the Mac RoboBrain endpoint. Missing spatial memory was also
+  being treated as visual absence, and the presence prompt conflated uncertainty
+  with ABSENT.
+- Resolution: stopped the owned replay/reasoning/MCP processes; left the operator's
+  existing hardware drivers unchanged. Restarted reasoning and MCP in domain 0,
+  physical gate false. Added an opt-in qwen_tunnel inference profile and verified
+  Ubuntu 127.0.0.1:18092 → operator-authenticated SSH → remote loopback 18080 on
+  192.168.50.128. Health/models returned HTTP 200 with Qwen/Qwen3.5-9B. The operator
+  authenticated interactively; no password or new private key was collected/stored.
+- Added MCP perception_only mode (11 tools; no actuator/generic queue dispatch)
+  and require-live-inputs guard. list_functions now includes raw source provenance;
+  mixed/mock/missing/duplicate publishers refuse perception before dispatch.
+  Clarified memory-not-vision descriptions and UNKNOWN inference outcomes.
+  Presence now prompts UNKNOWN for uncertainty; empty/unparseable replies return
+  PRESENCE_UNKNOWN with the existing false booleans. Explicit negative semantics,
+  message schemas, synchronization and coordinate transforms remain intact.
+- VERIFIED: one live publisher per RGB/cloud/joint/TCP topic, with advancing
+  timestamps and actual camera/AGX node identities. The same-context live 640x480
+  capture returned PRESENT through Qwen (~25.76s), a valid mug box (~21.51s), and
+  EdgeSAM OK (~.42s; 14,295 pixels, score .993). Saved source hashes confirm matched
+  image/cloud timestamps, image/mask headers and manual transform/cloud header.
+  Empty memory coexisted with positive fresh-image presence. Visual inspection
+  confirmed the grounding and segmented mug/handle. No motion/gripper calls sent.
+- Final MCP 3.1.1 remains running in domain 0, perception_only with the live guard;
+  a fresh guarded live capture succeeded. Master physical execution remains false.
+  Authenticated TLS/resource checks passed. Builds and targeted lint passed;
+  package results: task_pipeline 152, master_node 225, vlm_node 12 tests, zero
+  errors/failures, one existing master skip. The first aggregate test invocation
+  omitted the optional MCP dependency path; rerunning with that path passed.
+- Evidence: ~/agx_piper_data/reports/live_input_provenance.json,
+  live_qwen_perception.json, live_qwen_source_evidence.json and
+  live_qwen_final_runtime.json; images/logs outside source. Restart/SSH commands
+  and the minimal Mac allowlist are in docs/mcp/LIVE_PERCEPTION.md, served as
+  ros-pipeline://live-perception. Native Nanobot client adoption and physical
+  manipulation are UNTESTED. No unresolved Ubuntu live-perception blocker remains
+  while the operator's tunnel/camera/feedback drivers stay available.
+
+### 2026-11-03 — Non-actuating MCP preparation and functional coverage
+
+- Problem: perception_only hid the view/grasp/complete-preparation APIs; removing
+  that restriction would also expose physical dispatch. The agent needed typed
+  non-actuating composition with the existing live guard and durable ownership.
+- Resolution: added mutually exclusive preparation_only mode (53 tools), requiring
+  --require-live-inputs and a false master physical gate for calculations. It
+  constructs no physical ROS execution transport. Direct physical/legacy dispatch
+  is rejected independently; generic queues have a preparation allowlist, typed
+  binding checks and an atomic revision/function recheck at action start. Added
+  existing refine_grasp as the genuine contact-axis predecessor for final approach.
+  Retained TLS/auth, IDs, receipts, queue semantics and unknown-state blocking.
+- Binding blocker resolved: generated ROS Python setters can defer field checking.
+  A fixture showed a string-to-image binding reaching the fake backend. MCP now
+  checks predecessor existence/success, ROS message identities and compatible
+  numeric types before forwarding. Malformed/wrong-type/order tests then rejected
+  before backend dispatch. No master/interface/safety setting change was needed.
+- VERIFIED: 157 task_pipeline package tests passed, zero errors/failures/skips;
+  targeted lint/build passed. All 53 callable tools have actual call evidence;
+  40 had successful calls. Actual successful paths include single-target memory,
+  both grasp generators, refinement/final approach, placement candidates, pose/
+  path/retreat calculation and the real master queued calculation action. Durable
+  receipts survived MCP-only restart using the same ledger inode/history.
+- OPEN runtime blockers, unchanged: Qwen batch presence echoed target-description
+  JSON instead of keyed booleans, causing Extra data; resolving targets singly
+  worked and ensure_scene_memory then reused them. Joint/TCP publishers remained
+  registered but produced zero samples during a six-second read-only inspection.
+  get_observe_view and complete grasp/lift/pick-place preparation correctly reject
+  stale feedback; their prepared getters/validators have no successful predecessor.
+  Standalone lift IK, placement reachability and some low-level packing searches
+  also rejected the tested geometry. No safety checks were weakened to force them.
+  Matching camera/cloud headers do not establish fresh arm feedback.
+- Negative actual MCP calls rejected physical/gripper/legacy names, malformed
+  bindings, missing predecessors and physical functions inside generic queues.
+  Isolated fixtures also injected a physical task into the local queue and proved
+  action start refused it. No physical dispatch/motor/gripper operation was issued.
+- Only MCP was restarted. Existing reasoning, camera, arm-driver and SSH tunnel
+  PIDs remained unchanged; master physical gate stayed false. Native Nanobot
+  adoption and successful full prepared-motion handoff remain UNVERIFIED pending
+  fresh feedback and successful planning. Verification is functional, not a
+  performance benchmark.
+- Evidence: docs/mcp/PREPARATION_ONLY.md and PREPARATION_VERIFICATION.md (also
+  served in ros-pipeline://preparation); reports/preparation_mode_*.json and logs
+  under ~/agx_piper_data. The exact list, grouped minimal client allowlists,
+  dependencies, startup command, actual failures and blocked cases are documented.

@@ -17,6 +17,7 @@ from task_pipeline.recipes import affordance_from_description
 from .grasp_stages import GraspStages
 from .held_motion import HeldMotion
 from .next_best_view import NextBestView
+from .observe_view import ObserveView
 from .prepared_grasp_lift import PreparedGraspLiftExecutor
 
 
@@ -35,6 +36,7 @@ class ExecutionAPI:
         self.held_motion = HeldMotion(self)
         self.prepared_grasp_lift = PreparedGraspLiftExecutor(self)
         self.next_best_view = NextBestView(self)
+        self.observe_view = ObserveView(self)
         for kind, name, callback in (
                 (PrepareGraspInput, 'prepare_grasp_input', self._prepare),
                 (MoveTo, 'move_to', self._move),

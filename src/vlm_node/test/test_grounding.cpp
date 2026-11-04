@@ -43,3 +43,15 @@ TEST(Grounding, ContactDirectiveDoesNotCropRigidObjectGeometry)
     EXPECT_EQ(vlm_node::wholeObjectGroundingTarget("the complete visible placement surface of the tray"),
               "the complete visible placement surface of the tray");
 }
+
+TEST(Grounding, UnknownPresenceIsNotVisualAbsence)
+{
+    EXPECT_EQ(vlm_node::presenceDecision(" present\n"), "PRESENT");
+    EXPECT_EQ(vlm_node::presenceDecision("ABSENT"), "ABSENT");
+    for (const auto &reply : {"", "UNKNOWN", "timeout", "probably absent", "not present"}) {
+        EXPECT_EQ(vlm_node::presenceDecision(reply), "UNKNOWN");
+        EXPECT_EQ(vlm_node::presenceStatus(reply), "PRESENCE_UNKNOWN");
+    }
+    EXPECT_EQ(vlm_node::presenceStatus("PRESENT"), "PRESENT");
+    EXPECT_EQ(vlm_node::presenceStatus("ABSENT"), "NOT_CONFIRMED_PRESENT");
+}

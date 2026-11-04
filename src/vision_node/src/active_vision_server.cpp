@@ -1,5 +1,7 @@
 #include "vision_node/active_vision_utils.hpp"
 #include "my_actions/srv/check_target_visibility.hpp"
+#include "my_actions/srv/get_spatial_map.hpp"
+#include "vision_node/spatial_grid.hpp"
 #include <onnxruntime_cxx_api.h>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include "ament_index_cpp/get_package_share_directory.hpp"
@@ -9,6 +11,7 @@
 #include <opencv2/opencv.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <memory>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -203,6 +206,39 @@ public:
       "/active_vision/check_target_visibility",
       std::bind(&ActiveVisionServer::handleCheckVisibility,this,
                 std::placeholders::_1,std::placeholders::_2));
+    spatial_map_srv_ = this->create_service<my_actions::srv::GetSpatialMap>(
+      "/active_vision/get_spatial_map", [this](
+        const std::shared_ptr<my_actions::srv::GetSpatialMap::Request>,
+        std::shared_ptr<my_actions::srv::GetSpatialMap::Response> response) {
+        std::lock_guard<std::mutex> guard(scan_mutex_);
+        if (!spatial_revision_) { response->status="SPATIAL_OBSERVATION_REQUIRED"; return; }
+        auto &map=response->map;
+        map.header=spatial_camera_.header; map.revision=spatial_revision_;
+        map.cell_size_m=vision_node::SpatialGrid::side; map.dimensions={2,4,2};
+        map.minimum.x=0.;map.minimum.y=-.6;map.minimum.z=0.;
+        map.maximum.x=.6;map.maximum.y=.6;map.maximum.z=.6;
+        map.camera_pose.header=map.header;
+        map.camera_pose.pose.position.x=spatial_camera_.transform.translation.x;
+        map.camera_pose.pose.position.y=spatial_camera_.transform.translation.y;
+        map.camera_pose.pose.position.z=spatial_camera_.transform.translation.z;
+        map.camera_pose.pose.orientation=spatial_camera_.transform.rotation;
+        const auto &q=spatial_camera_.transform.rotation;
+        const Eigen::Matrix3f rotation=Eigen::Quaternionf(q.w,q.x,q.y,q.z).toRotationMatrix();
+        map.camera_forward.x=rotation(0,2);map.camera_forward.y=rotation(1,2);
+        map.camera_forward.z=rotation(2,2);
+        map.camera_up.x=-rotation(0,1);map.camera_up.y=-rotation(1,1);map.camera_up.z=-rotation(2,1);
+        for (int i=0;i<16;++i) {
+          my_actions::msg::SpatialCell cell;cell.id=vision_node::SpatialGrid::id(i);
+          const auto low=vision_node::SpatialGrid::minimum(i);
+          cell.minimum.x=low.x();cell.minimum.y=low.y();cell.minimum.z=low.z();
+          cell.maximum.x=low.x()+.3;cell.maximum.y=low.y()+.3;cell.maximum.z=low.z()+.3;
+          cell.center.x=low.x()+.15;cell.center.y=low.y()+.15;cell.center.z=low.z()+.15;
+          cell.last_scanned=rclcpp::Time(spatial_grid_.last_scanned[i]);
+          map.cells.push_back(cell);
+          if (spatial_grid_.observed[i]>=3) map.observed_cell_ids.push_back(cell.id);
+        }
+        response->success=true;response->status="SPATIAL_MAP_SNAPSHOT";
+      });
     get_nbv_srv_ = this->create_service<my_actions::srv::GetNBVPose>(
       "/active_vision/get_nbv_candidates",
       std::bind(&ActiveVisionServer::handleGetNBVPose, this, std::placeholders::_1, std::placeholders::_2));
@@ -750,6 +786,8 @@ private:
     (void)request;
     std::lock_guard<std::mutex> lock(scan_mutex_);
     load_calibration();
+    spatial_grid_=vision_node::SpatialGrid{};
+    spatial_camera_=geometry_msgs::msg::TransformStamped{};spatial_revision_=0;
     response->success = has_calibration_;
     response->message = has_calibration_ ? "Calibration matrix reloaded successfully" : "Failed to reload calibration matrix";
     RCLCPP_INFO(this->get_logger(), "%s", response->message.c_str());
@@ -965,6 +1003,10 @@ private:
           })) throw std::runtime_error("INVALID_VISIBILITY_TARGET");
       const auto result=vision_node::targetVisibility(scene,target,transform,
         info.k[0],info.k[4],info.k[2],info.k[5],info.width,info.height);
+      Eigen::Vector3f target_center=Eigen::Vector3f::Zero();
+      for (const auto &point:target) target_center+=point;
+      target_center/=static_cast<float>(target.size());
+      response->target_cell_id=vision_node::SpatialGrid::cell(target_center);
       response->success=true;
       response->visible=result.visible;
       response->status=result.visible ? "READY" : "LOOK_REQUIRED";
@@ -1150,6 +1192,18 @@ private:
       }
       const Eigen::Vector4f base = transform * Eigen::Vector4f(*in_x, *in_y, *in_z, 1.0f);
       *out_x = base.x(); *out_y = base.y(); *out_z = base.z();
+    }
+    const int64_t stamp=rclcpp::Time(output.header.stamp).nanoseconds();
+    if (stamp>rclcpp::Time(spatial_camera_.header.stamp).nanoseconds()) {
+      std::vector<Eigen::Vector3f> hits;
+      for (uint32_t v=0;v<output.height;v+=std::max(1U,output.height/24))
+        for (uint32_t u=0;u<output.width;u+=std::max(1U,output.width/32)) {
+          const size_t offset=static_cast<size_t>(v)*output.row_step+u*output.point_step;
+          float xyz[3];std::memcpy(xyz,output.data.data()+offset,sizeof(xyz));
+          hits.emplace_back(xyz[0],xyz[1],xyz[2]);
+        }
+      spatial_grid_.update(transform.block<3,1>(0,3),hits,stamp);
+      spatial_camera_=camera_transform;++spatial_revision_;
     }
     observation_cloud_pub_->publish(output);
   }
@@ -1520,6 +1574,10 @@ private:
   bool scanning_active_ = true;
   bool scan_next_frame_ = false;
   bool collision_monitor_active_;
+  vision_node::SpatialGrid spatial_grid_;
+  geometry_msgs::msg::TransformStamped spatial_camera_;
+  uint64_t spatial_revision_=0;
+  rclcpp::Service<my_actions::srv::GetSpatialMap>::SharedPtr spatial_map_srv_;
   std::mutex scan_mutex_;
   Point3D last_obstacle_voxel_ = {0.0f, 0.0f, 0.0f};
 

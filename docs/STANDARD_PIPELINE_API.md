@@ -1160,3 +1160,62 @@ Shared timings retain each batch inference and individual segmentation call;
 `[SCENE INFERENCE]` logs the complete prompt and raw response. Invalid key sets,
 boxes for present targets, source headers or masks fail explicitly. No
 single-object inference is used as a hidden fallback for malformed batch output.
+
+## Relative viewing API (2026-11-03)
+
+`get_observe_view` (`my_actions/srv/GetObserveView`) is calculation only. Six
+inputs dx/dy/dz metres, roll/pitch/yaw radians refer to the current optical camera
+axes (+X right, +Y down, +Z forward); orientation composition is
+Rcamera*Rz(yaw)*Ry(pitch)*Rx(roll). Translation norm <=20 cm and each angle <=pi.
+ActiveVision's synchronized manual FK*X plus current source joints/hand-eye feed
+`solve_observe_view`; no computational TF lookup or VLM inference is involved.
+The C++ backend solves bounded relaxed IK, reports actual FK camera errors and
+checks the full target arm/gripper against scene/self geometry. Endpoint safety
+is separate from path safety. Collision returns TARGET_COLLISION/current joints;
+exhausted IK returns NO_REACHABLE_CHANGE/current joints; zero delta is NO_CHANGE.
+These processed decisions have success=true but moved_target=false and
+endpoint_safe=false. Invalid/stale input/calibration is success=false, not fallback.
+
+Only when success, moved_target and endpoint_safe are all true should a caller
+pass target_joints to existing `move_to` (six radians). It plans and executes its
+own VAMP waypoint path, empty-hand only, under the master physical gate. MCP 2.1
+exposes both APIs; move_to additionally needs request_id and does not use a
+prepared object execution_ref. Durable uncertainty/idempotency checks remain.
+See docs/mcp/WORKFLOW.md for complete schemas, units, outcomes and test limitations.
+
+
+## Agent-composed MCP preparation (2026-11-03)
+
+MCP 3.0 now exposes the preparation APIs and existing master StepStore through
+same-context result bindings; see [agent pipeline contracts](mcp/AGENT_PIPELINE.md).
+Physical execution remains through individually guarded stages, never generic
+queued action forwarding. No second planner or execution queue was added.
+
+`store_segmented_target` (`my_actions/srv/StoreSegmentedTarget`) accepts name,
+role (`object`/`destination`), synchronized image, mono8 mask, organized base_link
+observation_cloud and manual camera_transform. Headers/dimensions/transform and
+>=80 mask pixels are checked. It invokes existing target extraction/storage with
+the supplied mask and returns the same fields as ResolveManipulationTarget,
+including position, observation_header, object_cloud and geometry_source_header.
+It performs no grounding inference or motion. Existing destination occupancy and
+placed geometry are retained for an unchanged destination.
+
+RunPipelineSteps goals now accept expected_revision; zero preserves existing
+local callers, while a nonzero value is checked under the StepStore lock before
+starting. MCP requires an exact revision for asynchronous queue start. Cancellation
+remains between steps; a queued acknowledgement is never final completion.
+
+## Shared spatial grid (2026-11-03)
+
+- New `get_spatial_map` (`GetSpatialMap`, ActiveVision backend) reads 16 fixed
+  30cm cubes, scan times, sampled observed cell IDs and camera pose/directions.
+- New `get_spatial_context` (`GetSpatialContext`, master backend) adds current
+  TCP pose and remembered object positions/cell IDs using those exact bounds.
+- `plan_next_best_view` request adds `target_cell_id`, exclusive with target_name
+  or explicit target; resolves the shared cell center and reuses existing planning.
+- `check_target_visibility` and `check_target_view` responses add target_cell_id;
+  all prior visibility and frame/source checks remain unchanged.
+
+See [spatial map contract](mcp/SPATIAL_MAP.md). Both new read APIs are callable in
+MCP 3.1.0, including read-only startup. The authoritative ROS registry and MCP
+metadata expose the actual typed schemas. No actuator API semantics changed.

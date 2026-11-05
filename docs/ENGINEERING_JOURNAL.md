@@ -2623,3 +2623,106 @@ Diagnosis update for the 20 cm cup lift blocker:
   served in ros-pipeline://preparation); reports/preparation_mode_*.json and logs
   under ~/agx_piper_data. The exact list, grouped minimal client allowlists,
   dependencies, startup command, actual failures and blocked cases are documented.
+
+## Student replay branch — 2026-11-04
+
+- **Problem:** A student needs the real pick/place calculation APIs without a
+  robot, remote agent or live-data ambiguity. Added `simulator.launch.py` and
+  `simulator_task`: isolated recorded inputs, local LM Studio, the existing typed
+  master queue, individually runnable calculation stages and a disabled physical
+  gate. No actuator or slot-commit stages are submitted.
+- **Resolved runtime blocker:** DDS initially reported publisher identities as
+  unknown; the provenance guard rejected replay before discovery finished. It
+  now waits within its existing timeout for identity, while still rejecting
+  identified live/mixed publishers. Replay capture and both pinned observations
+  passed. Out-of-order stages and domain zero were rejected.
+- **Open validation prerequisite:** No local LM Studio server was listening at
+  `127.0.0.1:1234` during this run. `verify_presence` returned `PRESENCE_UNKNOWN`
+  and the master stopped/flushed the remaining trial as designed. Grounding,
+  segmentation and complete pick/place preparation through this new student
+  client are **not yet runtime verified**; no full replay success is claimed.
+  All 173 affected-package tests passed, including 12 simulator regressions. Details and student commands: [SIMULATOR.md](SIMULATOR.md).
+  Run logs are outside Git in `~/agx_piper_data/logs/simulator_*`.
+
+## Explicit simulator task insertion — 2026-11-05
+
+- **Problem:** Creating a simulator session preloaded the full pick/place recipe,
+  so `--all` unexpectedly started placement after the user had inspected grasp
+  candidates. Creating a session now inserts no tasks; `--append` submits exactly
+  the explicitly named consecutive stages with existing typed bindings. Execution
+  never adds tasks. Legacy preloaded sessions cannot execute through the updated
+  client. Master ordering, source/revision checks and the physical gate are unchanged.
+- **Verification:** Empty creation, incremental append, rejected missing
+  predecessors and legacy-session blocking pass isolated StepStore fixtures.
+  Runtime mock verification passed: empty session, append three capture/pin
+  tasks, execute exactly three, append one presence task without execution, read
+  queue and clear only that test context. No VLM or actuator call was needed.
+  All 176 affected-package tests passed (including 15 simulator regressions);
+  targeted flake8 and whitespace checks passed. Existing user nodes were not
+  restarted. This verifies insertion semantics, not full pick/place reachability.
+
+## Simulator automatic batch flushing — 2026-11-05
+
+- **Problem:** Reusing a completed task list rejected repeated insertion at
+  `observe`, requiring a new session filename for every trial. Simulator-only
+  completion/failure cleanup now saves a per-run report, clears that exact master
+  result context with its revision, and reuses the session with a fresh context.
+  Paused queues and unresolved unknown outcomes remain blocked/preserved. No
+  actuator, master workflow, MCP ledger or safety-reset semantics changed.
+- **Verified:** The running mock stack executed a three-task capture/pin batch,
+  retained its queue after one-step pause, auto-flushed on completion, then
+  accepted/executed/flushed the same batch in the same session. Failure cleanup,
+  report preservation, removed result-store context, and reinsertability passed
+  isolated StepStore fixtures. All 182 affected-package tests passed, including
+  21 simulator cases; targeted lint/whitespace checks passed. No hardware calls
+  were made and no user nodes were restarted. Flushing clears predecessor bindings,
+  so each new batch must include its prerequisites; the student guide reflects it.
+
+## Single persistent simulator pipeline — 2026-11-05
+
+- **Problem:** Session files and partial-stage controls made the student workflow
+  unnecessarily complicated. Replaced the simulator client with one launched
+  `simulator_pipeline` node and four services: append tasks, display pipeline,
+  execute the full inserted queue, and flush the idle queue. Added the typed
+  `AppendSimulatorTasks` interface; all calculations still use existing catalogued
+  master functions and same-context bindings. Removed the old session executable,
+  session/archive creation and partial-stage execution features.
+- **Verified:** Mock-domain service calls tested empty display, exact insertion,
+  whole-queue completion and reuse, explicit flush, empty execute rejection and
+  physical-task rejection. A full nine-task cup grasp calculation succeeded with
+  RoboBrain/EdgeSAM/HGGD, then cleared its queue. Failure flushing, concurrent
+  busy rejection, timeout/unknown blocking and no-actuator dispatch were tested
+  in isolated result-store fixtures. All 178 affected-package tests passed;
+  interface/package build, targeted lint and whitespace checks passed. No
+  physical commands or driver/controller changes occurred. Full placement
+  reachability was not retested as part of this queue-interface simplification.
+  Runtime evidence: `~/agx_piper_data/logs/simulator_persistent_service_validation.log`.
+
+## Selected-grasp simulator visualization — 2026-11-05
+
+- **Problem:** Successful calculation through `select_grasp` showed no gripper
+  pose in the default RViz. The display listened only to `/pipeline/prepared_grasp`,
+  whose latest message contained DELETEALL and no visible pose; a complete prepared
+  motion had not been calculated. The old candidate-marker topic was not published.
+- **Fix:** Added a simulator-only latched `/simulator/selected_grasp` MarkerArray
+  from the actual typed select response before result-store cleanup, with green
+  grasp/blue pregrasp arrows and calculation-only labels. Added its default RViz
+  display. It persists after queue flushing and clears on the next calculation.
+  No extra API task or motion command is inserted.
+- **Verification:** Pose/header/label regression passed; task_pipeline tests and
+  targeted lint passed. The running service/RViz still need a restart to load
+  this update; end-to-end rendering of this new preview is not yet verified.
+
+## Simulator selected-grasp finger bars — 2026-11-05
+
+- **Problem:** Arrow-only grasp previews were difficult to interpret. Added two
+  green finger-body bars on the existing selected-grasp topic. Geometry matches
+  VAMP's placement-preview convention, reading finger width/height/length and TCP
+  offset from VAMP parameters; separation uses the actual selected jaw opening.
+  A visualization-parameter failure warns and retains arrows without changing
+  calculation success. No planner, collision or actuator behavior changed.
+- **Verified:** Running mock VAMP reported 10×20×70 mm finger dimensions and
+  -61.5 mm TCP offset. Regression verifies bar dimensions, centers, orientation
+  convention and inner gap; affected-package checks passed. The running simulator
+  needs a restart and another selection to publish the new bars; rendering is
+  pending that restart.

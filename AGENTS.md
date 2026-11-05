@@ -1068,3 +1068,17 @@ physical gate false, known idle empty hand and live source identity at admission
 Registered publishers are not proof of fresh feedback. Report stale-feedback,
 JSON/model and planning failures honestly; do not fabricate success or restart
 hardware to make tests pass. Keep calculation-only and physical readiness distinct.
+
+## Student simulator branch
+
+See [docs/SIMULATOR.md](docs/SIMULATOR.md). Launch
+`mock_hardware_node/simulator.launch.py` once on isolated domain 89, with the
+physical gate false. It starts one persistent `simulator_pipeline` node:
+`/simulator/append_tasks`, `/simulator/display_pipeline`,
+`/simulator/execute_pipeline`, `/simulator/flush_pipeline`.
+Add only named calculation tasks; use the existing catalog and typed master
+queue/bindings. Execute all inserted tasks, then clear the simulator calculation
+context on completion or definite failure. Preserve unknown-state blocking and
+reject changes/flush during execution. No sessions, partial-stage runners,
+actuation, physics/contact emulation or automatic insertion. Preserve production
+MCP interfaces, live-input guards and execution ledgers.

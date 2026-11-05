@@ -1,0 +1,11 @@
+# Simulator calculation tasks only, in the documented reference order.
+# Empty names reuse the previous batch's targets. Zero distance uses 0.05 m
+# initially, or the previous batch's distance. No actuator functions are accepted.
+string object_name
+string destination_name
+float64 lift_distance_m
+string[] tasks
+---
+bool success
+string status
+uint32 queued_tasks

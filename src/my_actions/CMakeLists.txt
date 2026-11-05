@@ -23,6 +23,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/RunPipelineStep.srv"
   "srv/PrepareCloudScene.srv"
   "srv/SubmitPipelineSteps.srv"
+  "srv/AppendSimulatorTasks.srv"
   "srv/GetStepContext.srv"
   "srv/ClearStepContext.srv"
   "srv/StorePipelineResult.srv"

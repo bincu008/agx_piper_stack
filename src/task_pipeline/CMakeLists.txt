@@ -3,7 +3,7 @@ project(task_pipeline)
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 ament_python_install_package(${PROJECT_NAME})
-install(PROGRAMS scripts/pipeline_node scripts/pipeline_task scripts/mock_bowl_cup DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/pipeline_node scripts/pipeline_task scripts/mock_bowl_cup scripts/simulator_pipeline DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/pipeline_mcp DESTINATION lib/${PROJECT_NAME})
 install(FILES ../../docs/mcp/WORKFLOW.md ../../docs/mcp/NANOBOT.md
   ../../docs/mcp/PREPARATION_ONLY.md
@@ -12,8 +12,10 @@ install(FILES ../../docs/mcp/WORKFLOW.md ../../docs/mcp/NANOBOT.md
   ../../docs/mcp/AGENT_PIPELINE.md
   ../../docs/mcp/requirements.txt ../../docs/mcp/MOCK_VALIDATION.md
   DESTINATION share/${PROJECT_NAME}/mcp)
+install(FILES ../../docs/SIMULATOR.md DESTINATION share/${PROJECT_NAME}/docs)
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_simulator test/test_simulator.py)
   ament_add_pytest_test(test_pipeline test/test_pipeline.py)
   ament_add_pytest_test(test_mock_bowl_cup test/test_mock_bowl_cup.py)
   ament_add_pytest_test(test_context test/test_context.py)

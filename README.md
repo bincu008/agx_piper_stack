@@ -7,6 +7,8 @@ The supported development environment is Ubuntu 24.04 ARM64.
 
 Start here:
 
+- [Student simulator: one persistent queue and four services](docs/SIMULATOR.md) — `simulator` branch; no physical execution.
+
 - [Authenticated MCP / Nanobot and guarded execution](docs/mcp/README.md)
 
 - [Available policies and backend choices](#available-policies-and-backend-choices): selectable behavior, engine choices and configuration interfaces.

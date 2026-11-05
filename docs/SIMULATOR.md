@@ -23,9 +23,136 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-Load `robobrain2.5-4b` in LM Studio and start its local server on port 1234.
-Download model assets beforehand for a PC without internet access. The bundled
-recording contains a cup, two white bowls, a raised plate and a dark tray.
+The bundled recording contains a cup, two white bowls, a raised plate and a dark
+tray. Set up the separate vision-language model server before starting a trial.
+
+## Download and set up LM Studio
+
+### 1. Install the application
+
+Download LM Studio from the [official download page](https://lmstudio.ai/download).
+Choose the installer for the operating system **where LM Studio will run**, not
+necessarily the operating system running ROS. Check the current
+[system requirements](https://lmstudio.ai/docs/app/system-requirements).
+
+- **Ubuntu/Linux:** choose the matching x64 or ARM64 download. Check with
+  `uname -m`: `x86_64` means x64; `aarch64` means ARM64. For an AppImage, enable
+  execution in the downloaded file's Properties/Permissions, then open it.
+- **macOS:** open the downloaded disk image and install the app in Applications.
+  For this project's Mac-host/Ubuntu-VM arrangement, run LM Studio on the Mac.
+- **Windows:** run the matching installer and open LM Studio. ROS can use its
+  endpoint only if the Ubuntu environment can reach that host.
+
+Complete any first-launch inference-engine/runtime downloads while internet is
+available. Download the model and vision files below too. Local inference can
+then run without an internet connection; see
+[LM Studio offline operation](https://lmstudio.ai/docs/app/offline).
+
+### 2. Download RoboBrain with image support
+
+The project's reference model is **RoboBrain2.5-4B**, exposed in the existing lab
+setup as `robobrain2.5-4b`. The original model is published by
+[BAAI](https://huggingface.co/BAAI/RoboBrain2.5-4B). LM Studio needs a supported
+model format/runtime, rather than simply copying the original training weights.
+
+1. Open **Discover** in LM Studio and search for `RoboBrain2.5-4B`. You can paste
+   a full Hugging Face repository URL into the search field; see the
+   [official model-download guide](https://lmstudio.ai/docs/app/basics/download-model).
+2. An available GGUF conversion is
+   [mradermacher/RoboBrain2.5-4B-GGUF](https://huggingface.co/mradermacher/RoboBrain2.5-4B-GGUF).
+   Its model card provides several quantizations and matching `mmproj` vision
+   files. A `Q4_K_M` model is a smaller starting option; download that model and
+   its matching vision projector, such as the repository's `mmproj-Q8_0` file.
+   Different quantizations can change grounding results; this guide does not
+   claim every conversion/runtime combination has been validated by the project.
+3. If LM Studio downloads the matching projector automatically, keep both files.
+   If importing manually, keep the projector with the compatible model and follow
+   [LM Studio's import instructions](https://lmstudio.ai/docs/app/advanced/import-model).
+4. Load the model using LM Studio's model selector. Keep the supplied chat
+   template initially. Confirm the runtime loads the vision projector and accepts
+   an image. If image input is unavailable or loading fails, check the matching
+   projector and update the compatible inference runtime in LM Studio.
+5. In LM Studio Chat, attach a simple cup/photo image and ask what is visible.
+   Confirm it answers using the image before debugging ROS grounding. A text-only
+   reply or a visible model name alone does not verify image inference.
+
+Do not load only an embedding model: grounding needs the RoboBrain vision model.
+Download files once and retain them for subsequent offline simulator launches.
+
+### 3. Start its OpenAI-compatible server
+
+Open the **Developer** tab, load RoboBrain, set the server port to **1234**, and
+start the server. LM Studio documents these controls in its
+[server guide](https://lmstudio.ai/docs/developer/core/server) and
+[server settings](https://lmstudio.ai/docs/developer/core/server/settings).
+
+- **LM Studio and ROS on the same Ubuntu installation:** keep the endpoint local,
+  using `http://127.0.0.1:1234/v1`.
+- **LM Studio on the host, ROS inside a VM:** enable **Serve on Local Network**
+  for the private host/VM connection and use the host IP reachable from Ubuntu.
+  The lab Mac host is `10.211.55.2`; another student's address may differ.
+  Check the host firewall allows the VM to reach port 1234. The official
+  [network-serving guide](https://lmstudio.ai/docs/developer/core/server/serve-on-network)
+  explains this setting.
+
+Keep access limited to the intended local/private connection. Preserve any existing
+TLS/authentication setup. The current ROS VLM integration does not expose a bearer
+API-token setting; a token-required endpoint needs a compatible authenticated
+adapter, not a token embedded in `model_name` or an ignored launch argument.
+
+### 4. Check connectivity from the ROS terminal
+
+Run this **inside Ubuntu where the ROS nodes run**. For one operating system:
+
+```bash
+curl --fail --show-error --connect-timeout 5 \
+  http://127.0.0.1:1234/v1/models
+```
+
+For the lab Ubuntu VM with LM Studio on its Mac host:
+
+```bash
+curl --fail --show-error --connect-timeout 5 \
+  http://10.211.55.2:1234/v1/models
+```
+
+A successful response contains a `data` array with model entries, for example:
+
+```json
+{"data": [{"id": "robobrain2.5-4b", "object": "model"}]}
+```
+
+Use the **exact `id` returned by your server** as the simulator's `model_name`.
+Downloaded conversions may expose another ID. `/v1/models` proves connectivity
+and lists available models; it does not prove image inference or successful ROS
+presence/grounding. See the official [list-models API](https://lmstudio.ai/docs/developer/openai-compat/models).
+
+| Check result | What to fix |
+| --- | --- |
+| Connection refused | Start the LM Studio server; check the address and port. |
+| Connection timeout | Check the VM/host address, network-serving setting and firewall. |
+| HTTP 401/403 | Authentication is required; the ROS client needs compatible access. |
+| Model ID missing or model-not-found response | Load the intended model and use its exact API ID. |
+| Model listed but image request fails | Check the vision projector, runtime compatibility and LM Studio server log. |
+| `PRESENCE_UNKNOWN` in ROS | Inspect the VLM/server error; unknown is not proof that the cup is absent. |
+
+In a VM, `127.0.0.1` always refers to that VM. It does not refer to the Mac or
+Windows host, even though both environments share the same physical computer.
+
+### 5. Launch the simulator against the checked endpoint
+
+Continue with [Launch once](#launch-once) below. The defaults expect a same-Ubuntu
+server and API ID `robobrain2.5-4b`. Override both values when needed:
+
+```bash
+ros2 launch mock_hardware_node simulator.launch.py \
+  api_server_url:=http://127.0.0.1:1234/v1 \
+  model_name:="YOUR_EXACT_MODEL_ID" rviz:=true
+```
+
+Replace `YOUR_EXACT_MODEL_ID`; it is a placeholder, not an installed model name.
+Keep LM Studio, its loaded model and its server running throughout simulator use.
+To stop inference later, stop the simulator, then stop the server in LM Studio.
 
 ## Launch once
 

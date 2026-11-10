@@ -1,0 +1,10 @@
+{"server": "3.5.1", "tools": 54}
+{"tool": "list_functions", "chain": "discovery", "outcome": "PASS", "status": "structured response", "context": null, "step": null}
+{"tool": "get_world_state", "chain": "read-only", "outcome": "PASS", "status": "structured response", "context": null, "step": null}
+{"tool": "get_arm_state", "chain": "read-only", "outcome": "PASS", "status": "ARM_STATE_READY", "context": null, "step": null}
+{"tool": "get_spatial_context", "chain": "read-only", "outcome": "PASS", "status": "SPATIAL_CONTEXT_READY", "context": null, "step": null}
+{"tool": "get_manipulation_memory", "chain": "read-only", "outcome": "PASS", "status": "MANIPULATION_MEMORY_READY", "context": null, "step": null}
+{"tool": "get_floor_slots", "chain": "read-only", "outcome": "PASS", "status": "FLOOR_SLOT_MEMORY_READY", "context": null, "step": null}
+{"tool": "get_spatial_map", "chain": "read-only", "outcome": "PASS", "status": "SPATIAL_MAP_SNAPSHOT", "context": null, "step": null}
+{"tool": "get_workflow_example", "chain": "grasp", "outcome": "PASS", "status": "structured response", "context": null, "step": null}
+{"tool": "capture_observation", "chain": "batch-perception", "outcome": "PASS", "status": "SYNCHRONIZED_OBSERVATION_READY;GRASP_OBSERVATION_PINNED", "context": "mcp_8c7ccf6126f14813b2dcb395060aa12f", "step": "example_3741ede462_capture"}

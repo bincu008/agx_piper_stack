@@ -1,0 +1,1504 @@
+[
+  {
+    "name": "inspect_robot",
+    "description": "Read compact current feedback, independent timestamps and state. No scene inference. Feedback ages are evidence, not a motion-readiness certificate.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "taskInterface": true,
+      "physicalDispatch": false
+    }
+  },
+  {
+    "name": "observe_scene",
+    "description": "Observe named targets: server owns fresh capture, exact retention and same-context perception. presence uses verify_presence; location/mask resolves geometry; destination enables batch perception. Returns task_id and explicit state; RUNNING/QUEUED are NOT success. get_task_status retrieves the result. UNKNOWN is not absent.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Unique ID for a NEW task. Retry identical inputs with this same ID to find the same task; never replay unknown work with a new ID."
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 15,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "detail": {
+          "enum": [
+            "presence",
+            "location",
+            "mask"
+          ],
+          "default": "location"
+        },
+        "destination": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "wait_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 0,
+          "description": "Optional bounded wait for this existing calculation; no polling loop."
+        }
+      },
+      "required": [
+        "request_id",
+        "targets"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "taskInterface": true,
+      "physicalDispatch": false
+    }
+  },
+  {
+    "name": "plan_camera_view",
+    "description": "Calculate only; never move. relative requires frame=camera_optical, translation_m=[right,down,forward], rotation_rad=[roll,pitch,yaw]. Delegates loose get_observe_view endpoint checking; PARTIAL/fallback does not prove a safe full path. target requires exactly one target_name or target_cell_id, rejects frame/both vectors, and uses plan_next_best_view. relative rejects target selectors. Supply request_id and mode on every call. Read result.status and achieved_fraction: NO_REACHABLE_CHANGE with 0.0 means no changed viewpoint was found.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Unique ID for a NEW task. Retry identical inputs with this same ID to find the same task; never replay unknown work with a new ID."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "relative",
+            "target"
+          ],
+          "description": "relative: supply frame and both vectors, no target selectors. target: supply exactly one target_name or target_cell_id, no relative fields."
+        },
+        "translation_m": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number",
+            "minimum": -0.2,
+            "maximum": 0.2
+          },
+          "description": "Required in relative mode only: camera-optical [right,down,forward] metres; vector norm <=0.20m. Use [0,0,0] for rotation only."
+        },
+        "rotation_rad": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number",
+            "minimum": -3.141592653589793,
+            "maximum": 3.141592653589793
+          },
+          "description": "Required in relative mode only: [roll,pitch,yaw] radians, each within +/-pi. Use [0,0,0] for translation only."
+        },
+        "frame": {
+          "type": "string",
+          "enum": [
+            "camera_optical"
+          ],
+          "description": "Required in relative mode: camera_optical. Forbidden in target mode."
+        },
+        "target_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Target mode only: exact remembered target name. Supply this OR target_cell_id, never both."
+        },
+        "target_cell_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Target mode only: existing spatial cell ID. Supply this OR target_name, never both."
+        },
+        "camera_distance_m": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 1.0,
+          "default": 0.45,
+          "description": "Optional target-view distance in metres; used only in target mode."
+        },
+        "wait_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 0,
+          "description": "Optional bounded wait for this existing calculation; no polling loop."
+        }
+      },
+      "required": [
+        "request_id",
+        "mode"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "taskInterface": true,
+      "physicalDispatch": false
+    }
+  },
+  {
+    "name": "prepare_manipulation",
+    "description": "Calculate only. grasp generates/selects/caches the full pool and confirms cache; grasp_lift additionally prepares/validates lift; pick_place requires destination and prepares/validates complete placement. Server owns all prerequisites. No physical execution. RUNNING requires get_task_status. Plan ID/revision exist only after an actual prepared plan is created. Retry same request_id to inspect same task.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Unique ID for a NEW task. Retry identical inputs with this same ID to find the same task; never replay unknown work with a new ID."
+        },
+        "operation": {
+          "enum": [
+            "grasp",
+            "grasp_lift",
+            "pick_place"
+          ]
+        },
+        "object_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "destination": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "lift_distance_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 0.3,
+          "default": 0.05
+        },
+        "wait_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 0,
+          "description": "Optional bounded wait for this existing calculation; no polling loop."
+        }
+      },
+      "required": [
+        "request_id",
+        "operation",
+        "object_name"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "pick_place"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "destination"
+            ]
+          }
+        }
+      ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "taskInterface": true,
+      "physicalDispatch": false
+    }
+  },
+  {
+    "name": "validate_plan",
+    "description": "Validate this exact server-issued plan_id/revision against current prepared source/feedback; stale plans block. No motion or cache consumption. A historical successful task is not current plan validity.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Unique ID for a NEW task. Retry identical inputs with this same ID to find the same task; never replay unknown work with a new ID."
+        },
+        "plan_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "request_id",
+        "plan_id",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "taskInterface": true,
+      "physicalDispatch": false
+    }
+  },
+  {
+    "name": "get_task_status",
+    "description": "Default to the current task when task_id is omitted. Read the same calculation task and original blocker/results; optional bounded wait. Never starts/replays work. After restart/disconnect unknown outcomes stay unknown; diagnostic mode reveals the existing ROS context/job and producer receipts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "wait_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 0,
+          "description": "Optional bounded wait for this existing calculation; no polling loop."
+        },
+        "include_diagnostics": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "taskInterface": true,
+      "physicalDispatch": false
+    }
+  },
+  {
+    "name": "cancel_task",
+    "description": "Default to the current task when task_id is omitted. Request cancellation of the existing calculation action between steps. CANCEL_PENDING is not confirmed cancellation and cannot interrupt an in-flight ROS service. It is not robot stop. Completed/unknown tasks are never replayed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "taskInterface": true,
+      "physicalDispatch": false
+    }
+  },
+  {
+    "name": "describe_workflow",
+    "description": "Local read-only description of a supported route, inputs, prerequisites, freshness and outputs. No robot or scene calls. No internal IDs required.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "enum": [
+            "observe_scene",
+            "grasp",
+            "grasp_lift",
+            "pick_place",
+            "plan_camera_view"
+          ]
+        }
+      },
+      "required": [
+        "operation"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "taskInterface": true,
+      "physicalDispatch": false
+    }
+  }
+]

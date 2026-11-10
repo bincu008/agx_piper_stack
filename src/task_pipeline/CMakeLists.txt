@@ -10,6 +10,14 @@ install(FILES ../../docs/mcp/WORKFLOW.md ../../docs/mcp/NANOBOT.md
   ../../docs/mcp/LIVE_PERCEPTION.md
   ../../docs/mcp/SPATIAL_MAP.md
   ../../docs/mcp/AGENT_PIPELINE.md
+  ../../docs/mcp/TASK_INTERFACE.md
+  ../../docs/mcp/TASK_TOOLS.json
+  ../../docs/mcp/CONTROL_TOOLS.json
+  ../../docs/mcp/CONTROL_TOOLS.md
+  ../../docs/mcp/WORKSPACE_TOOLS.md
+  ../../docs/mcp/WORKSPACE_TOOLS.json
+  ../../docs/mcp/WORKSPACE_PROFILE_TOOLS.json
+  ../../docs/mcp/TOOL_DEPENDENCIES.md
   ../../docs/mcp/requirements.txt ../../docs/mcp/MOCK_VALIDATION.md
   DESTINATION share/${PROJECT_NAME}/mcp)
 if(BUILD_TESTING)
@@ -19,7 +27,12 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_context test/test_context.py)
   ament_add_pytest_test(test_recipe_obstacles test/test_recipe_obstacles.py)
   ament_add_pytest_test(test_mcp test/test_mcp.py)
+  ament_add_pytest_test(test_mcp_dependencies test/test_mcp_dependencies.py)
   ament_add_pytest_test(test_mcp_execution test/test_mcp_execution.py)
+  ament_add_pytest_test(test_mcp_tasks test/test_mcp_tasks.py)
+  ament_add_pytest_test(test_mcp_controls test/test_mcp_controls.py)
+  ament_add_pytest_test(test_mcp_workspace test/test_mcp_workspace.py)
+  ament_add_pytest_test(test_mcp_reconcile test/test_mcp_reconcile.py)
   ament_add_pytest_test(test_mcp_preparation test/test_mcp_preparation.py)
 endif()
 ament_package()

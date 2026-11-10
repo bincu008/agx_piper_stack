@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 import threading
 import time
 
@@ -11,7 +10,7 @@ from rosidl_runtime_py.set_message import set_message_fields
 
 from task_pipeline.registry import FUNCTIONS
 
-from .contracts import ALLOWLIST
+from .contracts import ALLOWLIST, LOCAL_DOCUMENTATION
 
 
 class ReadBridge:
@@ -20,31 +19,16 @@ class ReadBridge:
     def __init__(self, node, timeout=5.):
         """Initialize isolated state."""
         self.node, self.timeout = node, timeout
+        self._workspace_client = None
+        self._workspace_lock = threading.Lock()
         self.clients = {name: node.create_client(FUNCTIONS[name].service_type,
                                                  FUNCTIONS[name].endpoint)
-                        for name in ALLOWLIST if name != 'list_functions'}
+                        for name in ALLOWLIST if name not in LOCAL_DOCUMENTATION}
 
     def input_provenance(self):
         """Inspect raw publisher identities; capture still checks freshness/sync."""
-        expected = {
-            '/camera/color/image_raw': '/camera/camera',
-            '/camera/depth_registered/points': '/camera/camera',
-            '/feedback/joint_states': '/agx_arm_ctrl_single_node',
-            '/feedback/tcp_pose': '/agx_arm_ctrl_single_node',
-        }
-        sources, verified, replay = {}, True, False
-        for topic, owner in expected.items():
-            publishers = self.node.get_publishers_info_by_topic(topic)
-            names = [p.node_namespace.rstrip('/')+'/'+p.node_name for p in publishers]
-            sources[topic] = {'publisher_count': len(names), 'publisher_nodes': names}
-            verified = verified and names == [owner]
-            replay = replay or any('mock_hardware' in name for name in names)
-        return {'ros_domain_id': int(os.environ.get('ROS_DOMAIN_ID', '0')),
-                'classification': ('live_driver_publishers' if verified else
-                                   'replay_or_mixed' if replay else 'unverified'),
-                'topics': sources,
-                'detail': 'DDS publisher identity snapshot; capture validates fresh sync. '
-                          'This is not an actuator readiness certificate.'}
+        from task_pipeline.provenance import input_provenance
+        return input_provenance(self.node)
 
     async def call(self, name, arguments):
         """Read an allowlisted snapshot."""
@@ -52,8 +36,20 @@ class ReadBridge:
             raise ValueError('READ_ONLY_SERVER: operation is not allowed')
         return await asyncio.to_thread(self._call, name, arguments)
 
-    def _call(self, name, arguments):
-        client = self.clients[name]
+    async def workspace(self, include_image=False):
+        """Read internal typed metadata without adding a generic/native dispatch tool."""
+        def read():
+            with self._workspace_lock:
+                if self._workspace_client is None:
+                    spec = FUNCTIONS['get_current_workspace']
+                    self._workspace_client = self.node.create_client(
+                        spec.service_type, spec.endpoint)
+            return self._call('get_current_workspace', {'include_image': include_image},
+                              client=self._workspace_client)
+        return await asyncio.to_thread(read)
+
+    def _call(self, name, arguments, client=None):
+        client = self.clients[name] if client is None else client
         timeout = 30. if name == 'get_observe_view' else self.timeout
         deadline = time.monotonic()+timeout
         if not client.wait_for_service(timeout_sec=min(1., timeout)):
@@ -68,7 +64,16 @@ class ReadBridge:
             future.cancel()  # Local wait only; cannot cancel an in-flight ROS service.
             return {'transport_outcome': 'unknown', 'response': None,
                     'detail': 'READ_TIMEOUT; ROS operation may still be running'}
-        result = message_to_ordereddict(future.result())
+        message = future.result()
+        image_content = None
+        if name == 'get_current_workspace' and arguments.get('include_image'):
+            from .workspace import encode_image
+            image_content = encode_image(message.image)
+            from sensor_msgs.msg import Image
+            message.image = Image()  # Do not turn raw pixels into a JSON integer array.
+        result = message_to_ordereddict(message)
+        if image_content:
+            result['_image_content'] = image_content
         # Refuse non-JSON feedback or oversized state rather than truncate evidence.
         if len(json.dumps(result, allow_nan=False).encode()) > 1024*1024:
             raise ValueError('READ_RESULT_TOO_LARGE')

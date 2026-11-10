@@ -1,0 +1,493 @@
+[
+  {
+    "name": "get_camera_image",
+    "description": "Read the latest eligible synchronized wrist-camera image and source pose/time from the automatic idle scan. Returns actual MCP ImageContent. No inference or motion. REFRESH_REQUIRED means capture is not yet usable; stored pixels do not establish current object presence or execution readiness. If stale, request at most one bounded synchronized scan while idle and stationary. Scan acknowledgement is not image completion. Never returns stale pixels as fresh; no VLM or motion.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "physicalDispatch": false
+    }
+  },
+  {
+    "name": "list_objects",
+    "description": "Read known object/destination names and positions with independent geometry/verification ages. Memory is not fresh visual evidence. Call observe_scene to refresh perception. Missing entries mean UNKNOWN, not absent.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "physicalDispatch": false
+    }
+  },
+  {
+    "name": "check_freshness",
+    "description": "Read a Boolean fresh result for the current image, named object, single current grasp pool, or prepared plan. No capture, inference, motion or uncertainty reset. Missing/unverified evidence is false. Source age and existing shorter backend checks both apply. Execution readiness is not certified.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string",
+          "enum": [
+            "image",
+            "object",
+            "grasp_pool",
+            "plan"
+          ],
+          "description": "image uses current RGB-D metadata; object requires object_name; grasp_pool checks single current grasp pool; plan checks current prepared plan. This does not authorize execution."
+        },
+        "object_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Exact remembered name, required for object."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "resource"
+      ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "blocker": {
+          "type": "object"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "source_mode": {
+          "type": "string"
+        },
+        "current_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_step_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_allowed": {
+          "const": false
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "source_mode",
+            "checks_passed",
+            "checks_bypassed",
+            "execution_allowed",
+            "outcome",
+            "scene_freshness_confirmed",
+            "physical_readiness_confirmed"
+          ],
+          "properties": {
+            "source_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checks_passed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks_bypassed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "check",
+                  "reason"
+                ],
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "execution_allowed": {
+              "const": false
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "scene_freshness_confirmed": {
+              "const": false
+            },
+            "physical_readiness_confirmed": {
+              "const": false
+            }
+          }
+        },
+        "SIMULATED": {
+          "type": "boolean"
+        },
+        "input_mode": {
+          "type": "string"
+        },
+        "input_provenance": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "physicalDispatch": false
+    }
+  }
+]

@@ -1,0 +1,146 @@
+{
+  "models": [
+    {
+      "type": "llm",
+      "publisher": "vimalnakrani",
+      "key": "hy-embodied-0.5-mlx",
+      "display_name": "HY Embodied 0.5",
+      "architecture": "hunyuan_vl_mot",
+      "quantization": {
+        "name": "4bit",
+        "bits_per_weight": 4
+      },
+      "size_bytes": 2786896571,
+      "params_string": null,
+      "loaded_instances": [],
+      "max_context_length": 262144,
+      "format": "mlx",
+      "capabilities": {
+        "vision": false,
+        "trained_for_tool_use": false
+      },
+      "description": null
+    },
+    {
+      "type": "llm",
+      "publisher": "mradermacher",
+      "key": "robobrain2.5-4b",
+      "display_name": "RoboBrain2.5 4B",
+      "architecture": "qwen3vl",
+      "quantization": {
+        "name": "Q4_K_S",
+        "bits_per_weight": 4
+      },
+      "size_bytes": 3438279104,
+      "params_string": "4B",
+      "loaded_instances": [
+        {
+          "id": "robobrain2.5-4b",
+          "config": {
+            "context_length": 16384,
+            "eval_batch_size": 2048,
+            "physical_batch_size": 512,
+            "parallel": 1,
+            "flash_attention": true,
+            "lazy_mode": "auto",
+            "context_checkpoints": 32,
+            "reasoning_budget_message": "",
+            "speculative_draft_mtp": false,
+            "speculative_draft_simple": false,
+            "speculative_draft_model": "",
+            "speculative_draft_max_tokens": 3,
+            "speculative_draft_min_tokens": 0,
+            "speculative_draft_min_continue_probability": 0,
+            "offload_kv_cache_to_gpu": true
+          },
+          "remaining_ttl_seconds": 3558
+        }
+      ],
+      "max_context_length": 262144,
+      "format": "gguf",
+      "capabilities": {
+        "vision": true,
+        "trained_for_tool_use": true
+      },
+      "description": null
+    },
+    {
+      "type": "llm",
+      "publisher": "ggml-org",
+      "key": "smolvlm2-2.2b-instruct",
+      "display_name": "SmolVLM2 2.2B Instruct",
+      "architecture": "llama",
+      "quantization": {
+        "name": "Q4_K_M",
+        "bits_per_weight": 4
+      },
+      "size_bytes": 1984906336,
+      "params_string": "2.2B",
+      "loaded_instances": [],
+      "max_context_length": 8192,
+      "format": "gguf",
+      "capabilities": {
+        "vision": true,
+        "trained_for_tool_use": false
+      },
+      "description": null
+    },
+    {
+      "type": "llm",
+      "publisher": "lmstudio-community",
+      "key": "qwen2.5-vl-7b-instruct",
+      "display_name": "Qwen2.5 VL 7B Instruct",
+      "architecture": "qwen2vl",
+      "quantization": {
+        "name": "Q4_K_M",
+        "bits_per_weight": 4
+      },
+      "size_bytes": 6037234944,
+      "params_string": "7B",
+      "loaded_instances": [],
+      "max_context_length": 128000,
+      "format": "gguf",
+      "capabilities": {
+        "vision": true,
+        "trained_for_tool_use": false
+      },
+      "description": null
+    },
+    {
+      "type": "llm",
+      "publisher": "bartowski",
+      "key": "qwen2-vl-2b-instruct",
+      "display_name": "Qwen2 VL 2B Instruct",
+      "architecture": "qwen2vl",
+      "quantization": {
+        "name": "Q4_K_S",
+        "bits_per_weight": 4
+      },
+      "size_bytes": 3601426688,
+      "params_string": "2B",
+      "loaded_instances": [],
+      "max_context_length": 32768,
+      "format": "gguf",
+      "capabilities": {
+        "vision": true,
+        "trained_for_tool_use": false
+      },
+      "description": null
+    },
+    {
+      "type": "embedding",
+      "publisher": "nomic-ai",
+      "key": "text-embedding-nomic-embed-text-v1.5",
+      "display_name": "Nomic Embed Text v1.5",
+      "quantization": {
+        "name": "Q4_K_M",
+        "bits_per_weight": 4
+      },
+      "size_bytes": 84106624,
+      "params_string": null,
+      "loaded_instances": [],
+      "max_context_length": 2048,
+      "format": "gguf"
+    }
+  ]
+}

@@ -1,0 +1,309 @@
+[
+  {
+    "name": "move_camera",
+    "description": "Move an empty-hand camera using relative optical metres/radians or one target selector, with the same mode rules as plan_camera_view. Existing planner and master/VAMP full-path checks run before movement. NO_REACHABLE_CHANGE is a calculation outcome with no movement. Never use while holding. Durable request_id: identical retry returns the receipt, never reexecutes. Final completion or explicit UNKNOWN; inspect get_task_status after timeout/disconnection. Local stop/watchdog remains independent. Guarded control enabled; master physical permission still required.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Unique ID for a NEW task. Retry identical inputs with this same ID to find the same task; never replay unknown work with a new ID."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "relative",
+            "target"
+          ],
+          "description": "relative: supply frame and both vectors, no target selectors. target: supply exactly one target_name or target_cell_id, no relative fields."
+        },
+        "translation_m": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number",
+            "minimum": -0.2,
+            "maximum": 0.2
+          },
+          "description": "Required in relative mode only: camera-optical [right,down,forward] metres; vector norm <=0.20m. Use [0,0,0] for rotation only."
+        },
+        "rotation_rad": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number",
+            "minimum": -3.141592653589793,
+            "maximum": 3.141592653589793
+          },
+          "description": "Required in relative mode only: [roll,pitch,yaw] radians, each within +/-pi. Use [0,0,0] for translation only."
+        },
+        "frame": {
+          "type": "string",
+          "enum": [
+            "camera_optical"
+          ],
+          "description": "Required in relative mode: camera_optical. Forbidden in target mode."
+        },
+        "target_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Target mode only: exact remembered target name. Supply this OR target_cell_id, never both."
+        },
+        "target_cell_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Target mode only: existing spatial cell ID. Supply this OR target_name, never both."
+        },
+        "camera_distance_m": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 1.0,
+          "default": 0.45,
+          "description": "Optional target-view distance in metres; used only in target mode."
+        }
+      },
+      "required": [
+        "request_id",
+        "mode"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status",
+        "dispatched"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "RUNNING",
+            "COMPLETED",
+            "BLOCKED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "dispatched": {
+          "type": "boolean"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "execution_allowed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "availability": "guarded_execution"
+    }
+  },
+  {
+    "name": "control_gripper",
+    "description": "Open/close/release through master safeguards. Prepared operations require the exact reviewed plan reference and next valid stage. Close confirms fresh contact; release requires validated placement. Empty-hand open requires fresh feedback and cannot narrow the jaws. No free closing or held release. Opening feedback proves open detection, not calibrated target aperture. Durable request_id: identical retry returns the receipt, never reexecutes. Final completion or explicit UNKNOWN; inspect get_task_status after timeout/disconnection. Local stop/watchdog remains independent. Guarded control enabled; master physical permission still required.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "action",
+        "mode"
+      ],
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "action": {
+          "enum": [
+            "open",
+            "close",
+            "release"
+          ]
+        },
+        "mode": {
+          "enum": [
+            "prepared",
+            "empty_hand"
+          ],
+          "description": "prepared requires plan_id/revision; frozen widths/forces only. empty_hand supports open only, requiring width_m and force_n."
+        },
+        "plan_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192,
+          "description": "Exact plan_id from the reviewed preparation result."
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Exact revision paired with that reviewed plan_id."
+        },
+        "width_m": {
+          "type": "number",
+          "exclusiveMinimum": 0.001,
+          "maximum": 0.1,
+          "description": "Empty-hand opening only, metres."
+        },
+        "force_n": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 3.0,
+          "description": "Empty-hand opening only, newtons."
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status",
+        "dispatched"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "RUNNING",
+            "COMPLETED",
+            "BLOCKED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "dispatched": {
+          "type": "boolean"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "execution_allowed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "availability": "guarded_execution"
+    }
+  },
+  {
+    "name": "execute_manipulation",
+    "description": "Execute the exact reviewed grasp_lift or pick_place plan. No latest-plan guessing. Server follows master waiting stages, verifies contact before held motion and commits slots after confirmed release. grasp_lift stops holding the object and keeps ownership. No physical retries or alternatives. Durable request_id: identical retry returns the receipt, never reexecutes. Final completion or explicit UNKNOWN; inspect get_task_status after timeout/disconnection. Local stop/watchdog remains independent. Guarded control enabled; master physical permission still required.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "plan_id",
+        "revision"
+      ],
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "plan_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192,
+          "description": "Exact plan_id from the reviewed preparation result."
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Exact revision paired with that reviewed plan_id."
+        },
+        "stage": {
+          "enum": [
+            "all",
+            "next"
+          ],
+          "default": "all",
+          "description": "all executes the remaining supported prepared stages in order. next executes one stage, including gripper/slot bookkeeping boundaries."
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "success",
+        "state",
+        "status",
+        "dispatched"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "RUNNING",
+            "COMPLETED",
+            "BLOCKED",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "dispatched": {
+          "type": "boolean"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "execution_allowed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "availability": "guarded_execution"
+    }
+  }
+]

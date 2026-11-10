@@ -1,3 +1,45 @@
+## Explicit mock source mode — MCP 3.5.1
+
+For recorded-scene tests, stop real camera/arm drivers and launch mock hardware
+and reasoning with ROS_DOMAIN_ID=89 and physical execution false. MCP has a
+separate explicit replay guard; it does not disable the production live guard.
+
+```bash
+export ROS_DOMAIN_ID=89
+ros2 run task_pipeline pipeline_mcp \
+  --preparation-only --require-mock-inputs \
+  --execution-ledger "$HOME/.local/state/agx-piper-mcp/mock-execution.sqlite" \
+  --host 10.211.55.3 --port 8765 \
+  --token-file "$HOME/.config/agx-piper-mcp/token" \
+  --tls-cert "$HOME/.config/agx-piper-mcp/server.crt" \
+  --tls-key "$HOME/.config/agx-piper-mcp/server.key"
+```
+
+Source guard requires exactly one /mock_hardware publisher on every raw camera/
+arm-feedback source and a nonzero domain. The CLI requires a dedicated mock
+ledger, retaining live receipts unchanged. Every result is marked SIMULATED=true
+and input_mode=mock_replay with DDS provenance. The 54 preparation/inspection
+tools remain; physical APIs/queues are still rejected independently.
+Replay does not emulate motion or prove physical manipulation.
+
+# Current small-model entry point — MCP 3.4.0
+
+The callable preparation-mode count is now 54: the 53 tools below plus the local
+read-only `get_workflow_example`. No physical API was enabled. Prefer its exact
+grasp example and `list_functions(summary_only=true)` for normal agent use.
+Read [Nanobot quickstart](NANOBOT.md). Earlier verification facts below apply to
+their recorded runs, not current sensor freshness or tool readiness.
+
+## Dependency discovery update — MCP 3.3.0, 2026-11-09
+
+Read `ros-pipeline://tool-dependencies` and the structured
+`ros-pipeline://tool-dependency-graph`. Every tool's `_meta.rosPipeline` and
+model-visible description now include prerequisites, execution sequence and
+binding examples. Required, recommended, internal and alternative routes differ.
+Failures retain their original status and gain recovery guidance; unknown-state
+blocking and the actual mode allowlist remain unchanged. Refresh tool discovery
+on reconnect. See [dependency guide](TOOL_DEPENDENCIES.md).
+
 # Non-actuating preparation — MCP 3.2.0
 
 Current mode is preparation_only, ROS domain 0, with live publisher provenance

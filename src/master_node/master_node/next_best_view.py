@@ -13,6 +13,7 @@ from my_actions import srv
 import numpy as np
 
 from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.serialization import deserialize_message, serialize_message
 
 from scipy.spatial.transform import Rotation
 
@@ -23,7 +24,13 @@ from sensor_msgs_py import point_cloud2
 from visualization_msgs.msg import Marker, MarkerArray
 
 from .held_motion import grasp_gripper_widths
+from .world_state import parse_object_description
 from .prepared_grasp_lift import endpoint_markers, placed_clouds, pose_matrix, transform_pose
+
+
+def wire_response(response):
+    """Retain exactly the ROS wire value, including declared float32 rounding."""
+    return deserialize_message(serialize_message(response), srv.PlanNextBestView.Response)
 
 
 class NextBestView:
@@ -194,9 +201,9 @@ class NextBestView:
             if destination:
                 records.insert(0, destination)
             name = request.target_name or (destination['name'] if destination else '')
-            key = ' '.join(name.casefold().split())
+            key = parse_object_description(name)[0].casefold()
             match = next(
-                (r for r in records if ' '.join(r['name'].casefold().split()) == key), None
+                (r for r in records if parse_object_description(r['name'])[0].casefold() == key), None
             )
             if match is None:
                 prepared = self.execution.prepared_grasp_lift.record
@@ -250,7 +257,8 @@ class NextBestView:
             if request.allow_current_view and not request.target_cell_id:
                 memory=self.node.manipulation_memory.snapshot()
                 role=('destination' if memory['active_destination'] and
-                      memory['active_destination']['name'].casefold()==name.casefold() else 'object')
+                      parse_object_description(memory['active_destination']['name'])[0].casefold()==
+                      parse_object_description(name)[0].casefold() else 'object')
                 visibility=self.call('check_target_view',srv.CheckTargetView.Request(
                     name=name,role=role,observation_cloud=observation.cloud,
                     camera_transform=observation.camera_transform))
@@ -267,7 +275,7 @@ class NextBestView:
                     response.expected_start_joints=start
                     response.path_flat=start
                     self.record={'name':name,'revision':self.revision,
-                                 'created':time.monotonic(),'result':copy.deepcopy(response)}
+                                 'created':time.monotonic(),'result':wire_response(response)}
                     self.publish_preview(response)
                     return response
             started = time.monotonic()
@@ -359,7 +367,7 @@ class NextBestView:
                         'name': name,
                         'revision': self.revision,
                         'created': time.monotonic(),
-                        'result': copy.deepcopy(response),
+                        'result': wire_response(response),
                     }
                     self.publish_preview(response)
                     return response

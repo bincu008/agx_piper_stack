@@ -1,3 +1,23 @@
+## Observation-retention update — 3.4.2
+
+Shared capture attempts exact VAMP source retention before responding. Inspect
+`observation_retention.grasp_retained`: true=confirmed, false=failed,
+null=unreported. Explicit pins in examples remain idempotent confirmations.
+Pin requires `observation_header <- capture.cloud.header`; grasp/placement pins
+are independent. Missing components get bounded idempotent delivery recovery;
+failures report component presence/counts. Capture success is not grasp readiness.
+Physical queues/gates, source association and unknown-state barriers are unchanged.
+
+## Dependency discovery update — MCP 3.3.0, 2026-11-09
+
+Read `ros-pipeline://tool-dependencies` and the structured
+`ros-pipeline://tool-dependency-graph`. Every tool's `_meta.rosPipeline` and
+model-visible description now include prerequisites, execution sequence and
+binding examples. Required, recommended, internal and alternative routes differ.
+Failures retain their original status and gain recovery guidance; unknown-state
+blocking and the actual mode allowlist remain unchanged. Refresh tool discovery
+on reconnect. See [dependency guide](TOOL_DEPENDENCIES.md).
+
 Current deployment uses preparation_only (53 tools), not the full physical mode
 below. Read ros-pipeline://preparation first. No execution stage in this reference
 is callable in preparation mode; fresh feedback is currently missing.

@@ -56,7 +56,7 @@ def cup_to_tray(object_name='brown cup', destination_name='tray', include_placem
         step('select_grasp', 'select_grasp', srv.SelectGrasp.Request(),
              [('candidates', 'grasps', 'candidates')]),
         step('cache_grasp', 'cache_grasp_plan', srv.CacheGraspPlan.Request(
-            object_name=object_name, candidates=[GraspCandidate()], ttl_seconds=60),
+            object_name=object_name, candidates=[GraspCandidate()], ttl_seconds=600),
             [('candidates[0]', 'select_grasp', 'candidate'),
              ('observation_header', 'observe', 'cloud.header'),
              ('observation_cloud', 'observe', 'cloud'),
@@ -285,10 +285,31 @@ def pin_observation_with_recovery(request, call, wait=None):
         wait = time.sleep
     response = call(request)
     for delay in (0.05, 0.10, 0.20, 0.40):
-        if response.success or response.status != 'LAYOUT_OBSERVATION_PENDING':
+        if response.success or not response.status.startswith((
+                'LAYOUT_OBSERVATION_PENDING',
+                'LAYOUT_SYNCHRONIZED_OBSERVATION_NOT_AVAILABLE')):
             break
         wait(delay)
         response = call(request)
+    return response
+
+
+def retain_captured_observation(response, call):
+    """Retain the exact captured source before a remote client can introduce delays.
+
+    Capture remains usable for vision if grasp retention is unavailable; its status
+    explicitly reports that distinction. Only idempotent pin delivery is retried.
+    """
+    if not response.success:
+        return response
+    query = srv.PinLayoutObservation.Request(observation_header=response.cloud.header)
+    try:
+        retained = pin_observation_with_recovery(query, call)
+        marker = ('GRASP_OBSERVATION_PINNED' if retained.success else
+                  'GRASP_RETENTION_FAILED:' + retained.status)
+    except Exception as error:
+        marker = 'GRASP_RETENTION_FAILED:' + str(error)
+    response.status += ';' + marker
     return response
 
 

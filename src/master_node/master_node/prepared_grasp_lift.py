@@ -24,6 +24,7 @@ from master_node.calibration import (
     command_pose_reference, feedback_reference, pose_matrix, transform_pose,
 )
 from master_node.held_motion import grasp_gripper_widths
+from .grasp_cache import GRASP_CACHE_TTL_SECONDS, grasp_cache_ttl
 from .manipulation_memory import check_capacity, mapped_inputs
 
 
@@ -265,11 +266,20 @@ class PreparedGraspLiftExecutor:
         self.node.create_service(HeldMotionStage, '/master/execute_prepared_grasp_lift',
                                  self.execute, callback_group=execution.group)
 
+    def consume_source(self, record):
+        """Remove the admitted source from public reuse; retain the frozen session copy."""
+        with self.execution._cache_lock:
+            cached = self.execution._cache.get(record['key'])
+            if cached and cached[0] == record['source_version']:
+                self.execution._cache.pop(record['key'])
+        if hasattr(self.execution, 'claim_current_pool'):
+            self.execution.claim_current_pool(record.get('key'))
+
     def source(self, key):
         """Require an exact, fresh source observation owned by the master."""
         with self.execution._cache_lock:
             cached = self.execution._cache.get(key)
-            if not cached or time.monotonic()-cached[0] > min(60, cached[1].ttl_seconds or 60):
+            if not cached or time.monotonic()-cached[0] > grasp_cache_ttl(cached[1]):
                 raise RuntimeError('NO_FRESH_CACHED_GRASP')
             owner = self.node.cached_grasp_plans.get(key)
             if (not owner or owner['header'] != cached[1].observation_header or
@@ -287,7 +297,8 @@ class PreparedGraspLiftExecutor:
             if not record or record['key'] != request.object_name.casefold():
                 raise RuntimeError('NO_PREPARED_GRASP_LIFT')
             source, source_version = self.source(record['key'])
-            if (record['phase'] != 'PREPARED' or time.monotonic()-record['created'] > 60 or
+            if (record['phase'] != 'PREPARED' or
+                    time.monotonic()-record['created'] > GRASP_CACHE_TTL_SECONDS or
                     source_version != record['source_version'] or
                     source.observation_header != record['header'] or
                     source.candidates[0].id != record['source_candidate_id']):
@@ -794,14 +805,15 @@ class PreparedGraspLiftExecutor:
             response.phase = record['phase']
             response.observation_header = record['header']
             start = record.get('execution_started', record['created'])
-            limit = self.execution_timeout() if record.get('execution_started') else 60.
+            limit = (self.execution_timeout() if record.get('execution_started')
+                     else GRASP_CACHE_TTL_SECONDS)
             response.expires_in_seconds = max(0., limit-(time.monotonic()-start))
             if not record.get('execution_started'):
                 with self.execution._cache_lock:
                     cached = self.execution._cache.get(record['key'])
                     if cached:
                         response.expires_in_seconds = min(response.expires_in_seconds,
-                            max(0., min(60., cached[1].ttl_seconds or 60.)-(time.monotonic()-cached[0])))
+                            max(0., grasp_cache_ttl(cached[1])-(time.monotonic()-cached[0])))
             response.completed_stages = list(record.get('completed_stages', []))
             response.waiting_stages = [s for s in self.stages(record)
                                        if s not in response.completed_stages]
@@ -830,7 +842,8 @@ class PreparedGraspLiftExecutor:
                     or record.get('look_completed')):
                 raise RuntimeError('PREPARED_LOOK_REVISION_OR_PHASE_MISMATCH')
             source, version=self.source(record['key'])
-            if version!=record['source_version'] or time.monotonic()-record['created']>60:
+            if (version != record['source_version'] or
+                    time.monotonic()-record['created'] > GRASP_CACHE_TTL_SECONDS):
                 raise RuntimeError('PREPARED_SOURCE_CHANGED')
             if self.node._held_object is not None or self.node.state!='IDLE':
                 raise RuntimeError('LOOK_REQUIRES_IDLE_EMPTY_HAND')
@@ -839,6 +852,7 @@ class PreparedGraspLiftExecutor:
             self.validate_commands([('look',record['look'])],record['start_joints'])
             record['execution_started']=time.monotonic()
             record['execution_source']=source
+            self.consume_source(record)
             if record['look_plan'].status!='CURRENT_VIEW_ALREADY_SUITABLE':
                 self.node.state='MOVING'
                 started=True
@@ -904,7 +918,7 @@ class PreparedGraspLiftExecutor:
             if (not record or record['key'] != key or
                     record['revision'] != request.plan_revision or
                     (not record.get('execution_started') and
-                     time.monotonic()-record['created'] > 60)):
+                     time.monotonic()-record['created'] > GRASP_CACHE_TTL_SECONDS)):
                 raise RuntimeError('PREPARED_GRASP_LIFT_STALE_OR_CONSUMED')
             active_started = record.get('execution_started')
             if active_started:
@@ -971,6 +985,7 @@ class PreparedGraspLiftExecutor:
                 record.setdefault('execution_started', time.monotonic())
                 if 'execution_source' not in record:
                     record['execution_source'] = source
+                self.consume_source(record)
                 started = True
                 self.node.state = 'MOVING'
                 if stage in ('gripper_open', 'gripper_close', 'release'):

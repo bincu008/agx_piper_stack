@@ -1,0 +1,465 @@
+2026-11-04 00:09:41.735 | INFO     | nanobot.agent.loop:_register_default_tools:683 - Registered 11 tools: ['create_goal', 'exec_session', 'exec', 'list_exec_sessions', 'list_sessions', 'message', 'read_session', 'search_sessions', 'send_session_message', 'subagent', 'update_goal']
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_spatial_map' from server 'ros2'
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_spatial_context' from server 'ros2'
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_arm_state' from server 'ros2'
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_execution_state' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_manipulation_memory' from server 'ros2'
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_floor_slots' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_step_context' from server 'ros2'
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_world_state' from server 'ros2'
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_observe_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_capture_observation' from server 'ros2'
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_verify_presence' from server 'ros2'
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_ground_object' from server 'ros2'
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_segment_object' from server 'ros2'
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_store_segmented_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_resolve_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refresh_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_perceive_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ensure_scene_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_check_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_require_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_grasp_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_placement_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_input' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_active_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_update_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_select_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_cache_grasp_plan' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_cached_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_active_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_search_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_held_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refine_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_final_approach' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_placement' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_motion' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_solve_pose' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.794 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_camera_retreat' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_next_best_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_step' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_submit_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.795 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_list_functions' from server 'ros2'
+2026-11-04 00:09:41.795 | INFO     | nanobot.agent.tools.mcp:open_single_server:1306 - MCP server 'ros2': skipping resource/prompt registration (enabledTools does not include '*' — only tools allowed)
+2026-11-04 00:09:41.795 | INFO     | nanobot.agent.tools.mcp:open_single_server:1312 - MCP server 'ros2': connected, 11 capabilities registered
+2026-11-04 00:09:41.795 | INFO     | nanobot.agent.tools.mcp:connect:1537 - MCP connected servers: ['ros2']
+2026-11-04 00:09:41.814 | INFO     | nanobot.agent.loop:_register_default_tools:683 - Registered 11 tools: ['create_goal', 'exec_session', 'exec', 'list_exec_sessions', 'list_sessions', 'message', 'read_session', 'search_sessions', 'send_session_message', 'subagent', 'update_goal']
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_spatial_map' from server 'ros2'
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_spatial_context' from server 'ros2'
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_arm_state' from server 'ros2'
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_execution_state' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_manipulation_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_floor_slots' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_step_context' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_world_state' from server 'ros2'
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_observe_view' from server 'ros2'
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_capture_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_verify_presence' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ground_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_segment_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_store_segmented_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_resolve_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refresh_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_active_target' from server 'ros2'
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_perceive_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ensure_scene_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_check_target_view' from server 'ros2'
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_require_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_grasp_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_placement_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_input' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_active_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_update_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_select_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_cache_grasp_plan' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_cached_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_active_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_search_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_held_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refine_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_final_approach' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_placement' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_motion' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_solve_pose' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_camera_retreat' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_next_best_view' from server 'ros2'
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_step' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_submit_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:41.856 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_list_functions' from server 'ros2'
+2026-11-04 00:09:41.856 | INFO     | nanobot.agent.tools.mcp:open_single_server:1306 - MCP server 'ros2': skipping resource/prompt registration (enabledTools does not include '*' — only tools allowed)
+2026-11-04 00:09:41.856 | INFO     | nanobot.agent.tools.mcp:open_single_server:1312 - MCP server 'ros2': connected, 9 capabilities registered
+2026-11-04 00:09:41.857 | INFO     | nanobot.agent.tools.mcp:connect:1537 - MCP connected servers: ['ros2']
+2026-11-04 00:09:42.041 | INFO     | nanobot.agent.loop:_register_default_tools:683 - Registered 11 tools: ['create_goal', 'exec_session', 'exec', 'list_exec_sessions', 'list_sessions', 'message', 'read_session', 'search_sessions', 'send_session_message', 'subagent', 'update_goal']
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_spatial_map' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_spatial_context' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_arm_state' from server 'ros2'
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_execution_state' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_manipulation_memory' from server 'ros2'
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_floor_slots' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_step_context' from server 'ros2'
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_world_state' from server 'ros2'
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_observe_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_capture_observation' from server 'ros2'
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_verify_presence' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ground_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_segment_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_store_segmented_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_resolve_target' from server 'ros2'
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_refresh_active_target' from server 'ros2'
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_active_target' from server 'ros2'
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_perceive_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ensure_scene_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_check_target_view' from server 'ros2'
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_require_target_view' from server 'ros2'
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_grasp_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_placement_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_input' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_active_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_update_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_select_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_cache_grasp_plan' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_cached_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_active_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_search_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_held_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refine_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_final_approach' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_placement' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_motion' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_solve_pose' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_camera_retreat' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_next_best_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_step' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_submit_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.069 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.070 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_list_functions' from server 'ros2'
+2026-11-04 00:09:42.070 | INFO     | nanobot.agent.tools.mcp:open_single_server:1306 - MCP server 'ros2': skipping resource/prompt registration (enabledTools does not include '*' — only tools allowed)
+2026-11-04 00:09:42.070 | INFO     | nanobot.agent.tools.mcp:open_single_server:1312 - MCP server 'ros2': connected, 11 capabilities registered
+2026-11-04 00:09:42.070 | INFO     | nanobot.agent.tools.mcp:connect:1537 - MCP connected servers: ['ros2']
+2026-11-04 00:09:42.081 | INFO     | nanobot.agent.loop:_register_default_tools:683 - Registered 11 tools: ['create_goal', 'exec_session', 'exec', 'list_exec_sessions', 'list_sessions', 'message', 'read_session', 'search_sessions', 'send_session_message', 'subagent', 'update_goal']
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_spatial_map' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_spatial_context' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_arm_state' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_execution_state' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_manipulation_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_floor_slots' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_step_context' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_world_state' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_observe_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_capture_observation' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_verify_presence' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ground_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_segment_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_store_segmented_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_resolve_target' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refresh_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_perceive_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ensure_scene_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_check_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_require_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_pin_grasp_observation' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_placement_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_prepare_grasp_input' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_calculate_active_grasps' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_update_object' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_select_grasp' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_cache_grasp_plan' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_cached_grasp' from server 'ros2'
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_active_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_search_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_held_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refine_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_final_approach' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_placement' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_motion' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_solve_pose' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_camera_retreat' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_next_best_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.110 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_prepare_grasp_lift' from server 'ros2'
+2026-11-04 00:09:42.111 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_prepared_grasp_lift' from server 'ros2'
+2026-11-04 00:09:42.111 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_validate_prepared_grasp_lift' from server 'ros2'
+2026-11-04 00:09:42.111 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_step' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.111 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_submit_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.111 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.111 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_list_functions' from server 'ros2'
+2026-11-04 00:09:42.111 | INFO     | nanobot.agent.tools.mcp:open_single_server:1306 - MCP server 'ros2': skipping resource/prompt registration (enabledTools does not include '*' — only tools allowed)
+2026-11-04 00:09:42.111 | INFO     | nanobot.agent.tools.mcp:open_single_server:1312 - MCP server 'ros2': connected, 17 capabilities registered
+2026-11-04 00:09:42.111 | INFO     | nanobot.agent.tools.mcp:connect:1537 - MCP connected servers: ['ros2']
+2026-11-04 00:09:42.124 | INFO     | nanobot.agent.loop:_register_default_tools:683 - Registered 11 tools: ['create_goal', 'exec_session', 'exec', 'list_exec_sessions', 'list_sessions', 'message', 'read_session', 'search_sessions', 'send_session_message', 'subagent', 'update_goal']
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_spatial_map' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_spatial_context' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_arm_state' from server 'ros2'
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_execution_state' from server 'ros2'
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_manipulation_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_floor_slots' from server 'ros2'
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_step_context' from server 'ros2'
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_world_state' from server 'ros2'
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_observe_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_capture_observation' from server 'ros2'
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_verify_presence' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ground_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_segment_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_store_segmented_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_resolve_target' from server 'ros2'
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refresh_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_perceive_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ensure_scene_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_check_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_require_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_pin_grasp_observation' from server 'ros2'
+2026-11-04 00:09:42.154 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_pin_placement_observation' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_prepare_grasp_input' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_calculate_active_grasps' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_update_object' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_select_grasp' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_cache_grasp_plan' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_cached_grasp' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_find_active_placements' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_search_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_held_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refine_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_final_approach' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_placement' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_motion' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_solve_pose' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_camera_retreat' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_next_best_view' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_prepare_pick_place' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_prepared_pick_place' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_validate_prepared_pick_place' from server 'ros2'
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_step' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_submit_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.155 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_list_functions' from server 'ros2'
+2026-11-04 00:09:42.155 | INFO     | nanobot.agent.tools.mcp:open_single_server:1306 - MCP server 'ros2': skipping resource/prompt registration (enabledTools does not include '*' — only tools allowed)
+2026-11-04 00:09:42.155 | INFO     | nanobot.agent.tools.mcp:open_single_server:1312 - MCP server 'ros2': connected, 21 capabilities registered
+2026-11-04 00:09:42.155 | INFO     | nanobot.agent.tools.mcp:connect:1537 - MCP connected servers: ['ros2']
+2026-11-04 00:09:42.169 | INFO     | nanobot.agent.loop:_register_default_tools:683 - Registered 11 tools: ['create_goal', 'exec_session', 'exec', 'list_exec_sessions', 'list_sessions', 'message', 'read_session', 'search_sessions', 'send_session_message', 'subagent', 'update_goal']
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_spatial_map' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_spatial_context' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_arm_state' from server 'ros2'
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_execution_state' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_manipulation_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_floor_slots' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_step_context' from server 'ros2'
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_world_state' from server 'ros2'
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_observe_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_capture_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_verify_presence' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ground_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_segment_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_store_segmented_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_resolve_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refresh_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_perceive_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ensure_scene_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_check_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_require_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_grasp_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_placement_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_input' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_active_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.198 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_update_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_select_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_cache_grasp_plan' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_cached_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_active_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_search_placements' from server 'ros2'
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_prepare_held_scene' from server 'ros2'
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_refine_grasp' from server 'ros2'
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_final_approach' from server 'ros2'
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_lift' from server 'ros2'
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_placement' from server 'ros2'
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_validate_placements' from server 'ros2'
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_motion' from server 'ros2'
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_solve_pose' from server 'ros2'
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_camera_retreat' from server 'ros2'
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_next_best_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_step' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_submit_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_run_steps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.199 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_list_functions' from server 'ros2'
+2026-11-04 00:09:42.199 | INFO     | nanobot.agent.tools.mcp:open_single_server:1306 - MCP server 'ros2': skipping resource/prompt registration (enabledTools does not include '*' — only tools allowed)
+2026-11-04 00:09:42.199 | INFO     | nanobot.agent.tools.mcp:open_single_server:1312 - MCP server 'ros2': connected, 14 capabilities registered
+2026-11-04 00:09:42.199 | INFO     | nanobot.agent.tools.mcp:connect:1537 - MCP connected servers: ['ros2']
+2026-11-04 00:09:42.214 | INFO     | nanobot.agent.loop:_register_default_tools:683 - Registered 11 tools: ['create_goal', 'exec_session', 'exec', 'list_exec_sessions', 'list_sessions', 'message', 'read_session', 'search_sessions', 'send_session_message', 'subagent', 'update_goal']
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_spatial_map' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_spatial_context' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_arm_state' from server 'ros2'
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_execution_state' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_manipulation_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_floor_slots' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_step_context' from server 'ros2'
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_world_state' from server 'ros2'
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_observe_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_capture_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_verify_presence' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ground_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_segment_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_store_segmented_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_resolve_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refresh_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_active_target' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_perceive_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_ensure_scene_memory' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_check_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_require_target_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_grasp_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_pin_placement_observation' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_input' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.243 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_calculate_active_grasps' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_update_object' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_select_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_cache_grasp_plan' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_cached_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_find_active_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_search_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_held_scene' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_refine_grasp' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_final_approach' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_placement' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_placements' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_motion' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_solve_pose' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_camera_retreat' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_plan_next_best_view' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_pick_place' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_prepare_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_get_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1210 - MCP: skipping tool 'mcp_ros2_validate_prepared_grasp_lift' from server 'ros2' (not in enabledTools)
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_run_step' from server 'ros2'
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_submit_steps' from server 'ros2'
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_run_steps' from server 'ros2'
+2026-11-04 00:09:42.244 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_list_functions' from server 'ros2'
+2026-11-04 00:09:42.244 | INFO     | nanobot.agent.tools.mcp:open_single_server:1306 - MCP server 'ros2': skipping resource/prompt registration (enabledTools does not include '*' — only tools allowed)
+2026-11-04 00:09:42.244 | INFO     | nanobot.agent.tools.mcp:open_single_server:1312 - MCP server 'ros2': connected, 7 capabilities registered
+2026-11-04 00:09:42.244 | INFO     | nanobot.agent.tools.mcp:connect:1537 - MCP connected servers: ['ros2']
+2026-11-04 00:09:42.260 | INFO     | nanobot.agent.loop:_register_default_tools:683 - Registered 8 tools: ['create_goal', 'list_sessions', 'message', 'read_session', 'search_sessions', 'send_session_message', 'subagent', 'update_goal']
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_spatial_map' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_spatial_context' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_arm_state' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_execution_state' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_manipulation_memory' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_floor_slots' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_step_context' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_world_state' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_observe_view' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_capture_observation' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_verify_presence' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_ground_object' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_segment_object' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_store_segmented_target' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_resolve_target' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_refresh_active_target' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_active_target' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_perceive_scene' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_ensure_scene_memory' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_check_target_view' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_require_target_view' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_pin_grasp_observation' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_pin_placement_observation' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_prepare_grasp_input' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_calculate_grasps' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_calculate_active_grasps' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_update_object' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_select_grasp' from server 'ros2'
+2026-11-04 00:09:42.290 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_cache_grasp_plan' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_cached_grasp' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_find_placements' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_find_active_placements' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_search_placements' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_prepare_held_scene' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_refine_grasp' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_final_approach' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_lift' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_placement' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_validate_placements' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_motion' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_solve_pose' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_camera_retreat' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_plan_next_best_view' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_prepare_pick_place' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_prepared_pick_place' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_validate_prepared_pick_place' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_prepare_grasp_lift' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_prepared_grasp_lift' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_validate_prepared_grasp_lift' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_run_step' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_submit_steps' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_run_steps' from server 'ros2'
+2026-11-04 00:09:42.291 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_list_functions' from server 'ros2'
+2026-11-04 00:09:42.291 | INFO     | nanobot.agent.tools.mcp:open_single_server:1306 - MCP server 'ros2': skipping resource/prompt registration (enabledTools does not include '*' — only tools allowed)
+2026-11-04 00:09:42.291 | INFO     | nanobot.agent.tools.mcp:open_single_server:1312 - MCP server 'ros2': connected, 53 capabilities registered
+2026-11-04 00:09:42.291 | INFO     | nanobot.agent.tools.mcp:connect:1537 - MCP connected servers: ['ros2']
+{'profile': 'perception', 'tools': 11, 'estimated_input_tokens': 8513, 'estimator': 'tiktoken', 'fits_initial_input_budget': True}
+{'profile': 'view', 'tools': 9, 'estimated_input_tokens': 8013, 'estimator': 'tiktoken', 'fits_initial_input_budget': True}
+VIEW CALC {"transport_outcome": "response", "response": {"success": true, "status": "NO_CHANGE", "moved_target": false, "endpoint_safe": false, "source_joints": [-0.046355944126844406, 0.5592383742332458, -0.35697218775749207, 0.1071632131934166, 0.21528635919094086, 0.083514004945755], "target_joints": [-0.046355944126844406, 0.5592383742332458, -0.35697218775749207, 0.1071632131934166, 0.21528635919094086, 0.083514004945755], "observation_header": {"stamp": {"sec": 1793722181, "nanosec": 863208960}, "fr
+{'profile': 'memory', 'tools': 11, 'estimated_input_tokens': 8897, 'estimator': 'tiktoken', 'fits_initial_input_budget': True}
+{'profile': 'grasp', 'tools': 17, 'estimated_input_tokens': 11851, 'estimator': 'tiktoken', 'fits_initial_input_budget': True}
+{'profile': 'placement', 'tools': 21, 'estimated_input_tokens': 13796, 'estimator': 'tiktoken', 'fits_initial_input_budget': True}
+{'profile': 'diagnostics', 'tools': 14, 'estimated_input_tokens': 11411, 'estimator': 'tiktoken', 'fits_initial_input_budget': True}
+{'profile': 'queue', 'tools': 7, 'estimated_input_tokens': 7372, 'estimator': 'tiktoken', 'fits_initial_input_budget': True}
+{'profile': 'all-calculations', 'tools': 53, 'estimated_input_tokens': 28956, 'estimator': 'tiktoken', 'fits_initial_input_budget': True}

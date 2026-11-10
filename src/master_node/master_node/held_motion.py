@@ -10,6 +10,7 @@ from my_actions.srv import HeldMotionStage, PlanPlacement, PrepareHeldMotion, Pr
 from rclpy.serialization import serialize_message
 
 from .calibration import command_pose_reference, feedback_reference
+from .grasp_cache import grasp_cache_ttl
 from .manipulation_memory import check_capacity, mapped_inputs
 
 
@@ -141,7 +142,7 @@ class HeldMotion:
                 raise RuntimeError('REFINED_APPROACH_PLAN_REQUIRED')
             with self.execution._cache_lock:
                 cached = self.execution._cache.get(key)
-                if not cached or time.monotonic()-cached[0] > min(60, cached[1].ttl_seconds or 60):
+                if not cached or time.monotonic()-cached[0] > grasp_cache_ttl(cached[1]):
                     raise RuntimeError('NO_FRESH_SOURCE_OBSERVATION')
                 source = copy.deepcopy(cached[1])
             refined = self.node.refined_grasp_plans[key]

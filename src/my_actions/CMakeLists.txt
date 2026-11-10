@@ -60,6 +60,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SpatialMap.msg"
   "srv/GetSpatialMap.srv"
   "srv/GetSpatialContext.srv"
+  "srv/GetCurrentWorkspace.srv"
   "srv/CaptureObservation.srv"
   "srv/GetPipelineFunctions.srv"
   "srv/GetPipelineMetrics.srv"

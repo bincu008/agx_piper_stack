@@ -1,0 +1,116 @@
+Reusing verified SSH forward on port 18080.
+llama.cpp: Qwen/Qwen3.5-9B verified at http://127.0.0.1:18080/v1/models
+Using config: /private/tmp/nb-zz62mcvz/config.json
+
+🐈 nanobot
+I'll start by discovering the tool list for the all-calculations profile and 
+then test tools in dependency order.
+  ↳ ros2::list_functions
+Good, I have the full tool list. Let me read the saved file to get the complete 
+allowlist:
+  ↳ read_session("robot-console-71BBEA3B-5295-4074-A511-3…")
+Let me check the workspace for the saved file:
+  ↳ read_session("robot-console-71BBEA3B-5295-4074-A511-3…")
+The output was saved to a file. Let me start testing tools. Based on the 
+allowlist from the tool output, I'll begin with the foundational tools. Let me 
+start with **get_arm_state** (no prerequisites):
+  ↳ ros2::get_arm_state
+**PASS** - get_arm_state returns expected structure with joints, tcp_pose, 
+gripper_width_m, success=true, status=ARM_STATE_READY.
+
+Now let me test **get_world_state** (no prerequisites):
+  ↳ ros2::get_world_state
+**PASS** - get_world_state returns state_json with api_pipeline, frame_id, 
+tcp_pose, timestamp, task_queue.
+
+Now let me test **get_spatial_context** (no prerequisites):
+  ↳ ros2::get_spatial_context
+**PASS** - get_spatial_context returns success=true, 
+status=SPATIAL_CONTEXT_READY, map with cells, tcp_pose, object_names, 
+object_positions, object_cell_ids.
+
+Now let me test **get_manipulation_memory** (no prerequisites):
+  ↳ ros2::get_manipulation_memory
+**PASS** - get_manipulation_memory returns success=true, 
+status=MANIPULATION_MEMORY_READY, state_json with revision, directory, 
+active_objects, active_destination, pipelines.
+
+Now let me test **get_floor_slots** (no prerequisites):
+  ↳ ros2::get_floor_slots
+**PASS** - get_floor_slots returns success=true, status=FLOOR_SLOT_MEMORY_READY,
+state_json=[] (empty as expected for read-only).
+
+Now let me test **get_spatial_map** (no prerequisites):
+  ↳ ros2::get_spatial_map
+**PASS** - get_spatial_map returns success=true, status=SPATIAL_MAP_SNAPSHOT, 
+map with header, revision, cell_size_m, minimum/maximum bounds, dimensions, 
+cells array, camera pose, camera_forward, camera_up.
+
+---
+
+## Batch 1 Summary (6 tools tested):
+1. **get_arm_state** - PASS (returns joints, tcp_pose, gripper_width_m, 
+success=true)
+2. **get_world_state** - PASS (returns state_json with api_pipeline, frame_id, 
+tcp_pose)
+3. **get_spatial_context** - PASS (returns success=true, 
+status=SPATIAL_CONTEXT_READY, map, tcp_pose, object_names)
+4. **get_manipulation_memory** - PASS (returns success=true, 
+status=MANIPULATION_MEMORY_READY, state_json)
+5. **get_floor_slots** - PASS (returns success=true, 
+status=FLOOR_SLOT_MEMORY_READY, state_json=[])
+6. **get_spatial_map** - PASS (returns success=true, 
+status=SPATIAL_MAP_SNAPSHOT, map with cells)
+
+**Remaining tools to test (49 tools):**
+- capture_observation (prereq for many)
+- get_workflow_example
+- list_functions
+- get_execution_state
+- get_step_context
+- get_observe_view
+- verify_presence
+- ground_object
+- segment_object
+- store_segmented_target
+- get_active_target
+- refresh_active_target
+- require_target_view
+- check_target_view
+- resolve_target
+- pin_grasp_observation
+- pin_placement_observation
+- prepare_grasp_input
+- calculate_grasps
+- calculate_active_grasps
+- update_object
+- select_grasp
+- cache_grasp_plan
+- get_cached_grasp
+- prepare_grasp_lift
+- validate_prepared_grasp_lift
+- get_prepared_grasp_lift
+- prepare_held_scene
+- search_placements
+- find_placements
+- find_active_placements
+- validate_placements
+- plan_placement
+- plan_next_best_view
+- plan_motion
+- plan_lift
+- plan_camera_retreat
+- plan_final_approach
+- refine_grasp
+- prepare_pick_place
+- validate_prepared_pick_place
+- get_prepared_pick_place
+- perceive_scene
+- run_step
+- run_steps
+- submit_steps
+- solve_pose
+
+Ready to continue when you say "continue".
+
+Nanobot exited with status 0

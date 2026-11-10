@@ -21,7 +21,8 @@ from rclpy.serialization import deserialize_message, serialize_message
 from task_pipeline.context import StepStore
 from task_pipeline.node import response_status, response_success, set_failure
 from task_pipeline.recipes import (
-    calculate_grasps_with_recovery, pin_observation_with_recovery, validate_placements)
+    calculate_grasps_with_recovery, pin_observation_with_recovery,
+    retain_captured_observation, validate_placements)
 from task_pipeline.registry import FUNCTIONS
 
 
@@ -135,7 +136,7 @@ class MasterStepRuntime:
             elif name == 'calculate_grasps':
                 response = calculate_grasps_with_recovery(
                     request, lambda query: self._native(name, query))
-            elif name == 'pin_placement_observation':
+            elif name in ('pin_grasp_observation', 'pin_placement_observation'):
                 response = pin_observation_with_recovery(
                     request, lambda query: self._native(name, query))
             elif name in ('plan_placement', 'validate_placements') and (
@@ -149,6 +150,9 @@ class MasterStepRuntime:
                                                validate_selected=check_selected)
             else:
                 response = self._native(name, request)
+                if name == 'capture_observation':
+                    response = retain_captured_observation(
+                        response, lambda query: self._native('pin_grasp_observation', query))
         except Exception as error:
             failure = str(error)
             response = set_failure(FUNCTIONS[name].service_type.Response(), str(error))

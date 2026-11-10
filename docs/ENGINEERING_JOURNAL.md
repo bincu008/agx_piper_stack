@@ -6,6 +6,185 @@ Older entries are reconstructed from project reports and the task history;
 dates are omitted where they cannot be verified. Historical timings and results
 apply to their recorded scene and configuration.
 
+## Supported local reconciliation and unified 600-second grasp pool — 2026-11-10
+
+**Implemented and verified in isolation with 193 unit tests passing; physical gates remain disabled.**
+- **Supported Reconciliation**: Established administrative operator-confirmed reconciliation
+  (`reconcile_ledger` in `task_pipeline.mcp.reconcile` and `PreparationGateway.reconcile_preparation`).
+  Requires explicit `confirmed_operator=True` and operator notes. Audits reconciliation events
+  into the original ledger (`reconciliation:<timestamp>`), transitions affected unknown jobs to
+  `ABORTED_BY_OPERATOR_RECONCILIATION`, preserves historical receipts, and removes the
+  `preparation_barrier` only when no other unresolved unknown jobs remain. Verified by 5 tests
+  in `test_mcp_reconcile.py`.
+- **Unified 600-second Grasp Pool**: Set `GRASP_CACHE_TTL_SECONDS = 600` (10 minutes) across
+  `grasp_cache.py`, `execution_api.py`, and `prepared_grasp_lift.py`. Added single-pool metadata
+  tracking in `ExecutionAPI` with `claim_current_pool` (atomically marks pool consumed upon execution
+  admission) and `invalidate_current_pool` (on scene alteration or camera motion). Exposed current pool
+  and plan status in `current_workspace.py` and extended `check_freshness` tool schema and handler in
+  `workspace.py` to support `grasp_pool` and `plan` resources.
+- **Dedicated Profile Wiring**: Registered `ros-pipeline://workspace-catalog` resource in `mcp/server.py`
+  providing schemas for the 9 small-model profile tools. Generated `docs/mcp/WORKSPACE_PROFILE_TOOLS.json`
+  and added it to `CMakeLists.txt`.
+- **Lock Ordering Fix**: Fixed a thread deadlock in `PreparedGraspLiftExecutor.consume_source` where
+  `consume_source` acquired `_cache_lock` and then called `claim_current_pool`, which also attempted to
+  acquire `_cache_lock`. Called `claim_current_pool` outside the lock block.
+- **Verification**: Verified 193 unit tests covering `workspace_freshness` (23 passed),
+  `current_workspace` (20 passed), `manipulation_memory` (46 passed), `execution_api` (12 passed),
+  `prepared_grasp_lift` (62 passed), `prepared_pick_place` (25 passed), and `mcp_reconcile` (5 passed).
+  All physical execution gates remained disabled (`allow_physical_grasp_execution:=false`). Full
+  end-to-end mock hardware pick/place recheck remains pending.
+
+## Current-workspace observation contract — 2026-11-10
+
+**Implemented/tested in isolation; not deployed live; larger plan incomplete.**
+Added GetCurrentWorkspace and fixed internal MCP metadata read over master-owned
+latest synchronized RGB/cloud metadata/manual FK*X, nearby measured feedback,
+original source identities, calibration and independent capture/arrival ages.
+First mock runtime check incorrectly called a delayed processed frame a missing
+stream; fixed arrival-health versus source-age separation and added regression.
+New background frames/reads cannot renew semantic geometry or old source stamps.
+Found memory fingerprinting read legacy X_matrix while runtime uses hand_eye_matrix;
+now fingerprints actual runtime matrix (no calibration value/geometry change).
+
+Isolated build passed. master_node package: 284 tests pass, 1 skipped; task_pipeline:
+240 pass. Authenticated MCP domain-89 inspection passed; typed read returned fresh
+640x480 mock RGB with exact image/cloud/transform source stamps. Read success is
+not execution readiness; execution_allowed=false and scene_freshness_confirmed=false.
+Evidence: ~/agx_piper_data/reports/current_workspace. Temporary mock stack/MCP on
+8766 stopped; existing live domain-0 stack, drivers and MCP 8765 unchanged. New
+interfaces require rebuilt my_actions/consumers; tested overlay is under
+~/agx_piper_data/builds/current_workspace/install. Public new tools, full semantic
+freshness/single-pool migration, Mac image delivery and physical facades remain
+unimplemented. See [implementation progress](SIMPLE_ROBOT_INTERFACE_PROPOSAL.md).
+
+## Single-workspace usability and image delivery — 2026-11-10
+
+**Design only; implementation and model-image path unverified.** User requested a
+simpler current-state interface, 10-minute reuse/one consumable grasp pool,
+automatic freshness handling and fundamental camera/gripper controls. Reviewed
+ROS/MCP state, storage, capture, world association and the mounted Mac Nanobot
+profile/checkpoint/installed MCP wrapper. Current task tools already hide contexts;
+internal immutable snapshots/IDs still protect source binding and durable receipts.
+The Mac MCP wrapper stores ImageContent as artifacts/text paths; this does not
+supply pixels to Qwen, and the task profile excludes the suggested message tool.
+This is an open blocker for agent visual inspection, not a verified vision path.
+
+Wrote [single-workspace proposal](SIMPLE_ROBOT_INTERFACE_PROPOSAL.md): nine public
+preparation tools plus three separately gated control tools; reuse master state,
+StepStore/ledger and existing planners; one current pool with 600-second proposed
+policy; keep short feedback/contact checks, attachment state, tray occupancy and
+unknown barriers. Proposes fresh grasp capture, stable identity upserts, automatic
+bounded refresh and hidden client request/plan bookkeeping. Distinguishes 1 Hz raw
+observation from semantic freshness and dynamic-obstacle protection. Native read-only
+discovery confirmed MCP 3.6.2, 62 tools, preparation_only/live_driver_publishers.
+No runtime or Mac config/code changes, no safety/TTL changes, no physical commands.
+Proposal has staged files/acceptance tests; no implementation success is claimed.
+
+
+Implementation started: master_node/workspace_freshness.py now provides the isolated
+600-second reuse decision and source-bounded pool deadline, including explicit
+provenance/calibration/generation/feedback/stream evidence and consumed/unknown
+rejection. 23 new fake-clock tests plus 3 existing world-state tests pass; affected
+lint passes. Not integrated/deployed: public tools and live 900-second cache are
+unchanged. Next contract is the master current-workspace/source-timing read; image
+forwarding, automatic cleanup and physical facades remain unimplemented.
+
+## Task-response evidence and progress — 2026-11-10 (MCP 3.6.2)
+
+**Resolved and verified on mock; live/physical behavior untested.** Nanobot saw a
+completed task retain ground_object as current_step and could mistake validation
+with bypasses for complete collision validation. Added structured validation
+summaries to preparation/validation receipts, reporting only backend success
+markers, explicit bypasses and known backend configuration reasons (unknown reasons
+remain null). execution_allowed=false, scene_freshness_confirmed=false and
+physical_readiness_confirmed=false preserve the historical/non-actuating scope.
+Existing stored direct-validation receipts retain their original evidence.
+Task progress now uses actual busy-context pending step/ID, clears terminal active
+fields, preserves last success/failure, and lets terminal action receipts override
+racing progress snapshots. Direct validator progress is separately tracked without
+creating jobs. Workflow explanations retain route names and add a derived count
+and object/destination perception labels. Names, input schemas, diagnostic profiles,
+ledger/retry/unknown barriers, planners and all physical gates are unchanged.
+
+Authenticated TLS/domain-89 mock calls: new cup/tray preparation completed all 19
+steps and returned revision 6; exact validation passed with PASSED_WITH_BYPASSES
+and four explicit configured bypass reasons. Running progress reported
+verify_presence and later prepare_pick_place; completion current_step=null,
+last_successful_step=validate_prepared_pick_place. Superseded historical plan
+validation was BLOCKED: PREPARED_PLAN_SOURCE_OR_REVISION_CHANGED. Unknown task
+lookup was BLOCKED: TASK_NOT_FOUND: use the task_id returned by submission.
+Cancellation progressed CANCEL_PENDING (nested request status CANCEL_REQUESTED)
+to CANCELLED / CANCELLED_AT_STEP_BOUNDARY with current_step=null. Unknown-outcome
+fixtures remain unresolved and do not replay. 270 package tests, including 159 MCP
+tests, pass; affected lint passes. Native rediscovery/reconnect after MCP-only reload confirmed version 3.6.2,
+62 tools, retained task identity, 19 labelled workflow steps and exact validation.
+Evidence: ~/agx_piper_data/reports/task_response_update/{result,reconnect_result}.json.
+No motion/gripper commands, driver changes or safety parameter changes.
+
+## Qwen/llama.cpp camera-view tool schema — 2026-11-10
+
+**Server fix verified in mock; Mac model retry pending.** Nanobot reported that
+Qwen3.5-9B through llama.cpp emitted empty plan_camera_view arguments with the
+native oneOf schema; removing oneOf in a diagnostic replay produced the expected
+fields. Flattened only this tool's published schema, preserving its name/fields
+and requiring request_id/mode. Added parameter descriptions and independent strict
+server validation before task/receipt creation: relative frame/vectors, target
+selector exclusivity, mixed-field rejection, finite .20m norm/pi-angle bounds and
+existing scalar/type/length bounds. Existing planners, calculation-only gate,
+authentication/source guards and durable identity handling remain unchanged.
+Updated native schema resource and task instructions; MCP reloaded as 3.6.1 on the
+same isolated domain-89 mock ledger, leaving drivers/reasoning/tunnel untouched.
+
+265 task_pipeline package tests pass, including 154 MCP regression tests. Coverage
+includes both valid modes, missing/mixed/invalid
+fields, no task/backend side effects on rejection, unchanged-result preservation
+and same-task retries. Authenticated native tools/list confirmed a flat schema
+and 62 tools. A +3-degree camera pitch (rightward) returned NO_REACHABLE_CHANGE,
+achieved_fraction=0, moved_target=false, endpoint_safe=false, with identical source
+and target joints; calculation completion is not changed-viewpoint success.
+Target-name mode returned NEXT_VIEW_PLANNED_EMPTY_HAND. Direct malformed MCP calls
+were BLOCKED without task IDs. Evidence: ~/agx_piper_data/reports/flat_camera_schema/
+{result,plan_camera_view_schema,native_tools}.json. No motion/gripper dispatch.
+**Remaining:** Mac agent must refresh native/translated/profile schemas and repeat
+the actual Nanobot/llama.cpp model call; direct MCP verification does not establish
+that model's argument-generation behavior.
+
+## Task-level MCP bookkeeping — 2026-11-10
+
+**Resolved in mock; physical/live behavior untested.** Nanobot skipped low-level
+prerequisites and lost typed producer references. Added an opt-in eight-tool task
+facade over existing reviewed recipes, master calculation jobs and the same durable
+ledger; no second scheduler, actuator dispatch or new safety bypass. Original 54
+diagnostic schemas remain unchanged. Authenticated domain-89 mock calls passed
+fresh cup mask observation, six-candidate grasp cache, complete cup/tray preparation
+(plan revision 2), exact validation, wrong-revision rejection, target-view planning,
+between-step cancellation and post-restart task lookup. Relative +2cm returned the
+safe reporting fallback NO_REACHABLE_CHANGE/endpoint_safe=false; changed-view
+success remains unverified. 127 MCP fixture tests and 238 task_pipeline package
+tests pass. Fixture tests cover stale/wrong-context, unknown perception, duplicate,
+timeout/disconnect and physical rejection. Existing collision bypass markers remain
+visible; mock preparation is not full collision or hardware validation. Retained
+geometry is not scene-currentness proof; existing batch destination age unavailable.
+See [task verification and limits](mcp/MOCK_VALIDATION.md) and
+[task interface](mcp/TASK_INTERFACE.md). Logs remain outside source under
+~/agx_piper_data/reports/task_interface. No Mac configuration changed.
+
+**Follow-up verification and open Mac handoff:** A fresh authenticated MCP
+cup-to-tray preparation completed all 19 internal steps and issued plan revision
+3; validating that exact plan succeeded. Receipts are in
+~/agx_piper_data/reports/task_interface/end_to_end_recheck/result.json.
+Subsequent native discovery confirmed MCP 3.6.0 with 62 tools: eight task tools
+plus the unchanged 54 diagnostic tools. The latter remain externally callable
+for diagnostics; they are not exclusively internal. Normal Nanobot use should
+select a separate eight-tool profile so the server owns dependency ordering and
+bindings. Provided a Mac Codex handoff prompt to refresh discovery/profile
+snapshots, preserve TLS/authentication and request receipts, and verify natural
+task selection and same-task recovery against mock replay. **OPEN / UNTESTED:**
+Mac-side profile migration and native Nanobot end-to-end behavior have not been
+verified here. Preparation-only and the master physical gate remain disabled
+for actuation; no motion or gripper commands were sent. See the exact allowlist
+and reconnect instructions in [task interface](mcp/TASK_INTERFACE.md).
+
 ## Earlier work
 
 | Roadblock | Resolution | Outcome / evidence |
@@ -2623,3 +2802,411 @@ Diagnosis update for the 20 cm cup lift blocker:
   served in ros-pipeline://preparation); reports/preparation_mode_*.json and logs
   under ~/agx_piper_data. The exact list, grouped minimal client allowlists,
   dependencies, startup command, actual failures and blocked cases are documented.
+
+## MCP prerequisite and binding discoverability — 2026-11-09
+
+- **Problem:** The outside agent could not distinguish missing preparation/cache/
+  active memory from mode blocking, or identify same-context binding producers.
+  Added per-tool prerequisite/sequence/example metadata, an authenticated labelled
+  dependency graph and human guide, plus recovery hints that preserve raw statuses
+  and submitted step IDs. Corrected guidance for compound resolve_target and for
+  direct state snapshots that cannot serve as stored binding handles.
+- **Verified:** 80 isolated MCP tests and all 188 task_pipeline tests passed,
+  including complete generated preparation examples with synthetic engines.
+  Restarted only MCP after confirming no incomplete ledger receipts; authenticated
+  TLS discovery served v3.3.0, 53 callable preparation tools, a 63-node graph and
+  the new guide. Unauthenticated requests remain rejected. No physical dispatch,
+  inference/planning on hardware, safety-gate, driver or ledger replacement occurred.
+  See [verification](mcp/MOCK_VALIDATION.md#dependency-aware-discovery-verification--2026-11-09).
+
+## Grasp-cache recovery and invented binding fields — 2026-11-09
+
+- **Problem:** The outside agent attributed NO_FRESH_CACHED_GRASP to steps never
+  called and proposed nonexistent grasp_input/calculated_grasps/selected_grasp/
+  cached_grasp_plan bindings. Inspection showed those producers had actually
+  failed (invalid box, no valid grasp, invalid cache geometry), followed by failed
+  perception with an unavailable inference tunnel. Added exact input/output field
+  lists, early invalid-binding diagnostics and clarification that active-grasp
+  calculation prepares its own inputs internally. Cache errors now include
+  same-context recovery templates and observed producer history where available.
+- **Verified:** After the operator restored Qwen SSH, a fresh calculation-only
+  chain in the existing context succeeded through capture, presence, ground,
+  segment, grasp input/calculation/selection, cache and CACHED_GRASP_READY with one
+  candidate. Context advanced from revision 49 to 61. The 60-second cache TTL was
+  not changed. New step/request IDs preserved prior failed receipts.
+- **Deployment/tests:** 87 MCP tests and all 195 task_pipeline tests passed;
+  targeted lint and whitespace checks passed. Reloaded only MCP as 3.3.1 with the
+  same preparation-only flags, live guard, TLS/authentication and ledger. TLS
+  inspection verified 53 tools, internal active-grasp dependencies, recovery
+  templates, and preserved original failed receipt with both failed and successful
+  producer evidence. No arm/gripper commands, controller/driver changes or
+  physical preparation/execution claims. Evidence outside Git:
+  `~/agx_piper_data/logs/mcp_live_cache_recovery.log` and
+  `~/agx_piper_data/logs/mcp_cache_guidance_tls_validation.log`.
+
+## Observation retention and unnamed active-grasp calls — 2026-11-09
+
+- **Problem:** The outside agent attributed OBSERVATION_NOT_IN_CACHE to missing
+  seed bindings. Context inspection showed prepared seeds from one capture were
+  combined with a resolve header/mask from a frame about 645 seconds later,
+  without an early grasp pin. The active-grasp calls actually returned
+  ACTIVE_OBJECT_REQUIRED because target_description was empty, despite the
+  stored target being named cup. StepStore retaining an image/mask does not
+  retain VAMP's rolling registered source indefinitely.
+- **Fix:** Documented immediate capture/header pinning before inference and
+  strict same-source header/mask/seed reuse. Added source-cache-specific recovery
+  hints. MCP active-grasp inputs now explicitly require the already-existing
+  nonempty target_description field, with the exact stored name; unknown outcome
+  and source/frame safeguards remain unchanged. No VAMP cache limits, planner,
+  geometric or physical checks were relaxed.
+- **Verified:** In the same affected context, captured and pinned a fresh source,
+  resolved cup using its synchronized triplet, then calculated active grasps with
+  target_description=cup and empty bindings. Resolve retained that exact header
+  through 41 seconds of inference; calculation returned six valid candidates and
+  selection succeeded, revision 15 -> 20. No arm/gripper command was issued.
+  All 197 task_pipeline tests passed, including 89 MCP tests. MCP 3.3.2 reload
+  retained preparation-only mode, TLS/authentication, ledger and live guards;
+  live TLS check rejected an omitted name before dispatch with revision unchanged.
+  Logs: `~/agx_piper_data/logs/mcp_live_active_observation_recovery.log` and
+  `~/agx_piper_data/logs/mcp_observation_guidance_tls_validation.log`.
+
+## 2026-11-09 — Smaller-model MCP examples (3.4.0)
+
+The external Nanobot/Qwen3.5-9B agent guessed pin bindings and treated the legacy
+LAYOUT status as a separate workflow. Model-facing descriptions totaled about
+138,000 characters. Added local read-only `get_workflow_example` with exact
+schema-checked grasp, cache and pick/place inputs, fresh proposed IDs, and explicit
+context substitution. Reduced descriptions to about 26,000 characters; retained
+full schemas/dependencies in metadata/resources. Added opt-in
+`list_functions(summary_only=true)` and documented a nine-tool grasp allowlist.
+The legacy pin-cache failure now explains the correct source-header recovery.
+
+Verified: 97 isolated MCP tests and 205 task_pipeline tests passed; affected-file
+lint passed. Authenticated TLS discovery reports version 3.4.0, preparation_only,
+54 tools; the live helper returned the five-call grasp chain without executing it.
+Summary discovery omitted the full catalog and unauthenticated access returned
+401. Reloaded only MCP, retaining its ledger, TLS/auth, live-input guard and mode;
+drivers and the tunnel were left intact. Initial reload briefly met the old
+process's ledger lock; after that process exited, the same ledger opened normally.
+No hardware command or controller change was issued.
+
+Open limitation: model-only HTTP tool-selection probes against remote
+Qwen/Qwen3.5-9B timed out (54-tool probe at 120 s, nine-tool probe at 60 s).
+No returned tool call was dispatched. These fixtures verify API examples and
+server behavior, not native Nanobot/Qwen end-to-end reliability. Nanobot must
+refresh discovery and apply the updated adaptation instructions; its Mac code
+was not changed here. Logs: `~/agx_piper_data/logs/mcp_small_model*` and
+`~/agx_piper_data/logs/qwen_small_model*`.
+
+## 2026-11-09 — Fifteen-minute grasp cache and consume-on-execution
+
+The operator reported slow agent reasoning outliving the 60-second grasp cache.
+Raised the default/maximum source-cache lifetime and unstarted prepared-plan
+lifetime to 900 seconds. Shared master readers use one TTL helper; shorter
+explicit request TTLs remain supported. Updated recipe/MCP example requests,
+launch defaults and VLM parameter clamp to match. Active execution retains its
+independent watchdog, immutable source/revision, feedback and unknown-state checks.
+
+Admitted prepared execution removes the matching source version from the public
+cache before dispatch. Its private frozen session source remains available through
+completion/failure reconciliation, so removal never resets ownership or permits
+replaying an uncertain action. Calculation/read/validation do not consume it.
+Two existing tests expected the reusable cache during an unfinished/unknown session;
+updated those assertions to require the private source and preserved ownership.
+
+Verified without hardware calls: task_pipeline/master_node/vlm_node builds passed;
+package results: 205/228/12 tests respectively, zero failures/errors, one existing
+master skip. Regressions cover 899/901-second boundaries, shorter TTL, delayed
+handoff, public-cache consumption and continued staged execution. Logs are under
+`~/agx_piper_data/logs/grasp_cache_15m_*`. Existing live processes were not restarted:
+restart the reasoning stack and MCP to load this change; old explicitly cached
+60-second requests are not retroactively extended. No physical validation claimed.
+
+## 2026-11-09 — Native example-tool discovery (MCP 3.4.1)
+
+The Mac all-calculations profile omitted get_workflow_example, although native
+MCP discovery exposes it. Clarified the description to select it for requests
+for an example workflow, tool ordering or bindings. Added list_functions
+`discovery_notes` (additive output schema) distinguishing ROS reference catalog,
+native MCP discovery, enabled allowlist and blocked APIs. Documented the exact
+native/connector-qualified profile entries and discovery caches to refresh.
+
+Verified over authenticated TLS on the running preparation_only server:
+initialize reports 3.4.1; tools/list contains 54 tools including the helper;
+exact input schema captured; one helper call returned the five-stage grasp
+example, execution_performed=false, callable_in_current_mode=true. No returned
+step was executed. Motion/gripper APIs are absent from native tools/list and
+mode allowlist. Isolated MCP tests cover independent direct/queue physical
+rejection; no physical rejection probe was sent to live ROS. Restarted MCP only
+after confirming zero in-flight receipts/jobs, with the same ledger/TLS/auth,
+require-live-inputs and preparation-only flags. Master launch retains its false
+physical gate. Native Mac profile could not be edited/verified from Ubuntu.
+
+Discovery snapshots (no credentials):
+`~/agx_piper_data/reports/mcp_example_discovery/{initialize,native_tools_list,get_workflow_example_tool,get_workflow_example_result,list_functions_summary}.json`.
+
+## 2026-11-09 — Observation retention no longer depends on agent timing (3.4.2)
+
+An external-agent audit attributed every pin failure to eviction/preparation-only
+mode. Durable receipts confirm that test_pin_grasp_003 used the correct capture
+header and still received the old undifferentiated missing-observation status.
+The receipt does not establish delay, eviction or which component was absent;
+the historical root cause remains unknown. Before changes, a fresh authenticated
+capture->pin test succeeded, disproving the claim that the mode always fails.
+
+Hardened shared MasterStepRuntime capture to attempt exact VAMP RGB/cloud/manual
+FK*X retention before returning. Capture remains usable for vision if retention
+fails, with GRASP_RETENTION_FAILED status instead of invented grasp readiness.
+MCP exposes observation_retention.grasp_retained (true/false/null), source step
+and exact confirmation binding. Explicit pins remain idempotent. The existing
+bounded 50/100/200/400 ms delivery recovery now covers grasp pinning and known
+missing-bundle replies, without recapture, timestamp substitution, or action retry.
+VAMP failures expose requested stamp, cloud/image/transform presence, cache counts
+and latest cloud stamp. Missing pin-header bindings are rejected before backend
+dispatch. Corrected dependency guidance so placement pin is independent of grasp
+pin. Descriptions/recovery no longer assert eviction from a missing bundle alone.
+
+Verified: builds task_pipeline/master_node/vamp_node passed. Package test totals
+213/228/165, zero errors/failures, one existing master skip. Targeted fixture suite
+141 passed, including delayed-delivery recovery, retention failure reporting,
+pre-dispatch binding rejection and independent pin dependencies. MCP lint and
+patch whitespace checks pass; larger historical files retain pre-existing lint
+issues. After checking idle empty hand/physical gate=false and zero in-flight
+ledger operations, reloaded only reasoning stack and MCP with the same domain-0
+Qwen profile, gate=false, TLS/authentication, ledger and live-input guard. Camera,
+arm driver and SSH tunnel were untouched. Old transient contexts require fresh
+capture after restart; durable receipts were not reset.
+
+Authenticated live verification: five captures all confirmed automatic retention;
+five explicit pins passed (including a delayed confirmation), and placement pin
+passed. Missing/wrong-type bindings were rejected. A synthetic invalid source
+probe on the live non-actuating pin API returned component diagnostics as expected.
+Native MCP discovery reports 3.4.2/preparation_only/54 tools; motion/gripper tools
+remain absent and physical queue rejection remains independently fixture-tested.
+No robot action was dispatched and no VLM/HGGD success is claimed by these tests.
+Mac Nanobot sequencing itself remains unverified. Reports:
+`~/agx_piper_data/reports/mcp_pin_reliability/{live_after_fix,negative_source_diagnostics}.json`;
+pre-fix report b7ac4cbf2a.json; logs `~/agx_piper_data/logs/pin_reliability_*`.
+
+## 2026-11-10 — Scene Qwen JSON contract and schema-only workflow (3.5.0)
+
+Confirmed server-side root cause of perceive_scene Extra data (char 29): raw Qwen
+returned a fenced JSON array [{"key":"t0","value":true},{"key":"t1","value":true}].
+parse_mapping sliced first '{' through last '}', discarding the enclosing array,
+then json.loads rejected the resulting adjacent objects. Correct context/image/
+cloud/transform bindings were not responsible. Exact historical raw replies are
+saved outside source in reports/perceive_scene_contract/failing_qwen_responses.json.
+
+Parser now consumes one complete JSON document (optionally one JSON fence),
+normalizing either a keyed object or exact key/value records. Duplicate/extra/
+missing keys, multiple documents, malformed values, and conflicting presence/
+grounding are rejected as SCENE_INFERENCE_UNKNOWN before scene-memory updates.
+Added a strict JSON system prompt and explicit root-object instruction. Regression
+fixtures use the failing raw responses, ambiguity cases, same-source segmentation,
+unchanged memory on failure, and conflicting presence/grounding.
+
+get_workflow_example now supports workflow=perceive_scene and returns exact
+capture->perception inputs with initial context_id="", the native returned path
+result.structuredContent.context_id, same-context triplet bindings and fresh IDs.
+Context/request descriptions and the capture context output field are explicit in
+tool schemas. Perceive_scene requires nonempty destination_name; partial bound
+triplets are rejected before dispatch with missing-field/sequence guidance.
+Invalid-context recovery explains how to create/reuse the actual context.
+Preparation_only/TLS/auth/ledger/physical guards are unchanged. Reloaded reasoning
+and MCP only after idle empty-hand/gate=false and zero in-flight checks; drivers
+and SSH tunnel remained untouched. Native MCP reports 3.5.0/54 tools.
+
+Verified: master/task builds passed; package tests 242/215, zero errors/failures,
+one existing master skip. Targeted 150 tests passed; affected MCP modules lint
+and whitespace checks passed. The authenticated fresh capture->perceive_scene
+call no longer returns Extra data. ACTUAL returned status:
+SCENE_INFERENCE_UNKNOWN: PRESENCE_GROUNDING_CONFLICT, success=false, MCP isError=true.
+Both structured MCP result and typed ROS response validate against current live
+schemas. Invalid-context and missing-triplet negative probes were rejected with
+actionable errors. No motion/gripper/physical queue operation was called.
+
+OPEN positive-recognition blocker: the exact bound RGB image is nearly black
+(mean grayscale 16.88/max 44 out of 255). Qwen said both targets false, then
+returned identical nonnull boxes for cup and tray. These inconsistent answers are
+correctly unknown, not successful scene grounding or evidence of absence. Useful
+live recognition remains unverified until the scene is clearly illuminated.
+Do not weaken the parser to accept this contradiction. No Nanobot/model-sequencing
+success is claimed by direct MCP verification. Evidence under
+~/agx_piper_data/reports/perceive_scene_contract: live_calls.json, live_result.json,
+final_discovery_validation.json, native_tools_list.json, live_qwen_responses.json,
+bound_capture_rgb.png. Logs: ~/agx_piper_data/logs/perceive_scene_contract_*.
+
+## 2026-11-10 — Mock-only MCP scene validation (3.5.1)
+
+Operator confirmed room lighting was off and requested stopping live drivers and
+switching to replay. Stopped domain-0 reasoning/MCP, Orbbec launch and AGX launch
+after zero in-flight receipt checks. Verified no real camera/arm driver processes
+remain. Left the SSH Qwen tunnel intact. Started bundled scene 1 (snapshots/current)
+mock publisher and physical-gate-false reasoning in ROS_DOMAIN_ID=89.
+
+Added explicit --require-mock-inputs, usable only with --preparation-only, a nonzero
+ROS domain and dedicated mock execution ledger. It checks exactly one
+/mock_hardware publisher per required RGB/cloud/joint/TCP topic and rejects mixed,
+live-only, missing or domain-0 sources. Production --require-live-inputs behavior
+is unchanged; live ledger/receipts are preserved. Mock mode constructs no physical
+execution transport and independently rejects motion/gripper and physical generic
+queues. All returned structured results carry SIMULATED=true, input_mode=mock_replay
+and actual DDS provenance, with additive declared output fields. MCP remains TLS/
+bearer authenticated on the existing private endpoint, version 3.5.1, 54 tools.
+
+Authenticated mock tests using real remote Qwen inference passed:
+- fresh capture -> perceive_scene(cup, tray): SCENE_PERCEPTION_READY observed=2/2;
+  both ACTIVE_TARGET_GROUNDED.
+- fresh capture -> configured inventory (bowl, cup, tray):
+  SCENE_PERCEPTION_READY observed=3/3; bowl/cup grounded and tray memory reused.
+Both responses success=true, MCP isError=false, and passed current MCP output and
+typed ROS response schema validation. Invalid contexts and partial triplets were
+rejected with actionable guidance. This verifies recorded perception/segmentation/
+memory, not live perception, physics, grasp planning, actuator tracking or placement.
+No motion/gripper/physical queue command was dispatched. Live-lighting limitation
+remains historical; positive recorded-scene perception is now verified.
+
+Build passed; 113 isolated MCP tests and 223 task_pipeline package tests passed,
+zero failures/errors; affected server/bridge lint and whitespace checks passed.
+Fixture checks cover exact mock ownership, wrong domain, mixed/live source
+rejection, physical/direct-queue rejection and CLI refusal of the default live
+ledger. Mock services remain running with dedicated mock-execution.sqlite;
+production execution.sqlite was not reset. Logs: ~/agx_piper_data/logs/mock_scene_perception_*.
+Evidence: ~/agx_piper_data/reports/mock_scene_perception and
+~/agx_piper_data/reports/mock_scene_perception_inventory (live_result.json is an
+actual MCP invocation against MOCK input; SIMULATED=true is explicit).
+
+### 2026-11-10 — Current workspace interface increment
+
+Implemented optional workspace MCP tools (`get_camera_image`, `list_objects`,
+`check_freshness`), current-task defaults, compact camera orientation reporting,
+and opt-in Nanobot `workspace-tasks` adapters in the mounted Mac source.
+Authenticated isolated mock MCP discovery returned 65 tools; image delivery,
+observation, memory/freshness queries and direct Qwen image use passed.
+Package tests: task_pipeline 251 passed; master_node 285 passed, 1 skipped.
+Mac portable adapter tests: 8 passed; native Mac launch remains unverified.
+
+Full mock pick/place recheck exposed a fatal ROS response conversion of NumPy
+seed coordinates in `prepare_grasp_input`. Explicit Python integer conversion
+fixed the serialization regression and passed an isolated ROS service roundtrip.
+Full preparation after that fix is **not verified**: the interrupted task
+`task_4c518ac7d9022810acb1039fe978d0cf` remains UNKNOWN in the original mock
+ledger, with its preparation barrier preserved. No automatic replay or ledger
+replacement was performed. Live MCP was stopped as requested; live drivers and
+reasoning were left unchanged. Temporary mock launchers were sent SIGINT.
+
+Remaining proposal work: unified single consumed pool/600-second cache policy,
+semantic freshness/reperception integration, stable object identity refinements,
+and separately gated physical facades. No physical commands were tested.
+
+### 2026-11-10 — Review of follow-on workspace implementation
+
+Found clock-epoch mixing and incomplete single-pool semantics in follow-on code.
+Corrected ROS source-age admission, monotonic expiry, shorter TTL enforcement,
+replacement/invalidation and exact-source plan freshness. Added regressions.
+Hardened local-only reconciliation: shared exclusive ledger lock, atomic updates,
+exact unknown-job association, rejection of running/physical-unknown states and
+preservation of unresolved request barriers. No saved ledger was reconciled;
+operator confirmation remains pending for the original interrupted mock task.
+
+Completed dedicated Mac workspace discovery/profile wiring, without legacy
+snapshot fallback or TLS bypass. Portable Mac tests: 11 passed. Native Mac
+snapshot refresh and end-to-end replay remain unverified. Isolated two-package
+build passed; task_pipeline suite: 261 passed. Full replay still requires supported
+operator-confirmed reconciliation; no hardware command or live restart occurred.
+See CURRENT_WORKSPACE_HANDOFF.md for commands and remaining integration gaps.
+
+### 2026-11-10 — Passive pool invalidation and authenticated mock recheck
+
+Connected existing workspace feedback subscriptions to unconsumed-pool revocation
+on measured arm/TCP displacement, calibration change and source-based expiry.
+Stationary feedback cannot renew source age; consumed sessions retain their own
+execution guards. Master tests: 293 passed/1 skipped; pipeline: 262 passed; portable
+Mac: 12 passed. Additional expiry-event regression passed in the 19-test execution
+API subset. Isolated build passed.
+
+Authenticated mock MCP3.7.0 discovery/read checks passed: 65 tools, no native
+physical dispatch cards, CURRENT_OBSERVATION_READY with pixels and mock provenance,
+valid structured results. Pool/plan freshness false and original task UNKNOWN are
+preserved; no new calculation admitted. Dedicated Mac discovery snapshots refreshed
+from actual Ubuntu calls; native Mac integration remains unverified. URL matching
+prevents mixing mock discovery with a different configured server. Domain89 test
+stack/MCP8766 left running; live processes unchanged. Full replay remains blocked
+pending explicit operator confirmation for local reconciliation; no ledger reset
+or automatic replay. Evidence: ~/agx_piper_data/reports/workspace_resume/.
+
+
+### 2026-11-10 — Complete mock preparation handoff repaired and verified
+
+The original non-actuating crash was locally reconciled after the operator's
+instruction to proceed with the disclosed remaining work. Audit
+reconciliation:1794309239_5ddadd6d preserves the original UNKNOWN receipt/status;
+no ledger replacement or actuator replay. Fresh authenticated mock preparation
+exposed LOOK_PLAN_SOURCE_OR_START_CHANGED: a float32 view radius was compared as
+an unrounded Python float against its ROS wire value. Canonicalized owned view
+responses through serialization; strict ownership/start checks remain. Three
+real-serialization regressions added.
+
+Two fresh cup pick/place preparations completed and validated. The final route
+also stores source/destination geometry using same-capture typed bindings and
+avoids a redundant grasp-seed world observation. Final task
+ task_4018198a617433593ab72bc03928e96d returned COMPLETED/PASSED_WITH_BYPASSES;
+execution_allowed=false. Existing approach/lift/withdrawal scene bypasses remain
+explicit; no collision guarantees or physical execution inferred. Pool/plan
+freshness and camera reads passed authenticated MCP schemas. Evidence:
+~/agx_piper_data/reports/workspace_memory/; earlier wire-fix success in
+workspace_recovery/. No hardware motion, driver change or safety change.
+
+Bounded stale-image sensing refresh implemented/tested independently of freshness
+reads, requiring actual synchronized completion and healthy stationary feedback.
+Build passed; pipeline265 tests passed; targeted view/prepared45 and workspace41
+passed. Full master311 passed/1 skipped; one PEP257 error in concurrently delivered
+Gemini world_state.py remains for combined review. Native Mac integration and
+physical facades remain unverified/unimplemented respectively. Mock8766/domain89
+left running; live processes unchanged.
+
+### 2026-11-10 — Gemini identity feature reviewed, corrected and integrated
+
+Basic association worked, but production-style memory upserts lost placed/canonical
+state, clearing holding left a phantom held role, generated IDs could overwrite
+explicit IDs, and suffix parsing stripped ordinary descriptors too broadly.
+Reproduced with regressions; corrected these gaps plus invalid names/radii and the
+PEP257 failure. Canonical identity now propagates through active memory and view
+lookup while preserving requested body/rim instructions for grasp calculation.
+
+Verified: master324 passed/1 existing skip, pipeline265 passed; targeted88 passed.
+Authenticated isolated mock capture->pin->resolve body->resolve rim returned
+ACTIVE_TARGET_GROUNDED then ACTIVE_TARGET_REUSED with the same obj_001, one active
+cup and one world cup. MCP schemas passed. Evidence:
+~/agx_piper_data/reports/identity_review/. Only mock reasoning/MCP were restarted;
+live processes unchanged. No hardware or safety changes. See
+OBJECT_IDENTITY_REVIEW.md for scope and limits. This resolves the earlier identity
+review/lint blocker, not physical or native Mac execution validation.
+
+### 2026-11-10 — Guarded control facades implemented; no hardware execution
+
+Added move_camera, control_gripper and execute_manipulation behind explicit
+--control-tools. Reuse the existing master/VAMP, execution ledger/admission lock,
+prepared-stage/contact/occupancy guards and watchdogs. Exact reviewed plan IDs and
+revisions are mandatory transport bindings, never a global-latest fallback.
+Grasp/lift stops holding with ownership retained; unsupported held release is
+rejected. Added an internal open_empty_hand callback using the existing gripper
+executor, physical gate, fresh feedback and non-narrowing rule; existing
+set_gripper semantics remain unchanged. Opening detection is not calibrated
+aperture verification. No controller/driver/safety configuration changes.
+
+Main synthetic checks passed: complete pick/place stage sequence, grasp/lift,
+camera no-change/partial, opening, contact failure, stale plan, duplicate receipts,
+timeout/cancellation and preparation-mode rejection. Full master330 passed/1 skip;
+pipeline282 passed; portable Mac14 passed. Build passed. Native Mac execution and
+physical actuator behavior remain untested. Mac's opt-in workspace-control profile
+uses separate live-control discovery and injects private session-reviewed plan
+references. Default Mac configuration was not changed.
+
+Actual authenticated mock MCP3.8.0 on8766 lists68 cards:65 non-actuating callable
+APIs and3 disabled control cards. All three returned PHYSICAL_CONTROLS_DISABLED,
+dispatched=false, with schemas validated. Physical transport remains absent in
+preparation_only; master gate false. Original mock/live ledgers preserved. Live
+processes untouched; mock stack remains running. Evidence:
+~/agx_piper_data/reports/control_tools/. Startup and limitations:
+docs/mcp/CONTROL_TOOLS.md. Further testing stopped at the operator's usage request.

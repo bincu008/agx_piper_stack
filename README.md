@@ -612,7 +612,7 @@ moving or consuming the plan. It does not test physical tracking or contact.
 
 Execute only after the first command reports `ALL_MOTION_PLANNED`. Inspect
 `/vamp_planner/valid_grasp_candidates_markers` in RViz. Then, within
-60 seconds, execute the reviewed cached grasp (an expired cache stops the recipe):
+15 minutes, execute the reviewed cached grasp (an expired cache stops the recipe):
 
 ```bash
 ros2 run task_pipeline pipeline_task \
@@ -749,7 +749,7 @@ Restart the reasoning stack once after updating the code. Thereafter a failed
 known empty-hand prepared run automatically clears its session, grasp cache and
 remaining tasks, returning `SESSION_RESET_READY_FOR_NEW_PLAN`. Run the preparation
 command again; no restart or automatic arm motion is required. The preparation
-freshness limit remains 60 seconds; accepted execution has a separate 300-second
+freshness limit is now 15 minutes; accepted execution has a separate 300-second
 stage-boundary timeout (`prepared_execution_timeout_sec`).
 
 If a close/motion outcome is unknown, queued tasks are discarded but the unknown
@@ -1047,7 +1047,7 @@ Keep `allow_physical_grasp_execution:=false` for mock development. The report
 lists completed calculations and the actual pending grasp, gripper, lift,
 transfer, descent, release and slot-commit tasks. A paused queue has not moved
 the arm. Use `--check-cached-pick-place` for a non-actuating readiness check
-before the existing 60-second source/plan expiry. See the
+before the existing 15-minute source/plan expiry. See the
 [complete prepared pick/place API](docs/STANDARD_PIPELINE_API.md#complete-prepared-pickplace)
 for the execution contract and its physical gate.
 

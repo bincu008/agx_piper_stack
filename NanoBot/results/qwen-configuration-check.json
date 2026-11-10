@@ -1,0 +1,20 @@
+{
+  "nanobot_version": "0.4.0",
+  "provider": "custom",
+  "model": "Qwen/Qwen3.5-9B",
+  "contextWindowTokens": 49152,
+  "maxTokens": 1024,
+  "maxConcurrentSubagents": 1,
+  "idleCompactAfterMinutes": 0,
+  "reasoningEffort": "none",
+  "extraBody": {
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    }
+  },
+  "unsupported_settings": [],
+  "remote_loaded_context": 65536,
+  "mcp_tools_preserved": true,
+  "channels_preserved": true,
+  "timeouts_persisted_in_launchers": 600
+}

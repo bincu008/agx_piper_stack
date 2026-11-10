@@ -1,0 +1,209 @@
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/cli/agent.py:129 in agent                                       │
+│                                                                              │
+│   126 │   paths = profile_data_paths(home=get_home_path(),                   │
+│       data_dir=get_data_dir(),                                               │
+│   127 │   │   │   │   │   │   │      config=get_config_path(),               │
+│       workspace=runtime_config.workspace_path)                               │
+│   128 │   with data_access(paths):                                           │
+│ ❱ 129 │   │   _run_classic(runtime_config, message=message,                  │
+│       session_id=session_id, markdown=markdown, logs=logs)                   │
+│   130                                                                        │
+│   131                                                                        │
+│   132 def _run_classic(runtime_config: Config, *, message: str | None,       │
+│       session_id: str | None,                                                │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/cli/agent.py:282 in _run_classic                                │
+│                                                                              │
+│   279 │   │   │   finally:                                                   │
+│   280 │   │   │   │   await _close_runtime()                                 │
+│   281 │   │                                                                  │
+│ ❱ 282 │   │   asyncio.run(run_once())                                        │
+│   283 │   else:                                                              │
+│   284 │   │   # Interactive mode — route through bus like other channels     │
+│   285 │   │   from nanobot.bus.events import InboundMessage                  │
+│                                                                              │
+│ /opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Version │
+│ s/3.12/lib/python3.12/asyncio/runners.py:195 in run                          │
+│                                                                              │
+│   192 │   │   │   "asyncio.run() cannot be called from a running event       │
+│       loop")                                                                 │
+│   193 │                                                                      │
+│   194 │   with Runner(debug=debug, loop_factory=loop_factory) as runner:     │
+│ ❱ 195 │   │   return runner.run(main)                                        │
+│   196                                                                        │
+│   197                                                                        │
+│   198 def _cancel_all_tasks(loop):                                           │
+│                                                                              │
+│ /opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Version │
+│ s/3.12/lib/python3.12/asyncio/runners.py:118 in run                          │
+│                                                                              │
+│   115 │   │                                                                  │
+│   116 │   │   self._interrupt_count = 0                                      │
+│   117 │   │   try:                                                           │
+│ ❱ 118 │   │   │   return self._loop.run_until_complete(task)                 │
+│   119 │   │   except exceptions.CancelledError:                              │
+│   120 │   │   │   if self._interrupt_count > 0:                              │
+│   121 │   │   │   │   uncancel = getattr(task, "uncancel", None)             │
+│                                                                              │
+│ /opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Version │
+│ s/3.12/lib/python3.12/asyncio/base_events.py:691 in run_until_complete       │
+│                                                                              │
+│    688 │   │   if not future.done():                                         │
+│    689 │   │   │   raise RuntimeError('Event loop stopped before Future      │
+│        completed.')                                                          │
+│    690 │   │                                                                 │
+│ ❱  691 │   │   return future.result()                                        │
+│    692 │                                                                     │
+│    693 │   def stop(self):                                                   │
+│    694 │   │   """Stop running the event loop.                               │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/cli/agent.py:261 in run_once                                    │
+│                                                                              │
+│   258 │   │   │   │   │   bot_name=runtime_config.agents.defaults.bot_name,  │
+│   259 │   │   │   │   │   bot_icon=runtime_config.agents.defaults.bot_icon,  │
+│   260 │   │   │   │   )                                                      │
+│ ❱ 261 │   │   │   │   response = await agent_loop.process_direct(            │
+│   262 │   │   │   │   │   message,                                           │
+│   263 │   │   │   │   │   session_id,                                        │
+│   264 │   │   │   │   │   on_progress=_make_progress(renderer),              │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/loop.py:2744 in process_direct                            │
+│                                                                              │
+│   2741 │   │   │   │   │   if attributes is not None:                        │
+│   2742 │   │   │   │   │   │   kwargs["attributes"] = dict(attributes)       │
+│   2743 │   │   │   │   │   try:                                              │
+│ ❱ 2744 │   │   │   │   │   │   return await self._process_message(msg,       │
+│        **kwargs)                                                             │
+│   2745 │   │   │   │   │   finally:                                          │
+│   2746 │   │   │   │   │   │   if temporary_parent:                          │
+│   2747 │   │   │   │   │   │   │   parent =                                  │
+│        self.sessions.state.peek_header(session_key)                          │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/loop.py:1967 in _process_message                          │
+│                                                                              │
+│   1964 │   │   │   │   self._log_turn_completion(ctx, outcome="command")     │
+│   1965 │   │   │   │   return ctx.outbound                                   │
+│   1966 │   │   │   await self._run_turn_stage(ctx, "build",                  │
+│        self._build_turn)                                                     │
+│ ❱ 1967 │   │   │   await self._run_turn_stage(ctx, "run", self._run_turn)    │
+│   1968 │   │   │   await self._run_turn_stage(ctx, "save",                   │
+│        self._persist_turn)                                                   │
+│   1969 │   │   │   await self._run_turn_stage(ctx, "respond",                │
+│        self._prepare_outbound)                                               │
+│   1970 │   │   │   self._log_turn_completion(ctx)                            │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/loop.py:1981 in _run_turn_stage                           │
+│                                                                              │
+│   1978 │   ) -> _T:                                                          │
+│   1979 │   │   started_at = time.perf_counter()                              │
+│   1980 │   │   try:                                                          │
+│ ❱ 1981 │   │   │   result = await handler(ctx)                               │
+│   1982 │   │   except Exception:                                             │
+│   1983 │   │   │   duration_ms = (time.perf_counter() - started_at) * 1000   │
+│   1984 │   │   │   log_content = not ctx.ephemeral and (                     │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/loop.py:2325 in _run_turn                                 │
+│                                                                              │
+│   2322 │   │   await                                                         │
+│        ctx.delivery.running(started_at=ctx.visible_run_started_at)           │
+│   2323 │   │   assert ctx.transcript_input is not None                       │
+│   2324 │   │   with capture_message_deliveries() as message_sends:           │
+│ ❱ 2325 │   │   │   result = await self._run_agent_loop(                      │
+│   2326 │   │   │   │   ctx.transcript_input,                                 │
+│   2327 │   │   │   │   runtime=runtime,                                      │
+│   2328 │   │   │   │   streaming=ctx.streaming,                              │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/loop.py:1332 in _run_agent_loop                           │
+│                                                                              │
+│   1329 │   │   │   │                                                         │
+│        run_extra_hooks_for_ephemeral=run_extra_hooks_for_ephemeral,          │
+│   1330 │   │   │   │   log_content=request_ctx.log_content,                  │
+│   1331 │   │   │   ))                                                        │
+│ ❱ 1332 │   │   │   result = await self.runner.run(AgentRunSpec(              │
+│   1333 │   │   │   │   initial_messages=None,                                │
+│   1334 │   │   │   │   tools=effective_tools,                                │
+│   1335 │   │   │   │   runtime=runtime,                                      │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/runner.py:323 in run                                      │
+│                                                                              │
+│    320 │   │   │   │   │   messages, compaction = await                      │
+│        self.prepare_prompt(self._initial_transcript_and_compaction, spec)    │
+│    321 │   │   │   │   │   context.messages = await                          │
+│        self._run_context_snapshot(hook, messages) if has_run_hooks else []   │
+│    322 │   │   │   │   │   await hook.before_run(context)                    │
+│ ❱  323 │   │   │   │   │   result = await self._run_core(spec, hook,         │
+│        messages, compaction)                                                 │
+│    324 │   │   │   │   except Exception as exc:                              │
+│    325 │   │   │   │   │   context.messages = await                          │
+│        self._run_context_snapshot(hook, messages) if has_run_hooks else []   │
+│    326 │   │   │   │   │   context.stop_reason = "error"                     │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/runner.py:499 in _run_core                                │
+│                                                                              │
+│    496 │   │   │   request_messages = await self.prepare_prompt(             │
+│    497 │   │   │   │   request_state.compaction.request_messages, messages,  │
+│    498 │   │   │   )                                                         │
+│ ❱  499 │   │   │   response, raw_usage = await self._request_model(          │
+│    500 │   │   │   │   spec,                                                 │
+│    501 │   │   │   │   request_messages,                                     │
+│    502 │   │   │   │   hook,                                                 │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/runner.py:937 in _request_model                           │
+│                                                                              │
+│    934 │   │   transcript: list[dict[str, Any]] | None,                      │
+│    935 │   ) -> tuple[LLMResponse, LLMUsage]:                                │
+│    936 │   │   _raise_if_cancelling()                                        │
+│ ❱  937 │   │   messages, kwargs = await self._prepare_model_request(         │
+│    938 │   │   │   spec,                                                     │
+│    939 │   │   │   messages,                                                 │
+│    940 │   │   │   tools=spec.tools.get_definitions(),                       │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/runner.py:904 in _prepare_model_request                   │
+│                                                                              │
+│    901 │   │   request_state: ModelRequestState,                             │
+│    902 │   │   transcript: list[dict[str, Any]] | None,                      │
+│    903 │   ) -> tuple[list[dict[str, Any]], dict[str, Any]]:                 │
+│ ❱  904 │   │   messages, provider_context = await                            │
+│        self.context_governor.prepare_request(                                │
+│    905 │   │   │   request_state,                                            │
+│    906 │   │   │   messages,                                                 │
+│    907 │   │   │   tool_definitions=tools,                                   │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/context_governance.py:788 in prepare_request              │
+│                                                                              │
+│    785 │   │   │   │   │   state.config.session_key or "default",            │
+│        pressure[0], input_budget, pressure[1],                               │
+│    786 │   │   │   │   )                                                     │
+│    787 │   │   │   else:                                                     │
+│ ❱  788 │   │   │   │   prepared = await self._compact_request_history(       │
+│    789 │   │   │   │   │   state,                                            │
+│    790 │   │   │   │   │   state.compaction,                                 │
+│    791 │   │   │   │   │   messages,                                         │
+│                                                                              │
+│ /Users/huynhnguyentrunghieu/Documents/NanoBot/.venv/lib/python3.12/site-pack │
+│ ages/nanobot/agent/context_governance.py:651 in _compact_request_history     │
+│                                                                              │
+│    648 │   │   │   │   compaction.active_summary,                            │
+│    649 │   │   │   )                                                         │
+│    650 │   │   │   if not summary:                                           │
+│ ❱  651 │   │   │   │   raise ContextWindowExceededError(                     │
+│    652 │   │   │   │   │   session_key=state.config.session_key,             │
+│    653 │   │   │   │   │   estimated_tokens=measured,                        │
+│    654 │   │   │   │   │   input_budget=self.input_budget(state.config),     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ContextWindowExceededError: Model input exceeds the local context budget for 
+robot-setup-check: 20126/2304 via heuristic

@@ -1,0 +1,201 @@
+Reusing verified SSH forward on port 18080.
+llama.cpp: Qwen/Qwen3.5-9B verified at http://127.0.0.1:18080/v1/models
+Using config: /private/tmp/nb-r6mohyod/config.json
+
+🐈 nanobot
+I'll start by discovering the tool list for the all-calculations profile and 
+then test tools in dependency order.
+  ↳ ros2::list_functions
+Good, I have the full tool list. Let me read the saved file to get the complete 
+allowlist:
+  ↳ read_session("robot-console-88FBE44A-F173-40EB-BF5C-4…")
+Let me check the workspace for the saved file:
+  ↳ read_session("LtXviLz5WpNJys78UHsv9NNMwMVd7nf7")
+The output was saved to a file. Let me extract the allowlist from the preview. 
+Based on the output, the allowlist contains these tools:
+
+**Allowlist (49 tools):**
+1. cache_grasp_plan
+2. calculate_active_grasps
+3. calculate_grasps
+4. capture_observation
+5. check_target_view
+6. ensure_scene_memory
+7. find_active_placements
+8. find_placements
+9. get_active_target
+10. get_arm_state
+11. get_cached_grasp
+12. get_execution_state
+13. get_floor_slots
+14. get_manipulation_memory
+15. get_observe_view
+16. get_prepared_grasp_lift
+17. get_prepared_pick_place
+18. get_spatial_context
+19. get_spatial_map
+20. get_step_context
+21. get_workflow_example
+22. get_world_state
+23. ground_object
+24. list_functions
+25. perceive_scene
+26. pin_grasp_observation
+27. pin_placement_observation
+28. plan_camera_retreat
+29. plan_final_approach
+30. plan_lift
+31. plan_motion
+32. plan_next_best_view
+33. plan_placement
+34. prepare_grasp_input
+35. prepare_grasp_lift
+36. prepare_held_scene
+37. prepare_pick_place
+38. refine_grasp
+39. refresh_active_target
+40. require_target_view
+41. resolve_target
+42. run_step
+43. run_steps
+44. search_placements
+45. segment_object
+46. select_grasp
+47. solve_pose
+48. store_segmented_target
+49. submit_steps
+50. update_object
+51. validate_placements
+52. validate_prepared_grasp_lift
+53. validate_prepared_pick_place
+54. verify_presence
+
+**Disabled tools (12):**
+- commit_floor_slots, execute_placement_descent, execute_placement_retreat, 
+execute_placement_transfer, execute_plan, execute_withdrawal, gripper_close, 
+gripper_open, move_to, release_placed_object
+
+Now let me start testing tools in dependency order. I'll begin with the 
+foundational tools that don't require prerequisites:
+
+## Batch 1: Foundational Tools (no prerequisites)
+  ↳ ros2::get_workflow_example("grasp")
+Good! The workflow example is available. Now let me test the foundational tools.
+Starting with **get_arm_state** (no prerequisites):
+  ↳ ros2::get_arm_state
+**PASS** - get_arm_state returns success=true with ARM_STATE_READY status, 
+joints, TCP pose, and gripper width.
+
+Now test **get_spatial_context** (no prerequisites):
+  ↳ ros2::get_spatial_context
+**PASS** - get_spatial_context returns success=true with SPATIAL_CONTEXT_READY 
+status, map data, TCP pose, object names, positions, and cell IDs.
+
+Now test **get_manipulation_memory** (no prerequisites):
+  ↳ ros2::get_manipulation_memory
+**PASS** - get_manipulation_memory returns success=true with 
+MANIPULATION_MEMORY_READY status, state_json with revision, directory, 
+active_objects, active_destination, and pipelines.
+
+Now test **get_spatial_map** (no prerequisites):
+  ↳ ros2::get_spatial_map
+**PASS** - get_spatial_map returns success=true with SPATIAL_MAP_SNAPSHOT 
+status, map data with header, revision, cell_size_m, minimum/maximum bounds, 
+dimensions, cells, and camera pose information.
+
+Now test **get_floor_slots** (no prerequisites):
+  ↳ ros2::get_floor_slots
+**PASS** - get_floor_slots returns success=true with FLOOR_SLOT_MEMORY_READY 
+status and empty state_json (no reservations).
+
+Now test **get_world_state** (no prerequisites):
+  ↳ ros2::get_world_state
+**PASS** - get_world_state returns success=true with state_json containing 
+api_pipeline, tcp_pose, and task_queue.
+
+Now let me test **get_step_context** (requires context_id). I'll use an empty 
+context_id for a new task:
+  ↳ ros2::get_step_context
+**BLOCKED** - get_step_context requires a valid context_id from a prior capture.
+This is expected behavior - it's not a failure but a prerequisite requirement.
+
+Now let me test **get_execution_state** (requires object_name):
+  ↳ ros2::get_execution_state("cup")
+**BLOCKED** - get_execution_state requires prior prepare_grasp_lift. This is 
+expected - no preparation has been done yet.
+
+Now let me test **get_prepared_grasp_lift** (requires context_id and 
+object_name):
+  ↳ ros2::get_prepared_grasp_lift("test_step_001")
+**BLOCKED** - get_prepared_grasp_lift requires prior prepare_grasp_lift. This is
+expected behavior.
+
+Now let me test **get_prepared_pick_place** (requires context_id and 
+object_name):
+  ↳ ros2::get_prepared_pick_place("test_step_002")
+**BLOCKED** - get_prepared_pick_place requires prior prepare_grasp_lift. This is
+expected behavior.
+
+Now let me test **get_cached_grasp** (requires context_id and object_name):
+  ↳ ros2::get_cached_grasp("test_step_003")
+**BLOCKED** - get_cached_grasp requires prior cache_grasp_plan. This is expected
+behavior.
+
+Now let me test **get_active_target** (requires context_id and name):
+  ↳ ros2::get_active_target("test_step_004")
+## Batch 1 Results (Foundational Tools - No Prerequisites)
+
+| Tool | Status | Evidence |
+|------|--------|----------|
+| get_workflow_example | PASS | Returns grasp workflow with 5 steps, 
+callable_in_current_mode=true |
+| get_arm_state | PASS | success=true, ARM_STATE_READY, joints, TCP pose, 
+gripper width |
+| get_spatial_context | PASS | success=true, SPATIAL_CONTEXT_READY, map, TCP 
+pose, objects, cell IDs |
+| get_manipulation_memory | PASS | success=true, MANIPULATION_MEMORY_READY, 
+state_json with revision, objects, pipelines |
+| get_spatial_map | PASS | success=true, SPATIAL_MAP_SNAPSHOT, map with header, 
+cells, camera pose |
+| get_floor_slots | PASS | success=true, FLOOR_SLOT_MEMORY_READY, empty 
+state_json |
+| get_world_state | PASS | success=true, state_json with api_pipeline, tcp_pose,
+task_queue |
+| get_step_context | BLOCKED | MCP_CONTEXT_OWNER_REQUIRED - needs context_id 
+from capture_observation |
+| get_execution_state | BLOCKED | NO_PREPARED_GRASP_LIFT - needs prior 
+prepare_grasp_lift |
+| get_prepared_grasp_lift | BLOCKED | NO_PREPARED_GRASP_LIFT - needs prior 
+prepare_grasp_lift |
+| get_prepared_pick_place | BLOCKED | NO_PREPARED_GRASP_LIFT - needs prior 
+prepare_grasp_lift |
+| get_cached_grasp | BLOCKED | NO_FRESH_CACHED_GRASP - needs prior 
+cache_grasp_plan |
+| get_active_target | BLOCKED | ACTIVE_TARGET_REQUIRED - needs prior 
+store_segmented_target/resolve_target |
+
+**Summary:**
+- **7 PASS** - Foundational inspection tools work correctly
+- **6 BLOCKED** - All require prior preparation steps (expected behavior)
+
+**Remaining Tools to Test (42 tools):**
+- Perception: capture_observation, verify_presence, ground_object, 
+segment_object, perceive_scene
+- Planning: plan_next_best_view, plan_lift, plan_placement, plan_motion, 
+plan_final_approach, plan_camera_retreat
+- Grasp/Placement: calculate_grasps, calculate_active_grasps, select_grasp, 
+prepare_grasp_input, prepare_pick_place, find_placements, 
+find_active_placements, search_placements, validate_placements
+- Cache/Store: cache_grasp_plan, pin_grasp_observation, 
+pin_placement_observation, store_segmented_target, update_object
+- Validation: validate_prepared_grasp_lift, validate_prepared_pick_place, 
+require_target_view, check_target_view
+- Refresh: refresh_active_target, ensure_scene_memory
+- Solve: solve_pose, refine_grasp
+- Execution: run_step, run_steps, submit_steps
+
+**Next Step:** Continue with Batch 2 - test perception tools 
+(capture_observation, verify_presence, ground_object, segment_object, 
+perceive_scene) which are prerequisites for planning tools.
+
+Nanobot exited with status 0

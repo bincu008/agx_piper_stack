@@ -793,6 +793,21 @@ public:
         }
         response->status = response->success ? "LAYOUT_OBSERVATION_PINNED" :
           "LAYOUT_SYNCHRONIZED_OBSERVATION_NOT_AVAILABLE";
+        if (!response->success) {
+          std::ostringstream detail;
+          detail << ";requested_stamp_ns=" << stamp.nanoseconds()
+                 << ";cloud_present=" << static_cast<bool>(cloud)
+                 << ";image_present=" << static_cast<bool>(image)
+                 << ";transform_present=" << static_cast<bool>(transform)
+                 << ";cached_clouds=" << registered_cloud_cache_.size()
+                 << ";cached_images=" << observation_image_cache_.size()
+                 << ";cached_transforms=" << observation_camera_transform_cache_.size();
+          if (latest_registered_cloud_) {
+            detail << ";latest_cloud_stamp_ns=" <<
+              rclcpp::Time(latest_registered_cloud_->header.stamp).nanoseconds();
+          }
+          response->status += detail.str();
+        }
       });
 
     // Subscribe directly to 3D Octree Occupied Voxels from Active Vision

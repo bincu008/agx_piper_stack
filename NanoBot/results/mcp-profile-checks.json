@@ -1,0 +1,58 @@
+[
+  {
+    "profile": "perception",
+    "tools": 11,
+    "estimated_input_tokens": 8513,
+    "estimator": "tiktoken",
+    "fits_initial_input_budget": true
+  },
+  {
+    "profile": "view",
+    "tools": 9,
+    "estimated_input_tokens": 8013,
+    "estimator": "tiktoken",
+    "fits_initial_input_budget": true
+  },
+  {
+    "profile": "memory",
+    "tools": 11,
+    "estimated_input_tokens": 8897,
+    "estimator": "tiktoken",
+    "fits_initial_input_budget": true
+  },
+  {
+    "profile": "grasp",
+    "tools": 17,
+    "estimated_input_tokens": 11851,
+    "estimator": "tiktoken",
+    "fits_initial_input_budget": true
+  },
+  {
+    "profile": "placement",
+    "tools": 21,
+    "estimated_input_tokens": 13796,
+    "estimator": "tiktoken",
+    "fits_initial_input_budget": true
+  },
+  {
+    "profile": "diagnostics",
+    "tools": 14,
+    "estimated_input_tokens": 11411,
+    "estimator": "tiktoken",
+    "fits_initial_input_budget": true
+  },
+  {
+    "profile": "queue",
+    "tools": 7,
+    "estimated_input_tokens": 7372,
+    "estimator": "tiktoken",
+    "fits_initial_input_budget": true
+  },
+  {
+    "profile": "all-calculations",
+    "tools": 53,
+    "estimated_input_tokens": 28956,
+    "estimator": "tiktoken",
+    "fits_initial_input_budget": true
+  }
+]

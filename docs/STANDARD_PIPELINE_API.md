@@ -528,7 +528,7 @@ It returns success only after approach, lift and pre-grasp paths are all ready.
 The second is `--execute-cached-grasp-lift` for the same object. It contains only
 `get_prepared_grasp_lift` and `execute_prepared_grasp_lift`; no motion-time planning
 calls occur. Failed preparation clears old readiness. Readiness lasts at most
-60 seconds and is tied to the exact cache version, start joints/TCP and revision.
+15 minutes and is tied to the exact cache version, start joints/TCP and revision.
 Live hardware faults still stop execution and mark unknown state; completing
 planning does not guarantee actuator or contact feedback success.
 
@@ -602,7 +602,7 @@ remaining tasks and predecessor bindings stay in the master store. Action
 success means the requested prefix succeeded, **not** that physical tasks ran.
 A misspelled boundary is rejected before execution. Resume the same context
 using the action after reviewing feedback and enabling physical execution;
-source/plan freshness is still required (60 seconds).
+source/plan freshness is still required (15 minutes).
 
 For a full queued mock trial:
 
@@ -619,7 +619,7 @@ replay, not actuator tracking: it cannot execute or confirm these physical tasks
 
 ### Prepared-session failure recovery (2026-10-13)
 
-The 60-second prepared/source freshness limit applies **before the first physical
+The 15-minute prepared/source freshness limit applies **before the first physical
 stage starts**. Once accepted, execution retains an immutable source and uses
 `prepared_execution_timeout_sec` (default 300 seconds) at stage boundaries.
 Observation/cache age cannot expire an otherwise valid active session between
@@ -686,7 +686,7 @@ means calculation completed and pending stages were retained, not executed.
 `--check-cached-pick-place` checks readiness without actuation.
 `--execute-cached-pick-place` explicitly submits the execution recipe for a
 reviewed fresh plan and requires the physical execution gate. Preparation has
-the existing 60-second pre-execution/source-cache lifetime; restarting or
+the existing 15-minute pre-execution/source-cache lifetime; restarting or
 changing source geometry invalidates readiness. Active execution uses the
 existing execution-session timeout. Contact/arrival and failure/unknown-state
 checks remain automatic. A mock plan does not authorize live hardware movement.

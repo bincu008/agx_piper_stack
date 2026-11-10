@@ -1,0 +1,18 @@
+{
+  "text": {
+    "content": "2",
+    "finish_reason": "stop"
+  },
+  "tool_roundtrip": {
+    "name": "synthetic_add",
+    "arguments": {
+      "a": 17,
+      "b": 25
+    },
+    "local_result": 42,
+    "final": "RESULT=42",
+    "passed": true
+  },
+  "seconds": 14.78,
+  "robot_commands_executed": 0
+}

@@ -1,0 +1,6 @@
+Using config: 
+/Users/huynhnguyentrunghieu/Documents/NanoBot/.private/qwen-verification-config.
+json
+
+🐈 nanobot
+READY                                                                           

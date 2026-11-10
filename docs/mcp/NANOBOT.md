@@ -1,128 +1,210 @@
-# Current deployment note
+Task responses (MCP 3.6.2): read validation.outcome, checks_passed and
+checks_bypassed; PASSED_WITH_BYPASSES certifies only reported checks that ran.
+execution_allowed stays false. Historical results do not confirm scene freshness
+or physical readiness. Terminal current_step is null; use last_successful_step
+and failed_step. describe_workflow returns a derived step_count and labelled
+object/destination steps alongside its existing route. Refresh output-schema caches.
 
-Read ros-pipeline://preparation before using this server. Current mode is
-preparation_only: 53 non-actuating state/perception/calculation tools, mandatory
-live-input guard and a false master physical gate. Full physical instructions in
-this reference apply only to a separately enabled execution mode. Do NOT call
-motion/gripper tools in this session. Current arm feedback is stale; complete
-pick/place preparation is blocked despite successful grasp and slot calculations.
-Use the actual tool allowlist and per-tool verification report. Never present a
-failed calculation, stale input or missing memory as successful manipulation.
+Camera-view schema update (MCP 3.6.1): refresh tools/list, task-catalog and the
+Mac translated/profile schema caches. plan_camera_view now uses a flat schema;
+mode requirements are described per field and enforced server-side. Read
+result.status/achieved_fraction: NO_REACHABLE_CHANGE with zero fraction is a
+finished calculation with no changed view, not movement success.
 
-# Nanobot operating instructions — MCP 3.2.0
+## Optional task profile — MCP 3.6.0
 
-Read these server resources before composing a manipulation task:
+With `--preparation-only --task-tools`, prefer the eight task tools in
+[TASK_INTERFACE.md](TASK_INTERFACE.md). Choose intent with `observe_scene` or
+`prepare_manipulation`; the server owns capture, pinning, bindings and sequencing.
+Use one fresh request_id per new operation, reuse it only with identical inputs,
+and inspect RUNNING/UNKNOWN tasks with get_task_status. Never manufacture success
+from queue admission. These tools calculate only; they cannot manipulate hardware.
+The existing 54-tool diagnostic surface remains unchanged and separately selectable.
+Exact native schemas: [TASK_TOOLS.json](TASK_TOOLS.json).
 
-- ros-pipeline://catalog — actual tool input/output schemas and ROS metadata.
-- ros-pipeline://agent-pipeline — complete ordered pipeline and result bindings.
-- ros-pipeline://workflow — execution admission, outcomes and recovery.
-- ros-pipeline://spatial-map — cube layout, scan times and camera orientation.
+# Nanobot quickstart — MCP 3.5.1
 
-Use resources/list and resources/read; no Ubuntu filesystem access is needed.
-Refresh discovery on reconnect/version changes. list_functions reports the actual
-mode/allowlist/disabled_tools. Default agent_pipeline exposes 62 tools; read-only
-startup disables physical dispatch and omits preparation mutation tools. A tool
-being discoverable does not establish physical readiness. The current deployment is domain-0 LIVE PERCEPTION ONLY, not the previous
-domain-89 replay. Read ros-pipeline://live-perception and list_functions.mode.
-This mode exposes 11 tools, with physical execution false; do not attempt the
-manipulation sequence below in this session. The full 62-tool mode remains a
-separate configuration.
+For a new grasp task, **call get_workflow_example first**. The helper is read-only:
+it returns proposed calls with exact fields and fresh IDs; it executes nothing.
+This page is available as `ros-pipeline://nanobot`. Read it before capturing.
 
-## Compose the same pipeline for every object
+## Scene-perception example
 
-1. Read robot state and spatial context. Capture a synchronized observation.
-2. Call ensure_scene_memory with requested object_names, active_object_name and
-   destination_name, binding that capture. Populate missing locations; inspect
-   observed/target_statuses, not only the top-level success flag.
-3. Call check_target_view. If LOOK_REQUIRED, plan_next_best_view for the object,
-   then an explicitly authorized guarded empty-hand move_to. Confirm completion,
-   capture again and refresh the source object. No VLM is required for visibility.
-4. Pin the observation. Ground/segment/store the source, or use the combined
-   refresh_active_target route. Reuse valid destination memory/grid; otherwise
-   ground/segment/store the destination. Never mix old masks with a new image.
-5. prepare_grasp_input → calculate_grasps/calculate_active_grasps → update_object
-   → select_grasp → cache_grasp_plan (whole candidate pool).
-6. find_placements/find_active_placements → plan_next_best_view for the prepared
-   look stage → prepare_pick_place → validate_prepared_pick_place.
-7. Read get_execution_state and review the complete plan before physical motion.
-8. When authorized and the physical gate is true: execute_plan(look if listed,
-   pregrasp) → gripper_open → execute_plan(approach) → gripper_close.
-9. Require successful contact_confirmed, then execute_plan(lift) →
-   execute_placement_transfer → execute_placement_descent.
-10. release_placed_object; require gripper_released → commit_floor_slots with
-    exact frozen selected_pose, reset=false, validate_only=false →
-    execute_withdrawal → execute_placement_retreat.
-11. Confirm COMPLETE, then start the next object. Keep destination geometry,
-    placed clouds and occupied tray slots; do not reset them between objects.
+For batch scene understanding call `get_workflow_example` with
+`{"workflow":"perceive_scene","object_name":"beige cup","destination_name":"tray"}`.
+It returns two proposed calls, without execution: capture with `context_id:""`,
+then `perceive_scene`. Copy capture's top-level `context_id` (native JSON-RPC
+`result.structuredContent.context_id`) into the second call. Bind its image,
+observation_cloud and camera_transform from the SAME capture step's `image`,
+`cloud` and `camera_transform` outputs. The helper generates fresh IDs for new
+operations; use old IDs only to retrieve identical receipts, never to replay an
+unknown action. No external instruction file is needed to read these schemas.
 
-The agent-pipeline resource supplies exact arguments and predecessor bindings.
-Choose one alternative where a slash is shown, not both. Follow the master's
-first waiting_stages entry; do not infer readiness from this explanatory list.
-The prepared look stage is not a substitute for acquiring a useful view before
-source perception/calculation when the current camera cannot see the object.
+`SCENE_INFERENCE_UNKNOWN` means the VLM reply could not establish a trustworthy
+scene result; it does not mean objects are absent or prerequisites were missing.
+The parser accepts one complete keyed object or an exact key/value record array,
+with optional single JSON fence. Duplicate/missing/extra keys, conflicting or
+multiple documents and invalid value types fail before scene-memory updates.
 
-## Queue and result rules
+## Capture retention: check the evidence
 
-Preparation calls take context_id, step_id, request_id, arguments and bindings.
-Use one gateway-owned context for related calculations. Keep images, masks,
-clouds, candidate arrays and source headers in Ubuntu; pass same-context typed
-bindings. Never invent CDR, poses, observation headers or source revisions.
+Shared `capture_observation` now attempts to retain its exact RGB/cloud/manual-FK*X
+bundle in VAMP **before returning**. MCP reports
+`observation_retention.grasp_retained`: true=confirmed, false=failed,
+null=not reported by that backend. Capture success alone means image capture,
+not grasp readiness. The explicit pin in examples is an idempotent confirmation;
+keep it immediately after capture and proceed only after it succeeds.
 
-run_step executes one allowed calculation. submit_steps only queues; run_steps
-start requires the exact returned queue revision and only acknowledges async
-start. Poll the same context/job ID until FINAL_ACTION_RESULT, inspecting every
-step and action status. Cancellation is between steps, not emergency stop.
-Physical functions are forbidden in generic queues; invoke guarded tools directly.
+Pin operations require a typed `observation_header <- capture.cloud.header`
+binding. The server rejects missing bindings before planner dispatch. Grasp and
+placement pins are independent, each referring to the same capture when needed.
+The master retries only known missing-frame/pending pin replies at bounded
+50/100/200/400 ms delays, without recapturing or changing the source timestamp.
+An unresolved pin reports requested timestamp and per-component presence/counts.
+Do not label this eviction, model delay, or a robot planning failure without evidence.
+Do not mark downstream tools failed when their prerequisites were unavailable.
 
-Physical calls use exact execution_ref plus a unique durable request_id (move_to
-uses target_joints/request_id, no execution_ref). Withdrawal/retreat use destination
-name with the original reference/revision. Copy commit selected_pose from the
-admitted session; never shift or replace it. A command ACK is not grasp contact.
+## First call
 
-Same-ID duplicates retrieve historical receipts without redispatch; they are not
-current readiness. Never change arguments under an existing ID. Unknown outcomes
-block continuation across reconnect/restart; no remote reset or automatic physical
-retry/alternative is supported. One physical grasp attempt per prepared task is
-supported, within the ceiling of three. Never erase/replace the ledger to recover.
-Local cancellation, emergency and driver watchdog paths remain independent.
+Call `get_workflow_example` with:
 
-## Use spatial knowledge before choosing a view
+```json
+{"workflow":"grasp","object_name":"cup","affordance_type":"AUTO"}
+```
 
-get_spatial_context combines the shared map, TCP pose and remembered object
-coordinates/cube IDs. The workspace has 16 cubes of side .30m in base_link:
-X forward [0,.6), Y left [-.6,.6), Z up [0,.6). IDs are x0..1_y0..3_z0..1;
-Y0 is rightmost, Y3 leftmost, Z0 lower and Z1 upper. Read returned bounds rather
-than recreating another grid. The box is not a guarantee of IK reachability.
+Use `grasp_cache` to include caching/checking, or `pick_place` to calculate the
+complete cup-to-destination plan. These examples contain **no physical dispatch**.
+Optional `context_id` reuses an existing gateway-owned context. Optional
+`destination_name` selects the destination for pick/place.
 
-last_scanned=zero means never observed. Compare timestamps using the robot's ROS
-clock; observed_cell_ids are from the returned map observation, not live gaze.
-Empty cells before a depth hit are included; occluded/invalid-depth areas are not.
-A timestamp represents sampled partial coverage, not proof a whole cube is empty.
-The 30cm workspace grid is separate from the tray's fine floor-slot reservations.
+Follow returned `steps` in order:
 
-Camera pose differs from TCP pose. camera_forward and camera_up are base_link
-vectors. Positive forward-vector X means looking forward, positive Y left,
-negative Y right, negative Z down. Several components can be present together.
-Use the camera's FOV-derived observed_cell_ids for coverage, not one center ray.
-For a stored object, prefer its exact position; for exploration/rescan, call
-plan_next_best_view with target_cell_id. Do not combine cell/name/explicit targets.
-This only plans; an authorized guarded move_to is a separate physical call.
+1. Call `step.tool` with exactly `step.input`. Do not invent or rename fields.
+2. If the first capture uses empty context_id, copy its returned context_id over
+   `CONTEXT_ID_FROM_CAPTURE` in every later input. Use the generated step/request
+   IDs and source_step_id values unchanged.
+3. Pin **immediately** after capture. Do not perform catalog discovery, resource
+   reading or long reasoning between capture and pin.
+4. Require success=true before proceeding. Stop and preserve the full failure
+   result otherwise. Unknown outcomes never permit automatic replay or reset.
 
-Relative adjustment uses get_observe_view in CURRENT OPTICAL camera axes:
-+X right, +Y down, +Z forward; roll/pitch/yaw radians. Up/right 2cm is
-{dx:.02,dy:-.02,dz:0,roll:0,pitch:0,yaw:0}. Send target_joints to move_to only
-when success,moved_target,endpoint_safe are true. The master checks the full path.
-Do not send unchanged fallback joints or bypass unknown/empty-hand checks.
+The `grasp` example is exactly:
 
+**capture_observation -> pin_grasp_observation -> resolve_target ->
+calculate_active_grasps -> select_grasp**
 
-## Visual evidence versus memory
+`resolve_target` uses the full captured image/cloud/transform triplet. Active
+calculation uses the exact stored target_description and empty bindings, preparing
+its own grasp inputs internally. The pin binds observation_header from the
+capture's cloud.header, never from image. Same context does not imply same frame.
 
-Missing entries in get_spatial_context/get_manipulation_memory mean UNKNOWN, not
-visually absent. Empty cube IDs mean outside bounds. For current visual evidence,
-capture and bind that exact image into verify_presence, then ground/segment on
-the same observation. Inference errors/timeouts/uncertain text are UNKNOWN, never
-ABSENT. A successful image-bound PRESENT can coexist with an empty memory.
-Inspect list_functions.input_provenance; live mode refuses capture/inference for
-replay, duplicate or unverified raw publishers. Do not infer source type from the
-word 'perception' or from timestamps alone. Follow the live-perception resource's
-minimal tool allowlist and 180s client timeout guidance.
+## Choose the requested task only
+
+- **Grasp preview:** use the `grasp` example; stop after `select_grasp`.
+- **Pick and lift:** use `grasp_cache`, then `prepare_grasp_lift` and
+  `validate_prepared_grasp_lift`. No destination or placement search is required.
+- **Pick and place:** use `pick_place`; it includes destination/slot calculation,
+  `prepare_pick_place` and `validate_prepared_pick_place`.
+
+For either preparation route, bind `cache_grasp_plan.candidates` from the full
+`calculate_active_grasps.candidates` response, not only `select_grasp.candidate`.
+Selection is provisional: preparation tries up to eight cached candidates, with
+30 seconds checked between attempts, and chooses a complete successful plan.
+Placement rejection can advance to the next cached candidate during calculation.
+No automatic alternative is permitted after physical failure/unknown outcome.
+A cached grasp is not a prepared motion. Never claim placement was checked by
+`prepare_grasp_lift`, or movement occurred from a preparation success.
+
+## Keep the model context small
+
+For routine status use `list_functions` with `{"summary_only":true}`. Its default
+full response is a large developer reference and is not needed during a normal
+workflow. Keep full schemas/metadata in the adapter, not repeatedly in the model's
+conversation. Tool input definitions need only name, short description and
+inputSchema; retain outputSchema/_meta for validation and on-demand reference.
+
+For a grasp-only task, Nanobot should expose this small set to Qwen:
+
+```text
+get_workflow_example
+list_functions
+get_world_state
+get_step_context
+capture_observation
+pin_grasp_observation
+resolve_target
+calculate_active_grasps
+select_grasp
+```
+
+This is a suggested **client-side context filter**, not a server safety boundary.
+The server remains authoritative for availability, provenance, state and dispatch.
+Expand the client tool set only when the chosen workflow requires it. Preserve
+any existing connector namespace mapping, e.g. ros2::get_workflow_example; binding
+field names and source_step_id values are not namespaced.
+
+## Error meanings
+
+| Error | Meaning / response |
+| --- | --- |
+| MCP_CONTEXT_OWNER_REQUIRED | Do not invent context IDs. New capture uses empty context_id; later calls use its returned ID. |
+| REQUEST_ID_REUSED / STEP_ID_PAYLOAD_CONFLICT | A changed operation needs a new ID. For an uncertain operation retain its original ID and inspect the receipt, not a fresh replay. |
+| LAYOUT_SYNCHRONIZED_OBSERVATION_NOT_AVAILABLE | The exact RGB-D triplet cannot be pinned. LAYOUT is a legacy API name, not a special scene requirement. Stop; do not guess another field. |
+| OBSERVATION_NOT_IN_CACHE | The requested source is no longer retained. Extra seed bindings cannot restore it. A new explicit capture/pin/perception attempt needs safe known state and new IDs. |
+| ACTIVE_OBJECT_REQUIRED | Check the exact target_description against the stored name; mask/header bindings do not select the object. |
+| NO_FRESH_CACHED_GRASP | Preparation/cache may be missing, failed, expired or invalidated. Read observed producer results and proposed recovery_steps. A getter creates no cache. |
+| STATE_UNKNOWN / unresolved timeout | Stop. Preserve receipt/ledger and require local reconciliation; do not reprepare to bypass the barrier. |
+
+If an immediate correct pin fails, report its capture ID/header, exact binding and
+status. This may be ROS delivery/synchronization, not an agent-argument error.
+
+## Limits and full reference
+
+A valid selected grasp is not a validated lift/placement or permission for motion.
+Preparation-only mode never permits arm/gripper execution. Read actual server
+availability rather than old deployment notes. Template steps marked
+callable_in_current_mode=false must not be dispatched.
+
+For uncommon calls read `ros-pipeline://tool-dependencies`,
+`ros-pipeline://tool-dependency-graph`, `ros-pipeline://catalog`,
+`ros-pipeline://agent-pipeline` and `ros-pipeline://workflow` on demand. Required,
+recommended, internal and alternative dependencies are different. Images/clouds
+stay on Ubuntu; preserve source headers, revisions, TLS/authentication, durable
+IDs, local cancellation/watchdog behavior and unknown-state barriers.
+
+## Grasp cache lifetime
+
+Grasp caches and unstarted prepared plans default to 15 minutes (900 seconds).
+Use `ttl_seconds: 900` or omit/zero that field for the default; shorter explicit
+values are honored. Preparation and validation do not consume the grasp. Once
+prepared execution is admitted, the public source cache is removed; the frozen
+execution session retains its source privately. Never retry an unknown action.
+The separate active-execution watchdog and all live-state checks still apply.
+
+## Mac profile and discovery refresh
+
+Add native tool name `get_workflow_example` to the ROS MCP server's
+`all-calculations` allowlist. If that profile stores connector-qualified names,
+the existing `ros2::` namespace gives `ros2::get_workflow_example`. This is a
+local read-only MCP helper, not a ROS catalog function; do not require a
+`/pipeline/get_workflow_example` endpoint to discover it.
+
+Reconnect and refresh initialize/server metadata, native `tools/list` (including
+input/output schemas, annotations and descriptions), the profile-filtered and
+model-facing translated tool snapshots, `list_functions` snapshots, and cached
+`ros-pipeline://nanobot` instructions. Do not reset execution receipts/ledger or
+existing task IDs. `ros_catalog` is reference documentation, `mcp_tools` mirrors
+native discovery, `allowlist` names enabled tools, and `disabled_tools` names
+blocked APIs. Native discovery is authoritative for MCP tool existence.
+
+## Recorded replay mode
+
+The operator may start MCP with --preparation-only --require-mock-inputs on an
+isolated nonzero ROS domain and a dedicated mock ledger. It verifies one
+/mock_hardware publisher for every required camera/feedback topic; mixed,
+live-only, missing and domain-0 sources are rejected. All results carry
+SIMULATED=true, input_mode=mock_replay and input_provenance. They are recorded
+perception/planning, not live observations, physics or physical execution.
+The normal --require-live-inputs guard remains unchanged. On a source-mode
+switch refresh discovery and start a fresh context; do not reuse live task IDs
+or reset the live execution ledger. No motion/gripper dispatch is exposed.

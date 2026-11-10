@@ -274,3 +274,54 @@ def test_queue_start_rechecks_catalog_after_local_queue_injection(tmp_path):
         assert result['status'] == 'UNGUARDED_PHYSICAL_QUEUE_FORBIDDEN'
         assert transport.calls == ['capture_observation']
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('name', ['pin_grasp_observation', 'pin_placement_observation'])
+def test_pin_requires_typed_header_binding_before_backend_dispatch(tmp_path, name):
+    async def run():
+        gateway, transport, _ = make_gateway(tmp_path)
+        result = await gateway.call(name, query('missing_header'))
+        assert not result['success']
+        assert 'MISSING_OBSERVATION_HEADER_BINDING' in result['status']
+        assert 'cloud.header' in result['status']
+        assert not transport.calls
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('marker,expected', [
+    (';GRASP_OBSERVATION_PINNED', True),
+    (';GRASP_RETENTION_FAILED:SIMULATED', False),
+    ('', None),
+])
+def test_capture_retention_is_evidence_not_inferred_from_success(tmp_path, marker, expected):
+    async def run():
+        gateway, transport, _ = make_gateway(tmp_path)
+        backend = transport.store._call
+        # Replace only the fixture backend, not any transport or physical route.
+
+        def capture(name, request):
+            result = transport.backend(name, request)
+            result.status += marker
+            return result
+        transport.store._call = capture
+        result = await gateway.call('capture_observation', query('retention'))
+        assert result['success'], result
+        assert result['observation_retention']['grasp_retained'] is expected
+        assert result['observation_retention']['binding']['source_step_id'] == 'retention'
+        transport.store._call = backend
+    asyncio.run(run())
+
+
+def test_partial_scene_observation_rejected_before_backend_with_missing_field(tmp_path):
+    async def run():
+        gateway, transport, _ = make_gateway(tmp_path)
+        cap = await gateway.call('capture_observation', query('capture'))
+        request = query('scene', cap['context_id'], object_names=['cup'], destination_name='tray')
+        request['bindings'] = [
+            {'target_field': 'image', 'source_step_id': 'capture', 'source_field': 'image'}]
+        result = await gateway.call('perceive_scene', request)
+        assert not result['success'] and 'missing bindings=' in result['status']
+        assert 'camera_transform' in result['status']
+        assert 'SAME context' in result['status']
+        assert transport.calls == ['capture_observation']
+    asyncio.run(run())

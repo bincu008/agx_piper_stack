@@ -14,6 +14,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 
 from task_pipeline.recipes import affordance_from_description
 
+from .grasp_cache import grasp_cache_ttl
 from .grasp_stages import GraspStages
 from .held_motion import HeldMotion
 from .next_best_view import NextBestView
@@ -30,6 +31,7 @@ class ExecutionAPI:
         self._lock = threading.Lock()
         self._cache_lock = threading.Lock()
         self._cache = {}
+        self._current_pool = None
         self.group = ReentrantCallbackGroup()
         self.node._held_object = None
         self.grasp_stages = GraspStages(self)
@@ -42,6 +44,7 @@ class ExecutionAPI:
                 (MoveTo, 'move_to', self._move),
                 (ExecuteTrajectory, 'execute_trajectory', self._trajectory),
                 (GripperCommand, 'set_gripper', self._gripper),
+                (GripperCommand, 'open_empty_hand', self._open_empty_hand),
                 (SelectGrasp, 'select_grasp', self._select),
                 (CacheGraspPlan, 'cache_grasp_plan', self._save),
                 (GetCachedGrasp, 'get_cached_grasp', self._cached),
@@ -51,7 +54,7 @@ class ExecutionAPI:
     def _prepare(self, request, response):
         """Validate observation masks and calculate seed coordinates via /master/prepare_grasp_input."""
         image, mask = request.image, request.mask
-        box = list(request.pixel_box)
+        box = [int(value) for value in request.pixel_box]
         if (image.width != mask.width or image.height != mask.height or
                 mask.header.stamp != image.header.stamp or
                 request.observation_header.stamp != image.header.stamp):
@@ -61,8 +64,8 @@ class ExecutionAPI:
                 0 <= box[1] < box[3] <= image.height):
             response.status = 'INVALID_PIXEL_BOX'
             return response
-        response.seed_u = (box[0] + box[2]) // 2
-        response.seed_v = (box[1] + box[3]) // 2
+        response.seed_u = int((box[0] + box[2]) // 2)
+        response.seed_v = int((box[1] + box[3]) // 2)
         response.image_width, response.image_height = image.width, image.height
         response.affordance_type = affordance_from_description(request.target_description)
         response.success = True
@@ -175,7 +178,11 @@ class ExecutionAPI:
                 self._lock.release()
         return response
 
-    def _gripper(self, request, response):
+    def _open_empty_hand(self, request, response):
+        """Open only, using the existing gripper executor and independent physical gate."""
+        return self._gripper(request, response, opening_only=True)
+
+    def _gripper(self, request, response, *, opening_only=False):
         """Command Piper gripper opening width and force via /master/set_gripper."""
         admitted = self._lock.acquire(blocking=False)
         claimed_state = False
@@ -192,6 +199,17 @@ class ExecutionAPI:
                 raise RuntimeError('CLOSE_REQUIRES_VALIDATED_GRASP_STAGE')
             if self.node._held_object is not None:
                 raise RuntimeError('RELEASE_REQUIRES_VALIDATED_PLACEMENT')
+            if opening_only:
+                if not request.wait_for_opening:
+                    raise RuntimeError('OPEN_REQUIRES_POST_COMMAND_FEEDBACK')
+                joints = getattr(self.node, 'current_joint_states', None)
+                status = getattr(self.node, 'current_gripper_status', None)
+                if joints is None or status is None:
+                    raise RuntimeError('OPEN_REQUIRES_CURRENT_FEEDBACK')
+                self.held_motion.feedback(joints.position[:6], contact=False)
+                if (not math.isfinite(status.width) or not 0. <= status.width <= .10 or
+                        request.width_m < status.width):
+                    raise RuntimeError('EMPTY_HAND_OPEN_CANNOT_NARROW_GRIPPER')
             self.node.state = 'BUSY'
             claimed_state = True
             if not self.node._command_gripper(request.width_m, request.force_n):
@@ -265,31 +283,52 @@ class ExecutionAPI:
                     request.semantic_mask.width != cloud.width or
                     request.semantic_mask.height != cloud.height):
                 raise ValueError('SEMANTIC_MASK_OBSERVATION_MISMATCH')
+            src_stamp = request.observation_header.stamp
+            src_sec = getattr(src_stamp, 'sec', 0)
+            src_nano = getattr(src_stamp, 'nanosec', 0)
+            # ROS stamps and monotonic deadlines have different epochs.
+            # Measure source age with the node's ROS clock, then retain it.
+            source_age = None
+            if hasattr(self.node, 'get_clock'):
+                ros_now = self.node.get_clock().now().nanoseconds * 1.e-9
+                delta = ros_now - (src_sec + src_nano * 1.e-9)
+                if math.isfinite(delta) and delta >= 0.:
+                    source_age = delta
+            if source_age is None or source_age >= grasp_cache_ttl(request):
+                raise ValueError('REFRESH_REQUIRED_SOURCE_OBSERVATION_AGE')
             with self._cache_lock:
                 now = time.monotonic()
-                for old_key, (created, cached_request) in list(self._cache.items()):
-                    if (now-created > min(60, cached_request.ttl_seconds or 60) and
-                            old_key != self.node._held_object):
+                # Only one unconsumed pool is public. Held attachment state is separate.
+                for old_key in list(self._cache):
+                    if old_key != self.node._held_object:
                         self._cache.pop(old_key)
                         self.node.cached_grasp_plans.pop(old_key, None)
                         self.node.refined_grasp_plans.pop(old_key, None)
                         self.grasp_stages.invalidate(old_key)
-                if key not in self._cache and len(self._cache) >= 8:
-                    removable = [item for item in self._cache if item != self.node._held_object]
-                    if not removable:
-                        raise RuntimeError('GRASP_CACHE_FULL')
-                    oldest = min(removable, key=lambda item: self._cache[item][0])
-                    self._cache.pop(oldest)
-                    self.node.cached_grasp_plans.pop(oldest, None)
-                    self.node.refined_grasp_plans.pop(oldest, None)
-                    self.grasp_stages.invalidate(oldest)
-                self._cache[key] = (now, copy.deepcopy(request))
+                self._cache[key] = (now-source_age, copy.deepcopy(request))
                 self.node.cached_grasp_plans[key] = {
                     'name': request.object_name,
                     'header': copy.deepcopy(request.observation_header),
                     'candidate': copy.deepcopy(request.candidates[0])}
                 self.node.refined_grasp_plans.pop(key, None)
                 self.grasp_stages.invalidate(key)
+                from .current_workspace import calibration_fingerprint
+                joints = getattr(self.node, 'current_joint_states', None)
+                self._current_pool = {
+                    'key': key,
+                    'object_name': request.object_name,
+                    'created': now,
+                    'source_stamp': copy.deepcopy(src_stamp),
+                    'source_age_at_creation': source_age,
+                    'ttl_seconds': grasp_cache_ttl(request),
+                    'candidates_count': len(request.candidates),
+                    'consumed': False,
+                    'claimed_by': None,
+                    'invalidated': False,
+                    'baseline_joints': list(joints.position[:6]) if joints is not None else None,
+                    'baseline_tcp': copy.deepcopy(getattr(self.node, 'current_tcp_pose', None)),
+                    'calibration': calibration_fingerprint(self.node),
+                }
             response.success = True
             response.status = 'GRASP_PLAN_CACHED_IN_MASTER'
         except Exception as error:
@@ -303,7 +342,7 @@ class ExecutionAPI:
         """Retrieve the freshest cached grasp plan for an object via /master/get_cached_grasp."""
         with self._cache_lock:
             self._cache = {key: value for key, value in self._cache.items()
-                           if time.monotonic() - value[0] <= min(60, value[1].ttl_seconds or 60)}
+                           if time.monotonic() - value[0] <= grasp_cache_ttl(value[1])}
             key = request.object_name.casefold()
             if not key:
                 if len(self._cache) != 1:
@@ -321,6 +360,99 @@ class ExecutionAPI:
             response.success = True
             response.status = 'CACHED_GRASP_READY'
         return response
+
+    def claim_current_pool(self, session_id):
+        """Atomically claim readiness for execution; make unconsumed pool unavailable for other tasks."""
+        with self._cache_lock:
+            pool = getattr(self, '_current_pool', None)
+            if pool and pool['key'] == session_id:
+                pool['consumed'] = True
+                self._cache.pop(pool['key'], None)
+                pool['claimed_by'] = session_id
+
+    def observe_pool_feedback(self, kind, message):
+        """Invalidate only an unconsumed source; active sessions keep their own evidence."""
+        with self._cache_lock:
+            pool = getattr(self, '_current_pool', None)
+            if not pool or pool['consumed'] or pool['invalidated']:
+                return
+            elapsed = time.monotonic() - pool['created']
+            initial_age = pool.get('source_age_at_creation')
+            if (elapsed < 0. or initial_age is None or
+                    elapsed + initial_age >= pool.get('ttl_seconds', 600.)):
+                self._invalidate_pool_locked(pool, 'REFRESH_REQUIRED_EXPIRED')
+                return
+            reason = None
+            if kind == 'calibration' and pool.get('calibration') != message:
+                reason = 'CALIBRATION_CHANGED'
+            if kind == 'joints' and pool.get('baseline_joints') is not None:
+                values, reference = list(message.position[:6]), pool['baseline_joints']
+                if (len(values) != 6 or len(reference) != 6 or
+                        not all(math.isfinite(x) for x in values+reference) or
+                        max(abs(a-b) for a, b in zip(values, reference)) > .005):
+                    reason = 'ARM_MOVED_SINCE_POOL_CREATION'
+            if kind == 'tcp' and pool.get('baseline_tcp') is not None:
+                pose, original = message.pose, pool['baseline_tcp'].pose
+                xyz = [getattr(pose.position, k) for k in 'xyz']
+                ref_xyz = [getattr(original.position, k) for k in 'xyz']
+                quat = [getattr(pose.orientation, k) for k in 'xyzw']
+                ref_quat = [getattr(original.orientation, k) for k in 'xyzw']
+                if (not all(math.isfinite(x) for x in xyz+quat+ref_xyz+ref_quat) or
+                        abs(sum(x*x for x in quat)-1.) > .001 or
+                        math.dist(xyz, ref_xyz) > .002 or
+                        abs(sum(a*b for a, b in zip(quat, ref_quat))) < .99999):
+                    reason = 'CAMERA_MOVED_SINCE_POOL_CREATION'
+            if reason:
+                self._invalidate_pool_locked(pool, reason)
+
+    def _invalidate_pool_locked(self, pool, reason):
+        pool['invalidated'] = True
+        pool['invalidation_reason'] = reason
+        self._cache.pop(pool['key'], None)
+        self.node.cached_grasp_plans.pop(pool['key'], None)
+        self.node.refined_grasp_plans.pop(pool['key'], None)
+        self.grasp_stages.invalidate(pool['key'])
+
+    def invalidate_current_pool(self, reason='SOURCE_INVALIDATED'):
+        """Invalidate the current pool upon scene alteration or camera motion."""
+        with self._cache_lock:
+            pool = getattr(self, '_current_pool', None)
+            if pool:
+                self._invalidate_pool_locked(pool, reason)
+
+    def get_current_pool_summary(self, now=None):
+        """Read metadata of the single current pool using 600s freshness policy."""
+        with self._cache_lock:
+            pool = getattr(self, '_current_pool', None)
+            if not pool:
+                return {'available': False, 'fresh': False, 'reason': 'NO_CURRENT_GRASP_POOL',
+                        'object_name': None, 'expires_in_seconds': 0.}
+            now = time.monotonic() if now is None else now
+            age = now - pool['created']
+            initial_age = pool.get('source_age_at_creation')
+            source_age = age + initial_age if initial_age is not None else None
+            ttl = pool.get('ttl_seconds', 600.)
+            expires_in = max(0., ttl - source_age) if source_age is not None else 0.
+            if pool['consumed']:
+                return {'available': False, 'fresh': False, 'reason': 'ALREADY_CONSUMED',
+                        'object_name': pool['object_name'], 'consumed': True,
+                        'candidates_count': pool['candidates_count'], 'expires_in_seconds': 0.}
+            if pool['invalidated']:
+                return {'available': False, 'fresh': False,
+                        'reason': pool.get('invalidation_reason', 'SOURCE_INVALIDATED'),
+                        'object_name': pool['object_name'], 'invalidated': True,
+                        'candidates_count': pool['candidates_count'], 'expires_in_seconds': 0.}
+            if source_age is None or age < 0.:
+                return {'available': False, 'fresh': False,
+                        'reason': 'SOURCE_CLOCK_UNVERIFIED',
+                        'object_name': pool['object_name'], 'expires_in_seconds': 0.}
+            if age >= ttl or source_age >= ttl:
+                return {'available': False, 'fresh': False, 'reason': 'REFRESH_REQUIRED_EXPIRED',
+                        'object_name': pool['object_name'], 'expires_in_seconds': 0.,
+                        'candidates_count': pool['candidates_count']}
+            return {'available': True, 'fresh': True, 'reason': 'FRESH_FOR_REUSE_ONLY',
+                    'object_name': pool['object_name'], 'expires_in_seconds': expires_in,
+                    'candidates_count': pool['candidates_count'], 'consumed': False}
 
     def _state(self, request, response):
         """Query current joint states, TCP pose, and gripper opening via /master/get_arm_state."""

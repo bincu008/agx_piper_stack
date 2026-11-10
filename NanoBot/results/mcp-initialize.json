@@ -1,0 +1,26 @@
+{
+  "meta": null,
+  "protocolVersion": "2025-11-25",
+  "capabilities": {
+    "experimental": {},
+    "logging": null,
+    "prompts": null,
+    "resources": {
+      "subscribe": false,
+      "listChanged": false
+    },
+    "tools": {
+      "listChanged": false
+    },
+    "completions": null,
+    "tasks": null
+  },
+  "serverInfo": {
+    "name": "ros-pipeline",
+    "title": null,
+    "version": "3.6.0",
+    "websiteUrl": null,
+    "icons": null
+  },
+  "instructions": "MOCK REPLAY; no physical execution. Use the eight task tools: observe_scene, prepare_manipulation and get_task_status own sequencing. describe_workflow explains routes. No execution is exposed. Use fresh request_id for new tasks; identical retries find the same task. Inspect RUNNING/UNKNOWN using get_task_status; never replay unknown work. Tool schemas suffice for normal use; ros-pipeline://tasks is optional detail. Never infer physical readiness."
+}

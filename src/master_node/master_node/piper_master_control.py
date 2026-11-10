@@ -464,6 +464,9 @@ class PiperMasterControl(Node):
         self.scan_thread = threading.Thread(target=self.scan_routine_loop, daemon=True)
         self.scan_thread.start()
 
+        from master_node.current_workspace import CurrentWorkspace
+        self.current_workspace = CurrentWorkspace(self)
+
         # Subscribe to Kinematics always
         self.joint_sub = self.create_subscription(JointState, '/feedback/joint_states', self.joint_callback, 10, callback_group=self.cbg_kinematics)
         self.pose_sub = self.create_subscription(PoseStamped, '/feedback/tcp_pose', self.pose_callback, 10, callback_group=self.cbg_kinematics)

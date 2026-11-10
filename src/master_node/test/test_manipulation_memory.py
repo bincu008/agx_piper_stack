@@ -15,6 +15,8 @@ from my_actions import srv
 
 import numpy as np
 
+import pytest
+
 from sensor_msgs_py import point_cloud2
 
 from std_msgs.msg import Header
@@ -182,8 +184,10 @@ def test_moved_target_does_not_reuse_old_geometry():
     assert observed_mask(moved, mapped.reshape(-1, 3)) is None
 
 
-def test_calculation_commit_does_not_mark_object_physically_placed():
+def test_calculation_commit_does_not_mark_object_physically_placed(monkeypatch):
     """Calculation commit does not mark object physically placed."""
+    # Snapshot freshness ages advance with time; hold the clock to compare state.
+    monkeypatch.setattr("master_node.manipulation_memory.time.monotonic", lambda: 100.)
     memory, _, _, _, _ = fixture()
     assert resolve(memory, 'bowl').success
     before = memory.snapshot()
@@ -681,3 +685,143 @@ def test_spatial_context_reuses_authoritative_layout_without_capture():
     assert result.object_names == ['bowl']
     assert result.object_cell_ids == ['x0_y2_z0']
     assert not calls
+
+
+@pytest.mark.parametrize('visible', [True, False])
+def test_scene_parser_accepts_exact_live_qwen_record_response(visible):
+    """Regression: complete fenced record list previously caused Extra data at char 29."""
+    from master_node.manipulation_memory import parse_mapping
+    value = 'true' if visible else 'false'
+    raw = ('```json\n[\n  {"key": "t0", "value": ' + value + '},\n'
+           '  {"key": "t1", "value": ' + value + '}\n]\n```')
+    assert parse_mapping(raw, ['t0', 't1']) == {'t0': visible, 't1': visible}
+
+
+@pytest.mark.parametrize('raw', [
+    '{"t0":true}{"t1":false}',
+    '{"t0":true,"t1":false} extra explanation',
+    '{"t0":true,"t0":false,"t1":true}',
+    '[{"key":"t0","value":true},{"key":"t0","value":false}]',
+    '[{"key":"t0","value":true,"confidence":0.9},{"key":"t1","value":true}]',
+    '[{"key":"t0","value":true}]',
+    '{"t0":true,"t1":true,"extra":true}',
+    '{"t0":NaN,"t1":true}',
+    'prefix {"t0":true,"t1":true}',
+])
+def test_ambiguous_scene_output_is_unknown_not_partial_success(raw):
+    from master_node.manipulation_memory import parse_mapping
+    with pytest.raises(ValueError, match='SCENE_INFERENCE_UNKNOWN'):
+        parse_mapping(raw, ['t0', 't1'])
+
+
+def test_scene_record_response_runs_segmentation_on_same_observation():
+    memory, observation, calls, prompts, hidden, query = scene_fixture()
+    query.object_names = ['cup']
+    query.active_object_name = 'cup'
+    original = memory.call
+
+    def backend(name, request):
+        result = original(name, request)
+        if name == 'infer_vision' and 'SCENE PRESENCE.' in request.user_prompt:
+            result.text = ('```json\n[\n  {"key": "t0", "value": true},\n'
+                           '  {"key": "t1", "value": true}\n]\n```')
+        return result
+
+    memory.call = backend
+    result = memory.scene_perception.perceive(query, srv.PerceiveScene.Response())
+    assert result.success, result.status
+    assert list(result.names) == ['cup', 'tray'] and all(result.observed)
+    assert calls.count('segment_object') == 2
+    assert result.observation_header == observation.cloud.header
+
+
+def test_scene_ambiguity_does_not_change_memory_or_report_absence():
+    memory, observation, calls, prompts, hidden, query = scene_fixture()
+    assert memory.scene_perception.perceive(query, srv.PerceiveScene.Response()).success
+    before = {key: id(value) for key, value in memory.objects.items()}
+    revision = memory.revision
+    original = memory.call
+    calls.clear()
+
+    def backend(name, request):
+        result = original(name, request)
+        if name == 'infer_vision':
+            result.text = '{"t0":true}{"t1":false}'
+        return result
+
+    memory.call = backend
+    result = memory.scene_perception.perceive(query, srv.PerceiveScene.Response())
+    assert not result.success and result.status.startswith('SCENE_INFERENCE_UNKNOWN:')
+    assert not result.observed and not result.names
+    assert memory.revision == revision
+    assert {key: id(value) for key, value in memory.objects.items()} == before
+    assert 'segment_object' not in calls
+
+
+def test_conflicting_presence_and_grounding_are_unknown_before_memory_updates():
+    memory, observation, calls, prompts, hidden, query = scene_fixture()
+    original = memory.call
+
+    def backend(name, request):
+        result = original(name, request)
+        if name == 'infer_vision' and 'SCENE PRESENCE.' in request.user_prompt:
+            result.text = '{"t0":false,"t1":false,"t2":false}'
+        return result
+
+    memory.call = backend
+    result = memory.scene_perception.perceive(query, srv.PerceiveScene.Response())
+    assert not result.success
+    assert result.status == 'SCENE_INFERENCE_UNKNOWN: PRESENCE_GROUNDING_CONFLICT'
+    assert not result.observed and not memory.objects and memory.destination is None
+    assert 'segment_object' not in calls
+
+
+def test_runtime_hand_eye_calibration_is_fingerprinted_not_an_empty_legacy_attribute():
+    memory, *_ = fixture()
+    memory.node.hand_eye_matrix = np.eye(4)
+    before = memory.calibration()
+    memory.node.hand_eye_matrix[0, 3] = .01
+    assert memory.calibration() != before
+    memory.node.hand_eye_matrix = None
+    memory.node.X_matrix = None
+    with pytest.raises(ValueError, match='HAND_EYE_CALIBRATION_UNAVAILABLE'):
+        memory.calibration()
+
+
+def test_instruction_aliases_share_active_geometry_and_world_identity():
+    """Body/rim requests identify one object while preserving their explicit instructions."""
+    memory, observation, calls, _, _ = fixture()
+    body = resolve(memory, 'cup, grasp its body', observation=observation)
+    assert body.success, body.status
+    memory.node.world_state.upsert_object(body.object_id, 'cup',
+        list(memory.objects['cup']['position']), 'placed', True)
+    rim = resolve(memory, 'CUP, grasp its rim', observation=observation)
+    assert rim.success and rim.reused, rim.status
+    assert rim.object_id == body.object_id
+    assert len(memory.objects) == 1 and len(memory.directory) == 1
+    assert calls.count('ground_object') == 1
+    assert memory.active('cup, grasp its body')['object_id'] == body.object_id
+    assert memory.snapshot()['active_objects'][0]['name'] == 'cup'
+    assert memory.node.world_state.is_placed(body.object_id)
+    aliases = memory.node.world_state.get_aliases(body.object_id)
+    assert 'cup, grasp its body' in aliases and 'CUP, grasp its rim' in aliases
+
+
+def test_canonical_identity_does_not_discard_requested_grasp_region():
+    """Identity normalization must not turn a rim instruction into a body/auto request."""
+    memory, observation, _, _, _ = fixture()
+    assert resolve(memory, 'cup, grasp its body', observation=observation).success
+    original, seen = memory.call, []
+
+    def backend(name, query):
+        if name in ('prepare_grasp_input', 'calculate_grasps'):
+            seen.append((name, query.target_description))
+        return original(name, query)
+
+    memory.call = backend
+    result = memory.grasps(srv.FindGraspCandidates.Request(
+        target_description='cup, grasp its rim', affordance_type='RIM'),
+        srv.FindGraspCandidates.Response())
+    assert result.success, result.status
+    assert seen == [('prepare_grasp_input', 'cup, grasp its rim'),
+                    ('calculate_grasps', 'cup, grasp its rim')]

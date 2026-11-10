@@ -9,6 +9,7 @@ individually after preparation, preserving their durable admission/contact check
 import asyncio
 import json
 import re
+import time
 import uuid
 
 from rclpy.serialization import deserialize_message, serialize_message
@@ -22,7 +23,13 @@ from .schema import message_schema
 
 PREPARATION = {
     'capture_observation': ('Capture synchronized RGB-D and manual FK*X; returns '
-                            'Ubuntu-side handles.'),
+                            'Ubuntu-side handles. Shared capture attempts exact grasp-observation '
+                            'retention before returning; inspect observation_retention. '
+                            'Capture success is not grasp readiness. For a NEW task use '
+                            'context_id="". Copy returned top-level context_id '
+                            '(native MCP result.structuredContent.context_id) to later calls. '
+                            'output.image/cloud/camera_transform are binding sources; '
+                            'use this capture step_id as source_step_id.'),
     'verify_presence': ('Check target on a same-context captured image. Only success AND '
                         'present establish PRESENT. Missing memory, inference failure, '
                         'timeout, empty/uncertain output mean UNKNOWN, not absent. '
@@ -34,19 +41,45 @@ PREPARATION = {
     'resolve_target': 'Reuse target memory or capture/ground/segment/extract/store it.',
     'refresh_active_target': 'Refresh selected target geometry using a synchronized observation.',
     'get_active_target': 'Read stored target image/mask/cloud with source association.',
-    'perceive_scene': 'Batch-perceive configured objects and destination on one observation.',
+    'perceive_scene': ('Batch ground/segment/store object_names and destination_name. First call '
+                       'capture_observation with context_id="" for a new task. Then use its '
+                       'returned result.structuredContent.context_id here. Bind image <- '
+                       'CAPTURE_STEP_ID.image, observation_cloud <- CAPTURE_STEP_ID.cloud, '
+                       'camera_transform <- CAPTURE_STEP_ID.camera_transform in that SAME '
+                       'context. Use fresh step_id/request_id for this new operation. '
+                       'SCENE_INFERENCE_UNKNOWN means no trustworthy scene conclusion; '
+                       'never translate it into objects absent.'),
     'ensure_scene_memory': 'Reuse known target locations or populate scene memory if missing.',
     'check_target_view': 'Read geometric visibility using memory and current camera geometry.',
     'require_target_view': 'Require visibility without moving the camera; reject LOOK_REQUIRED.',
     'pin_grasp_observation': 'Pin the grasp observation by its exact source header.',
     'pin_placement_observation': 'Pin the placement observation by its exact source header.',
     'prepare_grasp_input': 'Associate image/mask/box and derive HGGD inputs and affordance.',
-    'calculate_grasps': 'Generate and validate HGGD grasp candidates on the bound observation.',
-    'calculate_active_grasps': 'Calculate grasps from the active object memory and source image.',
+    'calculate_grasps': ('Generate/validate HGGD on one pinned observation. Immediately after '
+                         'capture_observation call pin_grasp_observation with cloud.header, '
+                         'before VLM delays. Image/mask/header/seed inputs must refer to that '
+                         'same capture. OBSERVATION_NOT_IN_CACHE means a source-retention '
+                         'failure, not a missing grasp_input binding.'),
+    'calculate_active_grasps': ('Calculate grasps from fresh active memory. Internally calls '
+                                'pin_grasp_observation -> prepare_grasp_input -> '
+                                'calculate_grasps. '
+                                'No grasp_input field exists. Required target_description is the '
+                                'EXACT '
+                                'stored name (e.g. cup), not a mask/header binding; bindings '
+                                'can be empty. Response candidates supplies '
+                                'select_grasp.candidates.'),
     'update_object': 'Register semantic object identity and measured base-link position.',
-    'select_grasp': 'Provisionally rank validated candidates; not whole-task readiness.',
-    'cache_grasp_plan': 'Cache the source-associated grasp pool for complete-plan preparation.',
-    'get_cached_grasp': 'Read the source-associated cached candidate pool.',
+    'select_grasp': ('Provisionally rank validated candidates. Bind request candidates from '
+                     'calculate_grasps/calculate_active_grasps response candidates. Response is '
+                     'candidate (singular), not grasp. Not whole-task readiness.'),
+    'cache_grasp_plan': ('Cache request candidates (whole validated pool); default/max TTL '
+                         '600 seconds, removed on admitted prepared execution. With matching '
+                         'observation_header/cloud, source_mask and semantic_mask. '
+                         'No selected_grasp '
+                         'field exists. Response is success/status only; no plan field.'),
+    'get_cached_grasp': ('Read a previously cached, unexpired pool for object_name. No bindings '
+                         'are needed; cache state is internal. No cached_grasp_plan request field '
+                         'or plan response field exists. Response includes candidates/header.'),
     'find_placements': 'Calculate destination footprint/slots and object placement candidates.',
     'find_active_placements': ('Search slots using active object/destination geometry and '
                                'occupancy.'),
@@ -83,7 +116,12 @@ BINDING_SCHEMA = {'type': 'object', 'additionalProperties': False,
                   'properties': {key: {'type': 'string', 'minLength': 1, 'maxLength': 256}
                                  for key in ('target_field', 'source_step_id', 'source_field')}}
 OUTPUT_SCHEMA = {'type': 'object', 'required': ['success', 'status'],
-                 'properties': {'success': {'type': 'boolean'}, 'status': {'type': 'string'}},
+                 'properties': {'success': {'type': 'boolean'}, 'status': {'type': 'string'},
+                                'context_id': {'type': 'string', 'description':
+                                               'Returned top-level gateway context. Copy into '
+                                               'later calls; not output.context_id.'},
+                                'revision': {'type': 'integer', 'minimum': 0},
+                                'output': {'type': ['object', 'null']}},
                  'additionalProperties': True}
 
 
@@ -98,7 +136,22 @@ def argument_schema(name):
             value['maxItems'] = min(value.get('maxItems', 1024), 1024)
         if value.get('type') == 'string':
             value['maxLength'] = min(value.get('maxLength', 8192), 8192)
-    return {'type': 'object', 'properties': properties, 'additionalProperties': False}
+    result = {'type': 'object', 'properties': properties, 'additionalProperties': False}
+    if name == 'perceive_scene':
+        result['required'] = ['destination_name']
+        properties['destination_name'].update(
+            minLength=1, description='Nonempty destination description, e.g. dark tray.')
+        properties['object_names']['description'] = (
+            'Objects to perceive together; empty/omitted uses configured scene inventory.')
+        properties['active_object_name']['description'] = (
+            'Optional active target, included in the perceived object list.')
+    if name == 'calculate_active_grasps':
+        result['required'] = ['target_description']
+        properties['target_description'].update(
+            minLength=1,
+            description='Exact object name used by store_segmented_target/resolve_target, '
+            'for example cup. Mask/header bindings do not select the active object.')
+    return result
 
 
 def step_schema(name=None):
@@ -118,7 +171,12 @@ def call_schema(name=None):
     """Add context/revision/idempotency to each individually exposed function."""
     schema = step_schema(name)
     schema['properties'].update(
-        context_id={'type': 'string', 'maxLength': 128}, request_id=IDENTIFIER,
+        context_id={'type': 'string', 'maxLength': 128, 'default': '',
+                    'description': 'NEW capture: context_id="". Later calls copy capture '
+                    'result.structuredContent.context_id. Never invent a context ID.'},
+        request_id={**IDENTIFIER, 'description': 'Fresh ID per NEW operation; repeat identical '
+                    'requests '
+                    'for receipts; never replay unknown actions with a new ID.'},
         expected_revision={'type': 'integer', 'minimum': 0, 'maximum': 2**64-1})
     schema['required'] += ['context_id', 'request_id']
     return schema
@@ -217,11 +275,11 @@ class PreparationGateway:
                 execution.save(key, value)
                 execution.save('preparation_barrier', {'job': key, 'status': value['status']})
 
-    def make_step(self, name, values):
+    def make_step(self, name, values, task_level=False):
         """Construct one typed request from bounded primitives and source handles."""
         import jsonschema
         from my_actions.msg import PipelineStep, StepBinding
-        if name not in PREPARATION:
+        if name not in PREPARATION and not (task_level and name == 'get_observe_view'):
             raise ValueError('FUNCTION_NOT_ALLOWED_IN_CALCULATION_PIPELINE')
         arguments = values['arguments']
         jsonschema.validate(arguments, argument_schema(name))
@@ -229,11 +287,32 @@ class PreparationGateway:
             raise ValueError('COLLISION_BYPASS_FORBIDDEN')
         request = FUNCTIONS[name].service_type.Request()
         set_message_fields(request, arguments)
+        if name in ('perceive_scene', 'resolve_target', 'refresh_active_target',
+                    'ensure_scene_memory'):
+            provided = {item['target_field'] for item in values['bindings']}
+            triplet = {'image', 'observation_cloud', 'camera_transform'}
+            if provided & triplet and not triplet <= provided:
+                missing = ','.join(sorted(triplet - provided))
+                raise ValueError('SYNCHRONIZED_IMAGE_AND_CLOUD_REQUIRED: missing bindings=' +
+                                 missing + '; bind image<-capture.image, '
+                                 'observation_cloud<-capture.cloud, '
+                                 'camera_transform<-capture.camera_transform in the SAME context')
+        if name in ('pin_grasp_observation', 'pin_placement_observation') and not any(
+                item['target_field'] == 'observation_header' for item in values['bindings']):
+            raise ValueError('MISSING_OBSERVATION_HEADER_BINDING: bind observation_header '
+                             'from the successful capture step cloud.header')
         bindings = []
         for item in values['bindings']:
             if name == 'solve_pose' and item['target_field'] == 'ignore_collision':
                 raise ValueError('COLLISION_BYPASS_FORBIDDEN')
             fields(item['target_field'])
+            try:
+                binding_type(type(request), item['target_field'])
+            except ValueError as error:
+                allowed = ','.join(request.get_fields_and_field_types())
+                raise ValueError(
+                    str(error) + '; target_tool=' + name + '; target_field=' +
+                    item['target_field'] + '; valid_target_fields=' + allowed) from error
             if item['source_field'] != '@response_cdr':
                 fields(item['source_field'])
             bindings.append(StepBinding(**item))
@@ -250,6 +329,22 @@ class PreparationGateway:
         current = self.execution.load('current')
         if current and (current.get('unknown') or not current.get('complete')):
             raise ValueError('ACTIVE_OR_UNKNOWN_EXECUTION_REQUIRES_COMPLETION')
+
+    def reconcile_preparation(self, *, task_id=None, job_id=None, context_id=None,
+                              confirmed_operator=False, notes=''):
+        """
+        Locally reconcile an interrupted or unknown preparation task.
+
+        Never automates physical reset; preserves all historical request receipts.
+        Requires explicit operator confirmation.
+        """
+        from .reconcile import reconcile_connection
+        if getattr(self, 'jobs', {}) or (hasattr(self.execution, 'lock') and
+                                         self.execution.lock.locked()):
+            raise ValueError('RUNNING_PREPARATION_CANNOT_BE_RECONCILED')
+        return reconcile_connection(
+            self.execution.db, task_id=task_id, job_id=job_id, context_id=context_id,
+            confirmed_operator=confirmed_operator, notes=notes)
 
     async def current_state(self):
         """Do not let calculations replace geometry during held/unknown execution."""
@@ -296,9 +391,17 @@ class PreparationGateway:
                 source_name = sources.get(binding.source_step_id)
                 if source_name not in FUNCTIONS:
                     raise ValueError('DEPENDENCY_FAILED: '+binding.source_step_id)
-                source = ('sequence<uint8>' if binding.source_field == '@response_cdr' else
-                          binding_type(FUNCTIONS[source_name].service_type.Response,
-                                       binding.source_field))
+                try:
+                    source = ('sequence<uint8>' if binding.source_field == '@response_cdr' else
+                              binding_type(FUNCTIONS[source_name].service_type.Response,
+                                           binding.source_field))
+                except ValueError as error:
+                    allowed = ','.join(FUNCTIONS[source_name].service_type.Response.
+                                       get_fields_and_field_types())
+                    raise ValueError(str(error) + '; source_step_id=' + binding.source_step_id +
+                                     '; source_tool=' + source_name + '; source_field=' +
+                                     binding.source_field + '; valid_source_fields=' +
+                                     allowed) from error
                 target = binding_type(FUNCTIONS[step.function_name].service_type.Request,
                                       binding.target_field)
                 if not compatible_binding(source, target):
@@ -306,47 +409,51 @@ class PreparationGateway:
             sources[step.step_id] = step.function_name
 
     async def call(self, name, values):
-        """Retain opaque artifacts in StepStore and return only a bounded projection."""
+        """Retain opaque artifacts in StepStore and return a bounded projection."""
         if self.execution.lock.locked():
             return {'success': False, 'status': 'MCP_PIPELINE_OR_EXECUTION_BUSY'}
         async with self.execution.lock:
-            key = 'request:'+values['request_id']
-            fingerprint = json.dumps([name, values], sort_keys=True, allow_nan=False)
-            previous = self.execution.load(key)
-            if previous:
-                if previous['fingerprint'] != fingerprint:
-                    return {'success': False, 'status': 'REQUEST_ID_REUSED'}
-                return previous.get('result') or {
-                    'success': False, 'status': 'REQUEST_OUTCOME_UNKNOWN',
-                    'context_id': previous['context_id']}
-            context_id = ''
-            try:
-                self.guard()
-                await self.current_state()
-                context_id = self.own(values['context_id'], create=True)
-                self.execution.save(key, {'fingerprint': fingerprint, 'context_id': context_id})
-                spec = self.make_step(name, values)
-                await self.validate_bindings(context_id, [spec])
-                from my_actions.srv import RunPipelineStep
-                response = await self.transport.typed('run_step', RunPipelineStep.Request(
-                    context_id=context_id, step_id=spec.step_id, function_name=name,
-                    request_cdr=spec.request_cdr, bindings=spec.bindings,
-                    expected_revision=values.get('expected_revision', 0)), 600.)
-                result = self.project(response.result, context_id)
-                result.update(success=response.success, status=response.status,
-                              context_id=context_id, revision=response.revision)
-                self.execution.save(key, {'fingerprint': fingerprint, 'result': result})
-                return result
-            except asyncio.CancelledError:
-                self.execution.save('preparation_barrier', {
-                    'context_id': context_id, 'request_id': values['request_id']})
-                raise  # ROS calculation may still mutate caches; block concurrent execution.
-            except Exception as error:
-                if isinstance(error, TimeoutError):
-                    self.execution.save('preparation_barrier', {'context_id': context_id})
-                result = {'success': False, 'status': str(error), 'context_id': context_id}
-                self.execution.save(key, {'fingerprint': fingerprint, 'result': result})
-                return result
+            return await self._call_locked(name, values)
+
+    async def _call_locked(self, name, values):
+        """Use only while holding the shared ledger lock; task validation is atomic to MCP."""
+        key = 'request:'+values['request_id']
+        fingerprint = json.dumps([name, values], sort_keys=True, allow_nan=False)
+        previous = self.execution.load(key)
+        if previous:
+            if previous['fingerprint'] != fingerprint:
+                return {'success': False, 'status': 'REQUEST_ID_REUSED'}
+            return previous.get('result') or {
+                'success': False, 'status': 'REQUEST_OUTCOME_UNKNOWN',
+                'context_id': previous['context_id']}
+        context_id = ''
+        try:
+            self.guard()
+            await self.current_state()
+            context_id = self.own(values['context_id'], create=True)
+            self.execution.save(key, {'fingerprint': fingerprint, 'context_id': context_id})
+            spec = self.make_step(name, values)
+            await self.validate_bindings(context_id, [spec])
+            from my_actions.srv import RunPipelineStep
+            response = await self.transport.typed('run_step', RunPipelineStep.Request(
+                context_id=context_id, step_id=spec.step_id, function_name=name,
+                request_cdr=spec.request_cdr, bindings=spec.bindings,
+                expected_revision=values.get('expected_revision', 0)), 600.)
+            result = self.project(response.result, context_id)
+            result.update(success=response.success, status=response.status,
+                          context_id=context_id, revision=response.revision)
+            self.execution.save(key, {'fingerprint': fingerprint, 'result': result})
+            return result
+        except asyncio.CancelledError:
+            self.execution.save('preparation_barrier', {
+                'context_id': context_id, 'request_id': values['request_id']})
+            raise  # ROS calculation may still mutate caches; block concurrent execution.
+        except Exception as error:
+            if isinstance(error, TimeoutError):
+                self.execution.save('preparation_barrier', {'context_id': context_id})
+            result = {'success': False, 'status': str(error), 'context_id': context_id}
+            self.execution.save(key, {'fingerprint': fingerprint, 'result': result})
+            return result
 
     def project(self, item, context_id):
         """Decode trusted master CDR locally; CDR never becomes an LLM argument."""
@@ -363,10 +470,20 @@ class PreparationGateway:
             if (item.function_name == 'plan_next_best_view' and decoded.success and
                     len(decoded.path_flat) >= 6 and len(decoded.path_flat) % 6 == 0):
                 result['endpoint_joints'] = list(decoded.path_flat[-6:])
+            if item.function_name == 'capture_observation':
+                retained = ';GRASP_OBSERVATION_PINNED' in decoded.status
+                failed = ';GRASP_RETENTION_FAILED:' in decoded.status
+                result['observation_retention'] = {
+                    'grasp_retained': True if retained else False if failed else None,
+                    'status': decoded.status,
+                    'source_step_id': item.step_id,
+                    'next_step': 'pin_grasp_observation',
+                    'binding': {'target_field': 'observation_header',
+                                'source_step_id': item.step_id, 'source_field': 'cloud.header'}}
             result['output'] = output
         return result
 
-    async def submit(self, values):
+    async def submit(self, values, task_level=False):
         """Queue calculation-only steps; execution remains per-stage guarded MCP."""
         from my_actions.srv import SubmitPipelineSteps
         if self.execution.lock.locked():
@@ -385,7 +502,8 @@ class PreparationGateway:
                 self.guard()
                 await self.current_state()
                 context_id = self.own(values['context_id'], create=True)
-                steps = [self.make_step(item['function_name'], item) for item in values['steps']]
+                steps = [self.make_step(item['function_name'], item, task_level=task_level)
+                         for item in values['steps']]
                 await self.validate_bindings(context_id, steps, queued=True)
                 self.execution.save(key, {'fingerprint': fingerprint, 'context_id': context_id})
                 result = await self.transport.typed('submit_steps', SubmitPipelineSteps.Request(
@@ -416,7 +534,7 @@ class PreparationGateway:
         return {'success': response.success, 'status': response.status,
                 'state_json': response.state_json, 'results': results}
 
-    async def run(self, values):
+    async def run(self, values, task_level=False):
         """Expose the real ROS action as start/status/cancel, with explicit outcomes."""
         context_id = self.own(values['context_id'])
         operation = values['operation']
@@ -453,7 +571,9 @@ class PreparationGateway:
             state = json.loads(snapshot['state_json'])[0]
             if state['busy'] or state['revision'] != values['expected_revision']:
                 raise ValueError('BUSY_OR_STALE_CONTEXT_REVISION')
-            if any(item['function'] not in PREPARATION for item in state['pending']):
+            if any(item['function'] not in PREPARATION and not
+                   (task_level and item['function'] == 'get_observe_view')
+                   for item in state['pending']):
                 raise ValueError('UNGUARDED_PHYSICAL_QUEUE_FORBIDDEN')
             job = {'success': True, 'status': 'STARTING', 'context_id': context_id,
                    'completion': 'ASYNC_ACK_ONLY', 'fingerprint': fingerprint}

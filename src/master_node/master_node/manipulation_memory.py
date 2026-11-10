@@ -21,6 +21,7 @@ from sensor_msgs_py import point_cloud2
 import yaml
 
 from .calibration import pose_matrix
+from .world_state import parse_object_description
 
 
 def cloud_xyz(cloud):
@@ -208,16 +209,48 @@ def check_target_view(memory, request, response):
 
 
 def parse_mapping(text, keys):
-    """Validate every requested key before changing memory."""
-    begin, end = text.find('{'), text.rfind('}')
-    if begin < 0 or end < begin:
-        raise ValueError('SCENE_INFERENCE_JSON_MISSING')
-    pairs = json.loads(text[begin:end + 1], object_pairs_hook=lambda items: items)
-    if not isinstance(pairs, list) or any(not isinstance(p, tuple) for p in pairs):
-        raise ValueError('SCENE_INFERENCE_REQUIRES_OBJECT')
-    if len(pairs) != len(keys) or {k for k, _ in pairs} != set(keys):
-        raise ValueError('SCENE_INFERENCE_TARGET_KEYS_MISMATCH')
-    return dict(pairs)
+    """Parse one complete unambiguous keyed response before changing memory."""
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('DUPLICATE_KEY:' + key)
+            result[key] = value
+        return result
+
+    def invalid_constant(value):
+        raise ValueError('NON_FINITE_JSON_NUMBER:' + value)
+
+    try:
+        payload = text.strip()
+        if payload.startswith('```'):
+            fenced = re.fullmatch(r'```(?:json)?\s*\n(.*?)\n```', payload,
+                                  flags=re.DOTALL | re.IGNORECASE)
+            if fenced is None:
+                raise ValueError('INVALID_JSON_FENCE')
+            payload = fenced.group(1).strip()
+        parsed = json.loads(payload, object_pairs_hook=unique_object,
+                            parse_constant=invalid_constant)
+        if isinstance(parsed, list):
+            # Qwen may echo the prompt's target-record shape. Accept only the
+            # exact equivalent key/value contract, never select one guessed object.
+            normalized = {}
+            for record in parsed:
+                if (not isinstance(record, dict) or set(record) != {'key', 'value'} or
+                        not isinstance(record['key'], str)):
+                    raise ValueError('REQUIRES_EXACT_KEY_VALUE_RECORDS')
+                key = record['key']
+                if key in normalized:
+                    raise ValueError('DUPLICATE_TARGET_KEY:' + key)
+                normalized[key] = record['value']
+            parsed = normalized
+        if not isinstance(parsed, dict):
+            raise ValueError('REQUIRES_OBJECT_OR_KEY_VALUE_RECORDS')
+        if len(parsed) != len(keys) or set(parsed) != set(keys):
+            raise ValueError('TARGET_KEYS_MISMATCH')
+        return parsed
+    except (ValueError, TypeError) as error:
+        raise ValueError('SCENE_INFERENCE_UNKNOWN: ' + str(error)) from error
 
 
 def pixel_box(box, width, height):
@@ -276,9 +309,11 @@ class ScenePerception:
     def infer(self, observation, prompt, tokens):
         """Keep both VLM requests individually timed by the shared dispatcher."""
         result = self.memory.call('infer_vision', srv.VisionInference.Request(
-            image=observation.image, user_prompt=prompt, max_tokens=tokens))
+            image=observation.image, user_prompt=prompt, max_tokens=tokens,
+            system_prompt='Return exactly one valid JSON object keyed by the requested target IDs. '
+            'No prose, markdown, duplicate keys or additional JSON documents.'))
         if not result.success:
-            raise RuntimeError('SCENE_INFERENCE_FAILED: ' + result.status)
+            raise RuntimeError('SCENE_INFERENCE_UNKNOWN: BACKEND_FAILED: ' + result.status)
         self.memory.node.get_logger().info('[SCENE INFERENCE] ' + json.dumps(
             {'prompt': prompt, 'response': result.text}))
         return result.text
@@ -316,11 +351,12 @@ class ScenePerception:
             presence_prompt = (
                 'SCENE PRESENCE. Check ALL listed targets in this image: ' + listing +
                 '. Return one JSON object mapping EVERY key to true if clearly visible, '
-                'false if absent or uncertain. No extra keys or explanation.')
+                'false if absent or uncertain. The root must be a JSON object, not a list of '
+                'target records. No extra keys or explanation.')
             presence = parse_mapping(self.infer(
                 observation, presence_prompt, max(128, 24 * len(names))), keys)
             if any(type(value) is not bool for value in presence.values()):
-                raise ValueError('SCENE_PRESENCE_REQUIRES_BOOLEANS')
+                raise ValueError('SCENE_INFERENCE_UNKNOWN: PRESENCE_REQUIRES_BOOLEANS')
             descriptions = {}
             for key, name, role in zip(keys, names, roles):
                 if role == 'destination':
@@ -343,8 +379,13 @@ class ScenePerception:
                 'of its surface. Do not return center points.')
             boxes = parse_mapping(self.infer(
                 observation, grounding_prompt, max(512, 80 * len(names))), keys)
-            pixels = {key: pixel_box(boxes[key], image.width, image.height)
-                      for key in keys if presence[key] and boxes[key] is not None}
+            if any(presence[key] != (boxes[key] is not None) for key in keys):
+                raise ValueError('SCENE_INFERENCE_UNKNOWN: PRESENCE_GROUNDING_CONFLICT')
+            try:
+                pixels = {key: pixel_box(boxes[key], image.width, image.height)
+                          for key in keys if presence[key]}
+            except ValueError as error:
+                raise ValueError('SCENE_INFERENCE_UNKNOWN: ' + str(error)) from error
             response.observation_header = copy.deepcopy(cloud.header)
             response.names, response.roles = names, roles
             for key, name, role in zip(keys, names, roles):
@@ -633,11 +674,18 @@ class ManipulationMemory:
     @staticmethod
     def key(name):
         """Normalize caller names without guessing semantic aliases."""
-        return ' '.join(name.casefold().split())
+        base, _ = parse_object_description(name)
+        return base.casefold()
 
     def calibration(self):
         """Identify the manual calibration used by cached geometry."""
-        return np.asarray(getattr(self.node, 'X_matrix', []), dtype=float).tobytes()
+        matrix = getattr(self.node, 'hand_eye_matrix', None)
+        if matrix is None:
+            matrix = getattr(self.node, 'X_matrix', None)
+        value = np.asarray(matrix, dtype=float)
+        if value.shape != (4, 4) or not np.isfinite(value).all():
+            raise ValueError('HAND_EYE_CALIBRATION_UNAVAILABLE')
+        return value.tobytes()
 
     def call(self, name, request):
         """Dispatch through the authoritative shared API runtime."""
@@ -666,7 +714,8 @@ class ManipulationMemory:
     def _resolve(self, request, response, grounded_mask=None):
         """Validate mapped geometry or ground it on the synchronized observation."""
         self.guard_mutation()
-        name, role = request.name.strip(), request.role or 'object'
+        description, role = request.name.strip(), request.role or 'object'
+        name, _ = parse_object_description(description)
         if not name or role not in ('object', 'destination'):
             raise ValueError('TARGET_NAME_AND_ROLE_REQUIRED')
         with self.lock:
@@ -794,8 +843,8 @@ class ManipulationMemory:
         mask_message.header = copy.deepcopy(image.header)
         if not reused:
             center = np.median(selected, axis=0)
-            object_id = self.node.world_state.associate_observation(name, center.tolist())
-            self.node.world_state.upsert_object(object_id, name, center.tolist(), role, True)
+            object_id = self.node.world_state.associate_observation(description, center.tolist())
+            self.node.world_state.upsert_object(object_id, description, center.tolist(), role, True)
             with self.lock:
                 self.directory[object_id] = {'name': name, 'position': center.tolist()}
                 while len(self.directory) > 256:
@@ -814,6 +863,11 @@ class ManipulationMemory:
                 'grid': None,
                 'calibration': self.calibration(),
             }
+        if reused:
+            # Existing identity is authoritative after the measured-geometry reuse gate.
+            # Retain new explicit aliases without creating another active object entry.
+            self.node.world_state.upsert_object(
+                record['object_id'], description, record['position'], role, True)
         if role == 'destination' and not cached_destination:
             record['base_cloud'] = record['cloud']
             record['base_points'] = record['points'].copy()
@@ -1034,6 +1088,7 @@ class ManipulationMemory:
                 raise RuntimeError('ACTIVE_MEMORY_BUSY')
             self.guard_mutation()
             record = self.active(request.target_description)
+            description = request.target_description or record['name']
             observation = record['observation']
             pinned = self.call(
                 'pin_grasp_observation',
@@ -1048,7 +1103,7 @@ class ManipulationMemory:
                     image=observation.image,
                     mask=record['mask'],
                     pixel_box=record['pixel_box'],
-                    target_description=record['name'],
+                    target_description=description,
                 ),
             )
             if not prepared.success:
@@ -1060,7 +1115,7 @@ class ManipulationMemory:
                 image_width=prepared.image_width,
                 image_height=prepared.image_height,
                 target_mask=record['mask'],
-                target_description=record['name'],
+                target_description=description,
                 affordance_type=request.affordance_type or prepared.affordance_type,
             )
             scene = grasp_scene(self, observation)
@@ -1170,7 +1225,18 @@ class ManipulationMemory:
             """Extract compact metadata from one geometry record."""
             if not record:
                 return None
+            source = record.get('geometry_header')
+            now = self.node.get_clock().now().nanoseconds * 1.e-9 if hasattr(
+                self.node, 'get_clock') else None
+            source_stamp = stamp_ns(source) * 1.e-9 if source is not None else None
+            source_age = now-source_stamp if now is not None and source_stamp else None
             return {
+                'geometry_age_seconds': source_age if source_age is not None and
+                source_age >= 0 else None,
+                'verification_age_seconds': max(0., time.monotonic()-record['verified']),
+                'calibration_matches': record['calibration'] == self.calibration(),
+                'geometry_source_stamp': [source.stamp.sec, source.stamp.nanosec]
+                if source is not None else None,
                 'name': record['name'],
                 'position': record['position'],
                 'object_id': record['object_id'],

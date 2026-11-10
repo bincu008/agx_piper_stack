@@ -1,0 +1,17 @@
+2026-11-03 22:21:23.839 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_spatial_map' from server 'ros2'
+2026-11-03 22:21:23.839 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_spatial_context' from server 'ros2'
+2026-11-03 22:21:23.839 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_arm_state' from server 'ros2'
+2026-11-03 22:21:23.839 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_manipulation_memory' from server 'ros2'
+2026-11-03 22:21:23.839 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_step_context' from server 'ros2'
+2026-11-03 22:21:23.839 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_get_world_state' from server 'ros2'
+2026-11-03 22:21:23.839 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_capture_observation' from server 'ros2'
+2026-11-03 22:21:23.839 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_verify_presence' from server 'ros2'
+2026-11-03 22:21:23.840 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_ground_object' from server 'ros2'
+2026-11-03 22:21:23.840 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_segment_object' from server 'ros2'
+2026-11-03 22:21:23.840 | DEBUG    | nanobot.agent.tools.mcp:open_single_server:1218 - MCP: registered tool 'mcp_ros2_list_functions' from server 'ros2'
+2026-11-03 22:21:23.840 | INFO     | nanobot.agent.tools.mcp:open_single_server:1306 - MCP server 'ros2': skipping resource/prompt registration (enabledTools does not include '*' — only tools allowed)
+2026-11-03 22:21:23.840 | INFO     | nanobot.agent.tools.mcp:open_single_server:1312 - MCP server 'ros2': connected, 11 capabilities registered
+2026-11-03 22:21:23.840 | INFO     | nanobot.agent.tools.mcp:connect:1537 - MCP connected servers: ['ros2']
+Connected: {'ros2'}
+Tools: ['mcp_ros2_get_spatial_map', 'mcp_ros2_get_spatial_context', 'mcp_ros2_get_arm_state', 'mcp_ros2_get_manipulation_memory', 'mcp_ros2_get_step_context', 'mcp_ros2_get_world_state', 'mcp_ros2_capture_observation', 'mcp_ros2_verify_presence', 'mcp_ros2_ground_object', 'mcp_ros2_segment_object', 'mcp_ros2_list_functions']
+Read-only arm result: {"transport_outcome": "response", "response": {"success": true, "status": "ARM_STATE_READY", "joints": {"header": {"stamp": {"sec": 1793715683, "nanosec": 850815534}, "frame_id": ""}, "name": ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"], "position": [0.024015730507441976, 0.2664245103169344, -0.36596063755817104, 0.00778416846389471, 0.596780431134421, 0.18706438922875224, -0.00049], "velocity": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "effort": [0.240975, 2.25855, -4.6494, 0.0383376, -1.174089, 0.02012724, 0.014]}, "tcp_pose": {"header": {"stamp": {"sec": 1793715683, "nanosec": 850552558}, "frame_id": "base_link"}, "pose": {"position": {"x": 0.063454, "y": 0.001923, "z": 0.266473}, "orientation": {"x": 0.06958809556335742, "y": 0.8333382715461166, "z": 0.06134909221358886, "w": 0.5449230321953407}}}, "gripper_width_m": -0.00049}, "detail": "Raw ROS response; inspect success/status/phase separately"}

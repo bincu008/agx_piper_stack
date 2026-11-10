@@ -1,0 +1,279 @@
+{
+  "removed_for_test_only": "plan_camera_view.parameters.oneOf",
+  "raw_tool_calls": [
+    {
+      "index": 0,
+      "id": "NYGfG9v8t09wSMqOqJquKSgmTz90pwZw",
+      "type": "function",
+      "function": {
+        "name": "mcp_ros2_plan_camera_view",
+        "arguments": "{"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "\"request_id\":\""
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "wire"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "-di"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "agn"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "ose"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "\""
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": ",\"mode\":\""
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "relative"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "\""
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": ",\"frame\":\""
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "camera"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "_opt"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "ical"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "\""
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": ",\"translation_m\":"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "["
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "0"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": ","
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": " "
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "0"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": ","
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": " "
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "0"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "]"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": ",\"rotation_rad\":"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "["
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "0"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": ","
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": " "
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "0"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "."
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "0"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "5"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "2"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "3"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "5"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "9"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "8"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "8"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": ","
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": " "
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "0"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "]"
+      }
+    },
+    {
+      "index": 0,
+      "function": {
+        "arguments": "}"
+      }
+    }
+  ],
+  "mcp_dispatched": false
+}

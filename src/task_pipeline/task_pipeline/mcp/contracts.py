@@ -75,7 +75,8 @@ CALCULATIONS = {
         'but never commands motion. Inclusive timeout 30 seconds.'),
 }
 
-ALLOWLIST = frozenset((*READS, *CALCULATIONS, 'list_functions'))
+LOCAL_DOCUMENTATION = frozenset({'list_functions', 'get_workflow_example'})
+ALLOWLIST = frozenset((*READS, *CALCULATIONS, *LOCAL_DOCUMENTATION))
 
 # Discovery is separate from authorization. These names are existing ROS APIs;
 # they never enter ALLOWLIST or the ROS bridge's client map.

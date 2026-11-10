@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from geometry_msgs.msg import TransformStamped
 
+from my_actions import srv
 from my_actions.msg import GraspCandidate, PlacementCandidate
 from my_actions.srv import CaptureObservation, PlanPlacement
 
@@ -589,3 +590,46 @@ def test_pin_waits_only_for_same_frame_and_is_bounded():
     assert len(calls) == 3 and all(query is request for query in calls)
     assert waits == [0.05, 0.10]
 
+
+
+def test_grasp_pin_waits_only_for_exact_source_delivery():
+    """Known missing-bundle replies get bounded idempotent retries, never recapture."""
+    calls, waits = [], []
+    request = srv.PinLayoutObservation.Request()
+    request.observation_header.stamp.sec = 123
+
+    def backend(query):
+        calls.append(query.observation_header.stamp.sec)
+        return srv.PinLayoutObservation.Response(
+            success=len(calls) == 3,
+            status=('LAYOUT_OBSERVATION_PINNED' if len(calls) == 3 else
+                    'LAYOUT_SYNCHRONIZED_OBSERVATION_NOT_AVAILABLE;image_present=0'))
+
+    assert pin_observation_with_recovery(request, backend, waits.append).success
+    assert calls == [123, 123, 123] and waits == [.05, .10]
+
+
+def test_capture_retains_source_without_masking_capture_or_retention_failure():
+    """Image capture and grasp retention are separate reported outcomes."""
+    from task_pipeline.recipes import retain_captured_observation
+    capture = srv.CaptureObservation.Response(success=True, status='SYNCHRONIZED_OBSERVATION_READY')
+    capture.cloud.header.stamp.sec = 123
+    headers = []
+
+    def backend(query):
+        headers.append(query.observation_header)
+        return srv.PinLayoutObservation.Response(success=True, status='LAYOUT_OBSERVATION_PINNED')
+
+    result = retain_captured_observation(capture, backend)
+    assert result.success and result.status.endswith(';GRASP_OBSERVATION_PINNED')
+    assert headers == [capture.cloud.header]
+
+    def unavailable(query):
+        raise TimeoutError('SIMULATED_PIN_TIMEOUT')
+
+    other = srv.CaptureObservation.Response(success=True, status='SYNCHRONIZED_OBSERVATION_READY')
+    result = retain_captured_observation(other, unavailable)
+    assert result.success and result.status.endswith(';GRASP_RETENTION_FAILED:SIMULATED_PIN_TIMEOUT')
+    failed = srv.CaptureObservation.Response(status='SIMULATED_CAPTURE_FAILED')
+    assert retain_captured_observation(failed, backend).status == 'SIMULATED_CAPTURE_FAILED'
+    assert len(headers) == 1

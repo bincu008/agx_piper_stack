@@ -1,0 +1,774 @@
+[
+  {
+    "tool": "describe_workflow",
+    "arguments": {
+      "operation": "pick_place"
+    },
+    "result": {
+      "success": true,
+      "state": "COMPLETED",
+      "status": "WORKFLOW_DESCRIPTION",
+      "result": {
+        "operation": "pick_place",
+        "prerequisites": [
+          "Verified source mode and physical gate disabled; existing route-specific state checks (including empty hand for view planning) remain authoritative.",
+          "Server captures fresh data; failed/unknown producers stop dependents."
+        ],
+        "route": [
+          "capture_observation",
+          "pin_grasp_observation",
+          "pin_placement_observation",
+          "verify_presence",
+          "ground_object",
+          "segment_object",
+          "prepare_grasp_input",
+          "calculate_grasps",
+          "update_object",
+          "select_grasp",
+          "cache_grasp_plan",
+          "get_cached_grasp",
+          "verify_presence",
+          "ground_object",
+          "segment_object",
+          "find_placements",
+          "plan_next_best_view",
+          "prepare_pick_place",
+          "validate_prepared_pick_place"
+        ],
+        "completion": "QUEUED/RUNNING are acknowledgements, not completion.",
+        "outputs": "task_id, source mode, observation time, partial result and blocker; plan_id/revision only after actual motion preparation.",
+        "freshness": "Capture requires new synchronized RGB-D/manual FK*X; active object verification is 60s, grasp/prepared cache max 900s. Existing backend feedback/pose checks enforce stage-specific limits; retention is not proof the scene is unchanged. No one-second Qwen polling is used.",
+        "physical_execution": false
+      },
+      "SIMULATED": true,
+      "input_mode": "mock_replay",
+      "input_provenance": {
+        "ros_domain_id": 89,
+        "classification": "mock_replay_publishers",
+        "SIMULATED": true,
+        "topics": {
+          "/camera/color/image_raw": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/camera/depth_registered/points": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/joint_states": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/tcp_pose": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          }
+        },
+        "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+      }
+    }
+  },
+  {
+    "tool": "inspect_robot",
+    "arguments": {},
+    "result": {
+      "success": true,
+      "state": "COMPLETED",
+      "status": "ARM_STATE_READY",
+      "source_mode": "mock_replay",
+      "input_provenance": {
+        "ros_domain_id": 89,
+        "classification": "mock_replay_publishers",
+        "SIMULATED": true,
+        "topics": {
+          "/camera/color/image_raw": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/camera/depth_registered/points": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/joint_states": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/tcp_pose": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          }
+        },
+        "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+      },
+      "result": {
+        "tcp": {
+          "header": {
+            "stamp": {
+              "sec": 1794276875,
+              "nanosec": 865684830
+            },
+            "frame_id": "base_link"
+          },
+          "pose": {
+            "position": {
+              "x": -0.033173,
+              "y": -0.014603999999999999,
+              "z": 0.304517
+            },
+            "orientation": {
+              "x": 0.10393232884942685,
+              "y": 0.8477189241180944,
+              "z": 0.06477689851358068,
+              "w": 0.5161149582515087
+            }
+          }
+        },
+        "joints_rad": [
+          0.12938125745033965,
+          -0.010367255756846317,
+          -0.6560169059471087,
+          -0.11897909510845345,
+          1.2358501900446648,
+          0.3444058212960411
+        ],
+        "joint_names": [
+          "joint1",
+          "joint2",
+          "joint3",
+          "joint4",
+          "joint5",
+          "joint6"
+        ],
+        "gripper_width_m": -0.00028,
+        "timestamps": {
+          "joints": {
+            "sec": 1794276875,
+            "nanosec": 865684830
+          },
+          "tcp": {
+            "sec": 1794276875,
+            "nanosec": 865684830
+          },
+          "gripper": {
+            "nanosec": 885533333,
+            "sec": 1794276875
+          }
+        },
+        "feedback_age_seconds": {
+          "joints": 0.02905559539794922,
+          "tcp": 0.02905559539794922,
+          "gripper": 0.009207010269165039
+        },
+        "freshness": "Read does NOT certify feedback freshness or safety.",
+        "robot": {
+          "state": "IDLE",
+          "holding": null,
+          "pipeline_executing": false,
+          "physical_grasp_execution_enabled": false
+        },
+        "scene_memory_used": false
+      },
+      "SIMULATED": true,
+      "input_mode": "mock_replay"
+    }
+  },
+  {
+    "tool": "observe_scene",
+    "arguments": {
+      "request_id": "verify-observe-94dab91c6e034270b0ab74349fb60fd1",
+      "targets": [
+        "beige cup"
+      ],
+      "detail": "location"
+    },
+    "result": {
+      "task_id": "task_2ce442f3ee97399e4e11fc11a1e0edd5",
+      "state": "RUNNING",
+      "status": "RUNNING",
+      "source_mode": "mock_replay",
+      "created_at": 1794276875.9030426,
+      "updated_at": 1794276875.9501216,
+      "current_step": "capture_observation",
+      "last_successful_step": null,
+      "result": {
+        "targets": [
+          {
+            "name": "beige cup",
+            "status": "UNKNOWN"
+          }
+        ],
+        "frame": "base_link"
+      },
+      "success": false,
+      "SIMULATED": true,
+      "input_mode": "mock_replay",
+      "input_provenance": {
+        "ros_domain_id": 89,
+        "classification": "mock_replay_publishers",
+        "SIMULATED": true,
+        "topics": {
+          "/camera/color/image_raw": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/camera/depth_registered/points": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/joint_states": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/tcp_pose": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          }
+        },
+        "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+      }
+    }
+  },
+  {
+    "tool": "get_task_status",
+    "arguments": {
+      "task_id": "task_2ce442f3ee97399e4e11fc11a1e0edd5",
+      "wait_seconds": 40
+    },
+    "result": {
+      "task_id": "task_2ce442f3ee97399e4e11fc11a1e0edd5",
+      "state": "COMPLETED",
+      "status": "COMPLETE",
+      "source_mode": "mock_replay",
+      "created_at": 1794276875.9030426,
+      "updated_at": 1794276904.8265717,
+      "current_step": "capture_observation",
+      "last_successful_step": "store_segmented_target",
+      "observation_time": {
+        "stamp": {
+          "sec": 1794276876,
+          "nanosec": 27966694
+        },
+        "frame_id": "base_link"
+      },
+      "result": {
+        "targets": [
+          {
+            "name": "beige cup",
+            "status": "PRESENT",
+            "underlying_status": "PRESENT",
+            "mask": {
+              "context_id": "mcp_18ecf08a67c947cf8fc8399cd81a6695",
+              "step_id": "task_2ce442f3ee97399e4e11fc11a1e0edd5_target_0_segment",
+              "source_field": "mask"
+            },
+            "position_m": {
+              "x": 0.3178546726703644,
+              "y": 0.2103034108877182,
+              "z": 0.07310724258422852
+            },
+            "geometry_source_header": {
+              "stamp": {
+                "sec": 1794276876,
+                "nanosec": 27966694
+              },
+              "frame_id": "base_link"
+            }
+          }
+        ],
+        "frame": "base_link"
+      },
+      "success": true,
+      "SIMULATED": true,
+      "input_mode": "mock_replay",
+      "input_provenance": {
+        "ros_domain_id": 89,
+        "classification": "mock_replay_publishers",
+        "SIMULATED": true,
+        "topics": {
+          "/camera/color/image_raw": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/camera/depth_registered/points": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/joint_states": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/tcp_pose": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          }
+        },
+        "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+      }
+    }
+  },
+  {
+    "tool": "prepare_manipulation",
+    "arguments": {
+      "request_id": "verify-pick-place-e05ad32aae9740cf856609585a930ac8",
+      "operation": "pick_place",
+      "object_name": "beige cup",
+      "destination": "dark rectangular tray",
+      "lift_distance_m": 0.05
+    },
+    "result": {
+      "task_id": "task_5aec6ecced68b7117bccf19c7340d0ef",
+      "state": "RUNNING",
+      "status": "RUNNING",
+      "source_mode": "mock_replay",
+      "created_at": 1794276904.8491313,
+      "updated_at": 1794276904.9131808,
+      "current_step": "capture_observation",
+      "last_successful_step": null,
+      "result": {
+        "operation": "pick_place",
+        "cache_confirmed": false,
+        "cache_created": false,
+        "candidate_count": null,
+        "historical_result_not_current_readiness": true
+      },
+      "success": false,
+      "SIMULATED": true,
+      "input_mode": "mock_replay",
+      "input_provenance": {
+        "ros_domain_id": 89,
+        "classification": "mock_replay_publishers",
+        "SIMULATED": true,
+        "topics": {
+          "/camera/color/image_raw": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/camera/depth_registered/points": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/joint_states": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/tcp_pose": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          }
+        },
+        "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+      }
+    }
+  },
+  {
+    "tool": "get_task_status",
+    "arguments": {
+      "task_id": "task_5aec6ecced68b7117bccf19c7340d0ef",
+      "wait_seconds": 40
+    },
+    "result": {
+      "task_id": "task_5aec6ecced68b7117bccf19c7340d0ef",
+      "state": "RUNNING",
+      "status": "RUNNING",
+      "source_mode": "mock_replay",
+      "created_at": 1794276904.8491313,
+      "updated_at": 1794276944.993258,
+      "current_step": "ground_object",
+      "last_successful_step": "verify_presence",
+      "observation_time": {
+        "stamp": {
+          "sec": 1794276904,
+          "nanosec": 925679333
+        },
+        "frame_id": "base_link"
+      },
+      "result": {
+        "operation": "pick_place",
+        "cache_confirmed": false,
+        "cache_created": false,
+        "candidate_count": null,
+        "historical_result_not_current_readiness": true
+      },
+      "success": false,
+      "SIMULATED": true,
+      "input_mode": "mock_replay",
+      "input_provenance": {
+        "ros_domain_id": 89,
+        "classification": "mock_replay_publishers",
+        "SIMULATED": true,
+        "topics": {
+          "/camera/color/image_raw": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/camera/depth_registered/points": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/joint_states": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/tcp_pose": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          }
+        },
+        "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+      }
+    }
+  },
+  {
+    "tool": "get_task_status",
+    "arguments": {
+      "task_id": "task_5aec6ecced68b7117bccf19c7340d0ef",
+      "wait_seconds": 40
+    },
+    "result": {
+      "task_id": "task_5aec6ecced68b7117bccf19c7340d0ef",
+      "state": "RUNNING",
+      "status": "RUNNING",
+      "source_mode": "mock_replay",
+      "created_at": 1794276904.8491313,
+      "updated_at": 1794276986.08534,
+      "current_step": "ground_object",
+      "last_successful_step": "verify_presence",
+      "observation_time": {
+        "stamp": {
+          "sec": 1794276904,
+          "nanosec": 925679333
+        },
+        "frame_id": "base_link"
+      },
+      "result": {
+        "operation": "pick_place",
+        "cache_confirmed": true,
+        "cache_created": true,
+        "candidate_count": 6,
+        "historical_result_not_current_readiness": true
+      },
+      "success": false,
+      "SIMULATED": true,
+      "input_mode": "mock_replay",
+      "input_provenance": {
+        "ros_domain_id": 89,
+        "classification": "mock_replay_publishers",
+        "SIMULATED": true,
+        "topics": {
+          "/camera/color/image_raw": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/camera/depth_registered/points": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/joint_states": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/tcp_pose": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          }
+        },
+        "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+      }
+    }
+  },
+  {
+    "tool": "get_task_status",
+    "arguments": {
+      "task_id": "task_5aec6ecced68b7117bccf19c7340d0ef",
+      "wait_seconds": 40
+    },
+    "result": {
+      "task_id": "task_5aec6ecced68b7117bccf19c7340d0ef",
+      "state": "COMPLETED",
+      "status": "COMPLETE",
+      "source_mode": "mock_replay",
+      "created_at": 1794276904.8491313,
+      "updated_at": 1794277016.5712674,
+      "current_step": "ground_object",
+      "last_successful_step": "validate_prepared_pick_place",
+      "observation_time": {
+        "stamp": {
+          "sec": 1794276904,
+          "nanosec": 925679333
+        },
+        "frame_id": "base_link"
+      },
+      "result": {
+        "operation": "pick_place",
+        "cache_confirmed": true,
+        "cache_created": true,
+        "candidate_count": 6,
+        "historical_result_not_current_readiness": true
+      },
+      "plan": {
+        "plan_id": "task_5aec6ecced68b7117bccf19c7340d0ef_plan_4",
+        "revision": 4,
+        "kind": "prepare_pick_place",
+        "object_name": "beige cup",
+        "observation_header": {
+          "stamp": {
+            "sec": 1794276904,
+            "nanosec": 925679333
+          },
+          "frame_id": "base_link"
+        },
+        "ros_domain_id": 89,
+        "execution_allowed": false
+      },
+      "success": true,
+      "SIMULATED": true,
+      "input_mode": "mock_replay",
+      "input_provenance": {
+        "ros_domain_id": 89,
+        "classification": "mock_replay_publishers",
+        "SIMULATED": true,
+        "topics": {
+          "/camera/color/image_raw": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/camera/depth_registered/points": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/joint_states": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/tcp_pose": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          }
+        },
+        "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+      }
+    }
+  },
+  {
+    "tool": "prepare_manipulation",
+    "arguments": {
+      "request_id": "verify-pick-place-e05ad32aae9740cf856609585a930ac8",
+      "operation": "pick_place",
+      "object_name": "beige cup",
+      "destination": "dark rectangular tray",
+      "lift_distance_m": 0.05
+    },
+    "result": {
+      "task_id": "task_5aec6ecced68b7117bccf19c7340d0ef",
+      "state": "COMPLETED",
+      "status": "COMPLETE",
+      "source_mode": "mock_replay",
+      "created_at": 1794276904.8491313,
+      "updated_at": 1794277016.5712674,
+      "current_step": "ground_object",
+      "last_successful_step": "validate_prepared_pick_place",
+      "observation_time": {
+        "stamp": {
+          "sec": 1794276904,
+          "nanosec": 925679333
+        },
+        "frame_id": "base_link"
+      },
+      "result": {
+        "operation": "pick_place",
+        "cache_confirmed": true,
+        "cache_created": true,
+        "candidate_count": 6,
+        "historical_result_not_current_readiness": true
+      },
+      "plan": {
+        "plan_id": "task_5aec6ecced68b7117bccf19c7340d0ef_plan_4",
+        "revision": 4,
+        "kind": "prepare_pick_place",
+        "object_name": "beige cup",
+        "observation_header": {
+          "stamp": {
+            "sec": 1794276904,
+            "nanosec": 925679333
+          },
+          "frame_id": "base_link"
+        },
+        "ros_domain_id": 89,
+        "execution_allowed": false
+      },
+      "success": true,
+      "SIMULATED": true,
+      "input_mode": "mock_replay",
+      "input_provenance": {
+        "ros_domain_id": 89,
+        "classification": "mock_replay_publishers",
+        "SIMULATED": true,
+        "topics": {
+          "/camera/color/image_raw": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/camera/depth_registered/points": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/joint_states": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/tcp_pose": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          }
+        },
+        "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+      }
+    }
+  },
+  {
+    "tool": "validate_plan",
+    "arguments": {
+      "request_id": "verify-plan-65c0c249190448bb9e55c680fee84a5e",
+      "plan_id": "task_5aec6ecced68b7117bccf19c7340d0ef_plan_4",
+      "revision": 4
+    },
+    "result": {
+      "task_id": "task_22384686eba3c46bfe75308b9ff0129b",
+      "state": "COMPLETED",
+      "status": "ALL_MOTION_PLANNED;LIFT_TRANSFER_DESCENT_VALIDATED;OBJECT_UPRIGHT_VALIDATED;GUIDED_JOINT_LIFT_VALIDATED;LIFT_APF_ESCAPE_VALIDATED;LIFT_ROBOT_ENVIRONMENT_CHECK_BYPASSED;LIFT_ATTACHED_ENVIRONMENT_CHECK_BYPASSED;OK;NEAR_GRASP_SKIPPED;FINAL_APPROACH_FINGER_ENVIRONMENT_CHECK_BYPASSED;GRASP_CANDIDATES_TRIED=1;FLEXIBLE_WITHDRAWAL_CLEAR_ENDPOINT_VALIDATED;WITHDRAWAL_ROBOT_ENVIRONMENT_CHECK_BYPASSED;RETREAT_FROZEN_SCENE_VALIDATED;CACHED_HANDOFF_VALIDATED_NO_ACTUATION",
+      "source_mode": "mock_replay",
+      "created_at": 1794277044.3868058,
+      "updated_at": 1794277044.4398022,
+      "result": {
+        "validated": true,
+        "execution_allowed": false,
+        "historical_result_not_current_readiness": true,
+        "scene_currentness": "Immutable source checked, not a fresh visual confirmation. Refresh if the scene changed."
+      },
+      "plan": {
+        "plan_id": "task_5aec6ecced68b7117bccf19c7340d0ef_plan_4",
+        "revision": 4,
+        "kind": "prepare_pick_place",
+        "object_name": "beige cup",
+        "observation_header": {
+          "stamp": {
+            "sec": 1794276904,
+            "nanosec": 925679333
+          },
+          "frame_id": "base_link"
+        },
+        "ros_domain_id": 89,
+        "execution_allowed": false,
+        "task_id": "task_5aec6ecced68b7117bccf19c7340d0ef",
+        "source_mode": "mock_replay"
+      },
+      "success": true,
+      "SIMULATED": true,
+      "input_mode": "mock_replay",
+      "input_provenance": {
+        "ros_domain_id": 89,
+        "classification": "mock_replay_publishers",
+        "SIMULATED": true,
+        "topics": {
+          "/camera/color/image_raw": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/camera/depth_registered/points": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/joint_states": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          },
+          "/feedback/tcp_pose": {
+            "publisher_count": 1,
+            "publisher_nodes": [
+              "/mock_hardware"
+            ]
+          }
+        },
+        "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+      }
+    }
+  }
+]

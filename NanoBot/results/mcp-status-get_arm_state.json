@@ -1,0 +1,88 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"transport_outcome\": \"response\", \"response\": {\"success\": true, \"status\": \"ARM_STATE_READY\", \"joints\": {\"header\": {\"stamp\": {\"sec\": 1793722153, \"nanosec\": 856195211}, \"frame_id\": \"\"}, \"name\": [\"joint1\", \"joint2\", \"joint3\", \"joint4\", \"joint5\", \"joint6\", \"gripper\"], \"position\": [-0.04635594493296939, 0.559238398924023, -0.3569721919104002, 0.10716321607245184, 0.21528636323350056, 0.08351400470792868, -0.00049], \"velocity\": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], \"effort\": [0.127575, 1.148175, -5.1219, 0.0335454, -1.1980499999999998, 0.028753199999999996, -0.008]}, \"tcp_pose\": {\"header\": {\"stamp\": {\"sec\": 1793722153, \"nanosec\": 855790853}, \"frame_id\": \"base_link\"}, \"pose\": {\"position\": {\"x\": 0.118765, \"y\": -0.0034289999999999998, \"z\": 0.269198}, \"orientation\": {\"x\": 0.08858083113978926, \"y\": 0.8085184612292589, \"z\": 0.05049900492731413, \"w\": 0.5795698272921104}}}, \"gripper_width_m\": -0.00049}, \"detail\": \"Raw ROS response; inspect success/status/phase separately\"}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "transport_outcome": "response",
+    "response": {
+      "success": true,
+      "status": "ARM_STATE_READY",
+      "joints": {
+        "header": {
+          "stamp": {
+            "sec": 1793722153,
+            "nanosec": 856195211
+          },
+          "frame_id": ""
+        },
+        "name": [
+          "joint1",
+          "joint2",
+          "joint3",
+          "joint4",
+          "joint5",
+          "joint6",
+          "gripper"
+        ],
+        "position": [
+          -0.04635594493296939,
+          0.559238398924023,
+          -0.3569721919104002,
+          0.10716321607245184,
+          0.21528636323350056,
+          0.08351400470792868,
+          -0.00049
+        ],
+        "velocity": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "effort": [
+          0.127575,
+          1.148175,
+          -5.1219,
+          0.0335454,
+          -1.1980499999999998,
+          0.028753199999999996,
+          -0.008
+        ]
+      },
+      "tcp_pose": {
+        "header": {
+          "stamp": {
+            "sec": 1793722153,
+            "nanosec": 855790853
+          },
+          "frame_id": "base_link"
+        },
+        "pose": {
+          "position": {
+            "x": 0.118765,
+            "y": -0.0034289999999999998,
+            "z": 0.269198
+          },
+          "orientation": {
+            "x": 0.08858083113978926,
+            "y": 0.8085184612292589,
+            "z": 0.05049900492731413,
+            "w": 0.5795698272921104
+          }
+        }
+      },
+      "gripper_width_m": -0.00049
+    },
+    "detail": "Raw ROS response; inspect success/status/phase separately"
+  },
+  "isError": false
+}

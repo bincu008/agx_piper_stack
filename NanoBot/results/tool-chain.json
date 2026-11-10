@@ -1,0 +1,20 @@
+{
+  "passed": false,
+  "calls": 0,
+  "transcript": [
+    {
+      "role": "system",
+      "content": "Follow the test exactly. Use structured tool calls. Call calculate with 7 and 5. Then use its result plus 9 in another call. Then use that result plus 4. Finally report the final result. Never calculate without the tool."
+    },
+    {
+      "role": "user",
+      "content": "Run the three-step arithmetic test."
+    },
+    {
+      "content": "```json\n{\n  \"name\": \"calculate\",\n  \"arguments\": {\n    \"a\": 7,\n    \"b\": 5\n  }\n}\n```\n```json\n{\n  \"name\": \"calculate\",\n  \"arguments\": {\n    \"a\": 12,\n    \"b\": 9\n  }\n}\n```\n```json\n{\n  \"name\": \"calculate\",\n  \"arguments\": {\n    \"a\": 21,\n    \"b\": 4\n  }\n}\n```\n```json\n{\n  \"name\": \"calculate\",\n  \"arguments\": {\n    \"a\": 25,\n    \"b\": 0\n  }\n}\n```",
+      "role": "assistant",
+      "tool_calls": [],
+      "reasoning_content": ""
+    }
+  ]
+}

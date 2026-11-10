@@ -1,0 +1,18 @@
+# Read current synchronized observation; include_image may request one bounded
+# sensing-only refresh when stale, idle and stationary. No inference or motion.
+# An unavailable/old image is never silently presented as fresh.
+bool include_image
+---
+bool success
+string status
+std_msgs/Header observation_header
+sensor_msgs/Image image
+# Original ActiveVision manual FK(joints)*X result; never a TF lookup.
+geometry_msgs/TransformStamped camera_transform
+# Nearby measured feedback within 0.20 seconds of the source. These are not
+# a replacement for the authoritative synchronized camera_transform.
+sensor_msgs/JointState source_joints
+geometry_msgs/PoseStamped source_tcp
+# Compact provenance, independent ages, freshness and current-state metadata.
+# Never dense cloud buffers or serialized actuator commands.
+string state_json

@@ -968,3 +968,51 @@ def test_milestones_use_final_stage_poses_without_intermediate_samples():
     assert sent['/pipeline/prepared_placement'][-1].markers[-1].text == '3 Placement'
     review.clear()
     assert sent['/pipeline/prepared_lift'][-1].markers[0].action == Marker.DELETEALL
+
+
+def test_grasp_cache_default_retains_source_for_ten_minutes():
+    """A zero TTL uses 600 seconds; explicit shorter lifetimes remain supported."""
+    trial, events, _ = fixture()
+    created, source = trial.execution._cache['bowl']
+    source.ttl_seconds = 0
+    trial.execution._cache['bowl'] = (created-599, source)
+    assert trial.source('bowl')[0].object_name == 'bowl'
+    trial.execution._cache['bowl'] = (created-601, source)
+    with pytest.raises(RuntimeError, match='NO_FRESH_CACHED_GRASP'):
+        trial.source('bowl')
+    source.ttl_seconds = 30
+    trial.execution._cache['bowl'] = (created-31, source)
+    with pytest.raises(RuntimeError, match='NO_FRESH_CACHED_GRASP'):
+        trial.source('bowl')
+    assert not events
+
+
+def test_prepared_cache_check_after_one_minute_does_not_consume_source():
+    """Both cache readers accept the same extended lifetime without actuating."""
+    from my_actions.srv import GetCachedGrasp
+    trial, events, _ = fixture()
+    created, source = trial.execution._cache['bowl']
+    source.ttl_seconds = 900
+    trial.execution._cache['bowl'] = (created-120, source)
+    assert prepare(trial).success
+    trial.record['created'] -= 120
+    assert trial.get(PreparedGraspLift.Request(object_name='bowl'),
+                     PreparedGraspLift.Response()).success
+    assert trial.execution._cached(GetCachedGrasp.Request(object_name='bowl'),
+                                   GetCachedGrasp.Response()).success
+    assert 'bowl' in trial.execution._cache and not events
+
+
+def test_execution_consumes_public_cache_and_continues_with_frozen_source():
+    """A consumed grasp cannot be retrieved/replayed but its admitted stages continue."""
+    from my_actions.srv import ExecutePlan, GetCachedGrasp, PreparedGripperCommand
+    trial, _, _ = fixture()
+    assert prepare(trial).success
+    assert trial.execute_segment(ExecutePlan.Request(
+        object_name='bowl', plan_revision=1, segment='pregrasp'), ExecutePlan.Response()).success
+    assert 'bowl' not in trial.execution._cache
+    assert trial.record['execution_source'].object_name == 'bowl'
+    assert not trial.execution._cached(GetCachedGrasp.Request(object_name='bowl'),
+                                       GetCachedGrasp.Response()).success
+    assert trial.open_gripper(PreparedGripperCommand.Request(
+        object_name='bowl', plan_revision=1), PreparedGripperCommand.Response()).success

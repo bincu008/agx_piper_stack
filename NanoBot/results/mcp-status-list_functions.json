@@ -1,0 +1,134 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"mode\": \"preparation_only\", \"allowlist\": [\"cache_grasp_plan\", \"calculate_active_grasps\", \"calculate_grasps\", \"cancel_task\", \"capture_observation\", \"check_target_view\", \"describe_workflow\", \"ensure_scene_memory\", \"find_active_placements\", \"find_placements\", \"get_active_target\", \"get_arm_state\", \"get_cached_grasp\", \"get_execution_state\", \"get_floor_slots\", \"get_manipulation_memory\", \"get_observe_view\", \"get_prepared_grasp_lift\", \"get_prepared_pick_place\", \"get_spatial_context\", \"get_spatial_map\", \"get_step_context\", \"get_task_status\", \"get_workflow_example\", \"get_world_state\", \"ground_object\", \"inspect_robot\", \"list_functions\", \"observe_scene\", \"perceive_scene\", \"pin_grasp_observation\", \"pin_placement_observation\", \"plan_camera_retreat\", \"plan_camera_view\", \"plan_final_approach\", \"plan_lift\", \"plan_motion\", \"plan_next_best_view\", \"plan_placement\", \"prepare_grasp_input\", \"prepare_grasp_lift\", \"prepare_held_scene\", \"prepare_manipulation\", \"prepare_pick_place\", \"refine_grasp\", \"refresh_active_target\", \"require_target_view\", \"resolve_target\", \"run_step\", \"run_steps\", \"search_placements\", \"segment_object\", \"select_grasp\", \"solve_pose\", \"store_segmented_target\", \"submit_steps\", \"update_object\", \"validate_placements\", \"validate_plan\", \"validate_prepared_grasp_lift\", \"validate_prepared_pick_place\", \"verify_presence\"], \"disabled_tools\": [\"commit_floor_slots\", \"execute_placement_descent\", \"execute_placement_retreat\", \"execute_placement_transfer\", \"execute_plan\", \"execute_withdrawal\", \"gripper_close\", \"gripper_open\", \"move_to\", \"release_placed_object\"], \"discovery_notes\": {\"ros_catalog\": \"ROS API reference only; entries are NOT necessarily exposed or callable through MCP.\", \"mcp_tools\": \"Native MCP tools/list discovery definitions; availability depends on mode/allowlist and tool guards.\", \"allowlist\": \"Enabled tool names in this server mode; prerequisites and safety checks still apply.\", \"disabled_tools\": \"Blocked APIs, not permission to dispatch.\"}, \"ros_catalog\": [], \"mcp_tools\": [], \"summary_only\": true, \"input_provenance\": {\"ros_domain_id\": 89, \"classification\": \"mock_replay_publishers\", \"SIMULATED\": true, \"topics\": {\"/camera/color/image_raw\": {\"publisher_count\": 1, \"publisher_nodes\": [\"/mock_hardware\"]}, \"/camera/depth_registered/points\": {\"publisher_count\": 1, \"publisher_nodes\": [\"/mock_hardware\"]}, \"/feedback/joint_states\": {\"publisher_count\": 1, \"publisher_nodes\": [\"/mock_hardware\"]}, \"/feedback/tcp_pose\": {\"publisher_count\": 1, \"publisher_nodes\": [\"/mock_hardware\"]}}, \"detail\": \"DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate.\"}, \"SIMULATED\": true, \"input_mode\": \"mock_replay\"}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "mode": "preparation_only",
+    "allowlist": [
+      "cache_grasp_plan",
+      "calculate_active_grasps",
+      "calculate_grasps",
+      "cancel_task",
+      "capture_observation",
+      "check_target_view",
+      "describe_workflow",
+      "ensure_scene_memory",
+      "find_active_placements",
+      "find_placements",
+      "get_active_target",
+      "get_arm_state",
+      "get_cached_grasp",
+      "get_execution_state",
+      "get_floor_slots",
+      "get_manipulation_memory",
+      "get_observe_view",
+      "get_prepared_grasp_lift",
+      "get_prepared_pick_place",
+      "get_spatial_context",
+      "get_spatial_map",
+      "get_step_context",
+      "get_task_status",
+      "get_workflow_example",
+      "get_world_state",
+      "ground_object",
+      "inspect_robot",
+      "list_functions",
+      "observe_scene",
+      "perceive_scene",
+      "pin_grasp_observation",
+      "pin_placement_observation",
+      "plan_camera_retreat",
+      "plan_camera_view",
+      "plan_final_approach",
+      "plan_lift",
+      "plan_motion",
+      "plan_next_best_view",
+      "plan_placement",
+      "prepare_grasp_input",
+      "prepare_grasp_lift",
+      "prepare_held_scene",
+      "prepare_manipulation",
+      "prepare_pick_place",
+      "refine_grasp",
+      "refresh_active_target",
+      "require_target_view",
+      "resolve_target",
+      "run_step",
+      "run_steps",
+      "search_placements",
+      "segment_object",
+      "select_grasp",
+      "solve_pose",
+      "store_segmented_target",
+      "submit_steps",
+      "update_object",
+      "validate_placements",
+      "validate_plan",
+      "validate_prepared_grasp_lift",
+      "validate_prepared_pick_place",
+      "verify_presence"
+    ],
+    "disabled_tools": [
+      "commit_floor_slots",
+      "execute_placement_descent",
+      "execute_placement_retreat",
+      "execute_placement_transfer",
+      "execute_plan",
+      "execute_withdrawal",
+      "gripper_close",
+      "gripper_open",
+      "move_to",
+      "release_placed_object"
+    ],
+    "discovery_notes": {
+      "ros_catalog": "ROS API reference only; entries are NOT necessarily exposed or callable through MCP.",
+      "mcp_tools": "Native MCP tools/list discovery definitions; availability depends on mode/allowlist and tool guards.",
+      "allowlist": "Enabled tool names in this server mode; prerequisites and safety checks still apply.",
+      "disabled_tools": "Blocked APIs, not permission to dispatch."
+    },
+    "ros_catalog": [],
+    "mcp_tools": [],
+    "summary_only": true,
+    "input_provenance": {
+      "ros_domain_id": 89,
+      "classification": "mock_replay_publishers",
+      "SIMULATED": true,
+      "topics": {
+        "/camera/color/image_raw": {
+          "publisher_count": 1,
+          "publisher_nodes": [
+            "/mock_hardware"
+          ]
+        },
+        "/camera/depth_registered/points": {
+          "publisher_count": 1,
+          "publisher_nodes": [
+            "/mock_hardware"
+          ]
+        },
+        "/feedback/joint_states": {
+          "publisher_count": 1,
+          "publisher_nodes": [
+            "/mock_hardware"
+          ]
+        },
+        "/feedback/tcp_pose": {
+          "publisher_count": 1,
+          "publisher_nodes": [
+            "/mock_hardware"
+          ]
+        }
+      },
+      "detail": "DDS publisher identity snapshot; capture validates fresh sync. This is not an actuator readiness certificate."
+    },
+    "SIMULATED": true,
+    "input_mode": "mock_replay"
+  },
+  "isError": false
+}

@@ -1,0 +1,401 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_ros2_cancel_task",
+      "description": "Request cancellation of the existing calculation action between steps. CANCEL_PENDING is not confirmed cancellation and cannot interrupt an in-flight ROS service. It is not robot stop. Completed/unknown tasks are never replayed.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_ros2_describe_workflow",
+      "description": "Local read-only description of a supported route, inputs, prerequisites, freshness and outputs. No robot or scene calls. No internal IDs required.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "enum": [
+              "observe_scene",
+              "grasp",
+              "grasp_lift",
+              "pick_place",
+              "plan_camera_view"
+            ]
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_ros2_get_task_status",
+      "description": "Read the same calculation task and original blocker/results; optional bounded wait. Never starts/replays work. After restart/disconnect unknown outcomes stay unknown; diagnostic mode reveals the existing ROS context/job and producer receipts.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "wait_seconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 120,
+            "default": 0,
+            "description": "Optional bounded wait for this existing calculation; no polling loop."
+          },
+          "include_diagnostics": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_ros2_inspect_robot",
+      "description": "Read compact current feedback, independent timestamps and state. No scene inference. Feedback ages are evidence, not a motion-readiness certificate.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_ros2_observe_scene",
+      "description": "Observe named targets: server owns fresh capture, exact retention and same-context perception. presence uses verify_presence; location/mask resolves geometry; destination enables batch perception. Returns task_id and explicit state; RUNNING/QUEUED are NOT success. get_task_status retrieves the result. UNKNOWN is not absent.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Unique ID for a NEW task. Retry identical inputs with this same ID to find the same task; never replay unknown work with a new ID."
+          },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 15,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "detail": {
+            "enum": [
+              "presence",
+              "location",
+              "mask"
+            ],
+            "default": "location"
+          },
+          "destination": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "wait_seconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 120,
+            "default": 0,
+            "description": "Optional bounded wait for this existing calculation; no polling loop."
+          }
+        },
+        "required": [
+          "request_id",
+          "targets"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_ros2_plan_camera_view",
+      "description": "Calculate only; never move. relative requires frame=camera_optical, translation_m=[right,down,forward], rotation_rad=[roll,pitch,yaw]. Delegates loose get_observe_view endpoint checking; PARTIAL/fallback does not prove a safe full path. target requires exactly one target_name or target_cell_id and uses plan_next_best_view.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Unique ID for a NEW task. Retry identical inputs with this same ID to find the same task; never replay unknown work with a new ID."
+          },
+          "mode": {
+            "enum": [
+              "relative",
+              "target"
+            ]
+          },
+          "translation_m": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number"
+            }
+          },
+          "rotation_rad": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number"
+            }
+          },
+          "frame": {
+            "const": "camera_optical"
+          },
+          "target_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "target_cell_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "camera_distance_m": {
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": 1.0,
+            "default": 0.45
+          },
+          "wait_seconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 120,
+            "default": 0,
+            "description": "Optional bounded wait for this existing calculation; no polling loop."
+          }
+        },
+        "required": [
+          "request_id",
+          "mode"
+        ],
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "properties": {
+              "mode": {
+                "const": "relative"
+              }
+            },
+            "required": [
+              "translation_m",
+              "rotation_rad",
+              "frame"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "target_name"
+                  ]
+                },
+                {
+                  "required": [
+                    "target_cell_id"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "properties": {
+              "mode": {
+                "const": "target"
+              }
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "target_name"
+                ],
+                "not": {
+                  "required": [
+                    "target_cell_id"
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "target_cell_id"
+                ],
+                "not": {
+                  "required": [
+                    "target_name"
+                  ]
+                }
+              }
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "translation_m"
+                  ]
+                },
+                {
+                  "required": [
+                    "rotation_rad"
+                  ]
+                },
+                {
+                  "required": [
+                    "frame"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_ros2_prepare_manipulation",
+      "description": "Calculate only. grasp generates/selects/caches the full pool and confirms cache; grasp_lift additionally prepares/validates lift; pick_place requires destination and prepares/validates complete placement. Server owns all prerequisites. No physical execution. RUNNING requires get_task_status. Plan ID/revision exist only after an actual prepared plan is created. Retry same request_id to inspect same task.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Unique ID for a NEW task. Retry identical inputs with this same ID to find the same task; never replay unknown work with a new ID."
+          },
+          "operation": {
+            "enum": [
+              "grasp",
+              "grasp_lift",
+              "pick_place"
+            ]
+          },
+          "object_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "destination": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "lift_distance_m": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 0.3,
+            "default": 0.05
+          },
+          "wait_seconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 120,
+            "default": 0,
+            "description": "Optional bounded wait for this existing calculation; no polling loop."
+          }
+        },
+        "required": [
+          "request_id",
+          "operation",
+          "object_name"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "pick_place"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "destination"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_ros2_validate_plan",
+      "description": "Validate this exact server-issued plan_id/revision against current prepared source/feedback; stale plans block. No motion or cache consumption. A historical successful task is not current plan validity.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Unique ID for a NEW task. Retry identical inputs with this same ID to find the same task; never replay unknown work with a new ID."
+          },
+          "plan_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "request_id",
+          "plan_id",
+          "revision"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+]

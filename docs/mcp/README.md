@@ -1,3 +1,75 @@
+## MCP 3.6.0 — optional task-level profile
+
+Add `--task-tools` only in preparation_only mode to expose eight intent tools
+alongside the unchanged 54 diagnostics tools. Capture, producer bindings and
+workflow order are server-owned. No physical dispatch is enabled.
+See [task interface and Mac allowlist](TASK_INTERFACE.md) and
+[exact native schemas](TASK_TOOLS.json). Mock results remain explicitly simulated.
+
+## MCP 3.5.1 — explicit recorded-scene preparation
+
+Current replay validation runs on isolated domain 89 with real drivers stopped.
+`--preparation-only --require-mock-inputs` requires mock-only publishers and a
+dedicated mock ledger. The production live guard, TLS/auth and physical gates
+are unchanged. Results are explicitly SIMULATED=true / input_mode=mock_replay.
+Authenticated cup+tray and bowl+cup+tray perception passed (2/2 and 3/3), including
+MCP/ROS structured validation. This is recorded perception, not physical execution.
+See [startup and source guard](PREPARATION_ONLY.md) and [evidence](MOCK_VALIDATION.md).
+
+## MCP 3.5.0 — scene perception
+
+The scene parser now handles the complete Qwen JSON response, including exact
+key/value record arrays, and rejects ambiguous/conflicting output as unknown.
+`get_workflow_example(workflow="perceive_scene", object_name="cup",
+destination_name="tray")` provides a schema-only capture->perception example.
+Initial context_id is empty; later calls use result.structuredContent.context_id.
+Native mode remains preparation_only with 54 tools and physical gate false.
+Live result was SCENE_INFERENCE_UNKNOWN: PRESENCE_GROUNDING_CONFLICT on a nearly
+black RGB frame; structural validation passed, positive recognition did not.
+See the current validation report and journal; older deployment sections below
+remain historical evidence. Refresh native/profile discovery and resource caches.
+
+# Small-model workflow support — MCP 3.4.0
+
+For Qwen3.5-9B/Nanobot, call the new local read-only `get_workflow_example` tool
+first. It supplies exact ordered grasp/cache/pick-place request templates, with
+fresh IDs and the capture-to-pin binding. It executes nothing. Model-visible
+preparation descriptions are about 81% shorter; full metadata remains available.
+`list_functions(summary_only=true)` returns a small mode/allowlist snapshot while
+its default full response remains unchanged. Preparation-only mode now has 54
+tools: the existing 53 plus this documentation helper. Physical access is unchanged.
+
+Start with [Nanobot quickstart](NANOBOT.md) and the
+[adapter instructions](NANOBOT_ADAPTATION_PROMPT.md). Earlier deployment reports
+below are historical; query the actual mode and tool availability.
+
+# Source-retention and active-name guidance — MCP 3.3.2
+
+Pin the captured header before long inference calls and keep all seed/mask/header
+bindings on one source. Active grasp calculation explicitly requires the exact
+stored name in target_description. See the [source-cache recovery guide](TOOL_DEPENDENCIES.md#observation-cache-errors-pinning-and-source-identity).
+No cache size, planner/collision setting, physical gate or actuator path changed.
+Refresh discovery after updating MCP.
+
+# Cache-recovery guidance — MCP 3.3.1
+
+Missing-cache errors now include exact valid field names, same-context proposed
+recovery requests and observed producer results when available. Active-grasp
+calculation's internal input preparation is documented. Read
+[the recovery section](TOOL_DEPENDENCIES.md#grasp-cache-recovery-use-actual-fields-not-inferred-names)
+and refresh tool discovery. Input names, cache TTL, mode gates and durable receipt
+semantics are unchanged.
+
+# Dependency-aware discovery — MCP 3.3.0
+
+Tool schemas, callable allowlists and safety semantics are unchanged. Each tool
+now documents prerequisites, real producer bindings and a recommended sequence.
+Read [the dependency guide](TOOL_DEPENDENCIES.md), available through MCP as
+`ros-pipeline://tool-dependencies`; the generated structured graph is
+`ros-pipeline://tool-dependency-graph`. Restart only MCP to load this update;
+keep its existing mode, ROS domain, TLS/authentication and execution ledger.
+Earlier deployment notes below are historical observations, not live status.
+
 # Current deployment: non-actuating preparation
 
 MCP 3.2.0 is running in preparation_only mode with 53 tools, live-input provenance

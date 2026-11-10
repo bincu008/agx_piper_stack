@@ -453,6 +453,9 @@ def test_complete_bowl_clears_motion_caches_and_allows_next_cup():
     assert state.completed_stages[-1] == 'retreat' and state.expires_in_seconds == 0.
     trial.execution._guard()
     source.object_name = 'cup'
+    stamp = source.observation_header.stamp
+    trial.node.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(
+        nanoseconds=stamp.sec * 1_000_000_000 + stamp.nanosec + 1_000_000_000))
     events.clear()
     result = trial.execution._save(source, CacheGraspPlan.Response())
     assert result.success, result.status
@@ -470,7 +473,8 @@ def test_release_alone_does_not_clear_unfinished_withdrawal_session():
     source.object_name = 'cup'
     result = trial.execution._save(source, CacheGraspPlan.Response())
     assert not result.success and result.status == 'PREPARED_EXECUTION_SESSION_OWNS_ARM'
-    assert trial.record is not None and 'bowl' in trial.execution._cache
+    assert trial.record is not None and 'bowl' not in trial.execution._cache
+    assert trial.record['execution_source'].object_name == 'bowl'
 
 
 def test_retreat_speed_restore_failure_keeps_unknown_session_owned():
@@ -489,5 +493,6 @@ def test_retreat_speed_restore_failure_keeps_unknown_session_owned():
     trial.node.set_arm_speed = speed
     result = trial.execute_retreat(query, HeldMotionStage.Response())
     assert not result.success and result.status == 'STATE_UNKNOWN: ARM_SPEED_RESTORE_FAILED'
-    assert trial.record['phase'] == 'STATE_UNKNOWN' and 'bowl' in trial.execution._cache
+    assert trial.record['phase'] == 'STATE_UNKNOWN' and 'bowl' not in trial.execution._cache
+    assert trial.record['execution_source'].object_name == 'bowl'
     assert trial.node.state == 'ERROR'

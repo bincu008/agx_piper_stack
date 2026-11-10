@@ -1,3 +1,57 @@
+## Optional task facade — MCP 3.6.0
+
+`--task-tools` adds eight non-actuating intent tools in preparation_only mode.
+It reuses reviewed recipes, typed StepStore bindings, calculation action jobs and
+the same durable ledger. It does not enable physical dispatch. The original 54
+preparation tools keep their schemas and behavior. Read
+[TASK_INTERFACE.md](TASK_INTERFACE.md); schemas are in [TASK_TOOLS.json](TASK_TOOLS.json).
+Native resources: ros-pipeline://tasks and ros-pipeline://task-catalog.
+
+## Scene response contract — MCP 3.5.0, 2026-11-10
+
+`get_workflow_example(workflow="perceive_scene", object_name="cup",
+destination_name="tray")` returns capture -> batch perception, without execution.
+The first context_id is empty; copy the returned top-level context_id (native MCP
+result.structuredContent.context_id) to the next call. Preserve same-context
+image/cloud/camera_transform bindings and fresh IDs for new operations.
+Scene inference parses one complete JSON object or exact key/value record list;
+ambiguous, duplicate, inconsistent or malformed responses return
+SCENE_INFERENCE_UNKNOWN before scene-memory updates. Unknown is not absence.
+Preparation-only mode, physical gates and durable ledger barriers are unchanged.
+
+## Observation retention — MCP 3.4.2
+
+Shared capture attempts exact grasp observation retention before responding;
+inspect MCP `observation_retention.grasp_retained`, not capture success alone.
+Explicit pinning remains idempotent confirmation with typed capture.cloud.header.
+Grasp and placement pins are independent. Missing-message pins get bounded
+idempotent delivery recovery, never recapture/source substitution. Failures expose
+component diagnostics; do not guess eviction or blame the caller without evidence.
+See ros-pipeline://nanobot for the short sequence. Physical gates and ledger/
+unknown-state handling are unchanged.
+
+## Small-model quickstart — MCP 3.4.0, 2026-11-09
+
+First call `get_workflow_example` with workflow `grasp`, `grasp_cache` or
+`pick_place` and the exact object name. Copy its proposed inputs and substitute
+the returned capture context ID; the helper executes nothing. Prefer
+`list_functions(summary_only=true)` for mode discovery. Detailed dependencies
+remain in `_meta.rosPipeline` and resources. The preparation-only server now
+exposes 54 tools, including this local read-only helper. See
+[Nanobot quickstart](NANOBOT.md) for the recommended nine-tool grasp allowlist.
+Historical version-specific counts and deployment results below remain evidence
+of those earlier runs, not current readiness claims.
+
+## Dependency discovery update — MCP 3.3.0, 2026-11-09
+
+Read `ros-pipeline://tool-dependencies` and the structured
+`ros-pipeline://tool-dependency-graph`. Every tool's `_meta.rosPipeline` and
+model-visible description now include prerequisites, execution sequence and
+binding examples. Required, recommended, internal and alternative routes differ.
+Failures retain their original status and gain recovery guidance; unknown-state
+blocking and the actual mode allowlist remain unchanged. Refresh tool discovery
+on reconnect. See [dependency guide](TOOL_DEPENDENCIES.md).
+
 # ROS MCP workflow — version 3.2.0, 2026-11-03
 
 ## Current mode: non-actuating preparation
@@ -182,7 +236,7 @@ only after the previous task completes. Reconnection never resets this ownership
 Any dispatched failure, timeout, cancelled wait, crash while running, unconfirmed
 contact or mismatched post-state marks the gateway unknown and blocks all new
 actions. Backend waits are up to 300 seconds; master active-session timeout is
-independent (default 300 s); initial preparation lifetime is 60 s. First handoff
+independent (default 300 s); initial preparation lifetime is 900 s. First handoff
 validation has a 15 s wait. Prepared execution does not perform IK, refine or replan. Empty-hand move_to
 retains its existing VAMP planning/arrival cycles inside the master.
 

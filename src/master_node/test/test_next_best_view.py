@@ -384,3 +384,28 @@ def test_cube_target_uses_shared_map_and_rejects_ambiguous_names():
         planner.target(srv.PlanNextBestView.Request(target_cell_id='missing'))
     with pytest.raises(ValueError, match='EXCLUSIVE'):
         planner.target(srv.PlanNextBestView.Request(target_cell_id='x0_y0_z0', target_name='bowl'))
+
+
+@pytest.mark.parametrize('radius', [.35, .45, .60])
+def test_view_ownership_survives_real_ros_float32_roundtrip(radius):
+    """Exact ownership must compare canonical wire data, not unrounded Python floats."""
+    from rclpy.serialization import deserialize_message, serialize_message
+    view, calls = fixture()
+    result = view.plan(srv.PlanNextBestView.Request(
+        target_name='tray', camera_distance_m=radius), srv.PlanNextBestView.Response())
+    assert result.success, result.status
+    received = deserialize_message(serialize_message(result), srv.PlanNextBestView.Response)
+    assert view.record['result'] == received
+    assert not any(name == 'execute_trajectory' for name, _ in calls)
+
+
+def test_named_view_lookup_accepts_explicit_grasp_alias():
+    """Canonical memory locations can serve view requests with an explicit grasp instruction."""
+    view, _ = fixture()
+    view.node.manipulation_memory.snapshot = lambda: {
+        'active_objects': [{'name': 'beige cup', 'position': [.3, .1, .2]}],
+        'directory': {}, 'active_destination': None}
+    name, point = view.target(srv.PlanNextBestView.Request(
+        target_name=' BEIGE   cup, grasp its rim '))
+    assert name == 'beige cup'
+    assert point.tolist() == [.3, .1, .2]

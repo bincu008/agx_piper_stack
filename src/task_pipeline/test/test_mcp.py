@@ -12,7 +12,7 @@ from starlette.testclient import TestClient  # noqa: E402
 
 from task_pipeline.mcp.admission import AdmissionLedger  # noqa: E402
 from task_pipeline.mcp.contracts import (  # noqa: E402
-    ALLOWLIST, DISCOVERABLE, MANIPULATION, READS)
+    ALLOWLIST, DISCOVERABLE, LOCAL_DOCUMENTATION, MANIPULATION, READS)
 from task_pipeline.mcp.server import create_app, definitions  # noqa: E402
 
 
@@ -53,7 +53,7 @@ def test_discovery_schemas_auth_resources_and_deny_writes():
         response = rpc(client, 'tools/list').json()['result']
         assert {t['name'] for t in response['tools']} == DISCOVERABLE
         assert all(t['annotations']['readOnlyHint'] == (t['name'] in READS or
-                                                       t['name'] == 'list_functions')
+                                                       t['name'] in LOCAL_DOCUMENTATION)
                    for t in response['tools'])
         for tool in response['tools']:
             jsonschema.Draft202012Validator.check_schema(tool['inputSchema'])
@@ -72,7 +72,7 @@ def test_discovery_schemas_auth_resources_and_deny_writes():
         assert result['result']['isError']
         assert len(fake.calls) == 1
         resources = rpc(client, 'resources/list').json()['result']['resources']
-        assert len(resources) == 6
+        assert len(resources) == 8
         for resource in resources:
             content = rpc(client, 'resources/read', {'uri': resource['uri']}).json()
             assert content['result']['contents'][0]['text']
@@ -245,8 +245,8 @@ def test_bridge_timeout_unavailable_and_read_only_boundary():
 
     node = Node()  # no rclpy.init(), actual ROS node or DDS connection
     bridge = ReadBridge(node, timeout=.001)
-    assert len(node.created) == len(ALLOWLIST)-1
-    assert set(bridge.clients) == ALLOWLIST-{'list_functions'}
+    assert len(node.created) == len(ALLOWLIST)-len(LOCAL_DOCUMENTATION)
+    assert set(bridge.clients) == ALLOWLIST-LOCAL_DOCUMENTATION
     with pytest.raises(ValueError, match='READ_ONLY'):
         asyncio.run(bridge.call('execute_plan', {}))
     result = asyncio.run(bridge.call('get_world_state', {}))
@@ -326,7 +326,7 @@ def test_sdk_client_initialize_discovery_and_reconnection():
                             assert result.structuredContent['response']['state_json']
                             denied = await session.call_tool('execute_plan', {})
                             assert denied.isError
-                            assert len((await session.list_resources()).resources) == 6
+                            assert len((await session.list_resources()).resources) == 8
         assert len(fake.calls) == 2
 
     asyncio.run(run())
@@ -433,7 +433,7 @@ def test_enabled_agent_pipeline_discovery_and_typed_routing():
                                preparation=FakePreparation()),
                     base_url='http://127.0.0.1:8765') as client:
         listed = rpc(client, 'tools/list').json()['result']['tools']
-        assert len(listed) == 63
+        assert len(listed) == 64
         names = {tool['name'] for tool in listed}
         assert set(PREPARATION) <= names
         response = rpc(client, 'tools/call', dict(name='capture_observation', arguments={
@@ -465,7 +465,7 @@ def test_perception_only_blocks_motion_and_generic_queue_dispatch():
         catalog = rpc(client, 'tools/call', {'name': 'list_functions',
                                             'arguments': {}}).json()['result']['structuredContent']
         assert catalog['mode'] == 'perception_only'
-        assert len(catalog['allowlist']) == 11
+        assert len(catalog['allowlist']) == 12
         assert {'capture_observation', 'verify_presence', 'ground_object',
                 'segment_object'} <= set(catalog['allowlist'])
         for name in ('move_to', 'gripper_close', 'run_step', 'submit_steps', 'run_steps'):
@@ -552,7 +552,7 @@ def test_preparation_mode_lists_calculations_but_independently_denies_actuation(
         listing = rpc(client, 'tools/call', {'name': 'list_functions',
                                             'arguments': {}}).json()['result']['structuredContent']
         assert listing['mode'] == 'preparation_only'
-        assert len(listing['allowlist']) == 53
+        assert len(listing['allowlist']) == 54
         assert set(PREPARATION) <= set(listing['allowlist'])
         assert {'get_observe_view', 'run_step', 'submit_steps', 'run_steps'} <= set(
             listing['allowlist'])
@@ -571,3 +571,92 @@ def test_preparation_mode_lists_calculations_but_independently_denies_actuation(
 def test_preparation_mode_cannot_disable_live_guard():
     with pytest.raises(ValueError, match='REQUIRES_LIVE_INPUT_GUARD'):
         create_app(FakeReads(), TOKEN, DOCS, preparation_only=True)
+
+
+@pytest.mark.parametrize('classification,domain,accepted', [
+    ('mock_replay_publishers', 89, True),
+    ('mock_replay_publishers', 0, False),
+    ('replay_or_mixed', 89, False),
+    ('live_driver_publishers', 89, False),
+])
+def test_explicit_mock_preparation_requires_isolated_mock_only_sources(
+        classification, domain, accepted):
+    class MockReads(FakeReads):
+        def input_provenance(self):
+            return {'classification': classification, 'ros_domain_id': domain}
+
+    class MockPreparation:
+        async def call(self, name, arguments):
+            assert accepted, 'Source guard must reject before ROS dispatch'
+            return {'success': True, 'status': 'SIMULATED_CAPTURE'}
+
+    class NeverExecute:
+        async def call(self, *args):
+            pytest.fail('Mock mode must never construct/use physical dispatch')
+
+    with TestClient(create_app(MockReads(), TOKEN, DOCS, execution=NeverExecute(),
+                               preparation=MockPreparation(), preparation_only=True,
+                               require_mock_inputs=True), base_url='http://127.0.0.1:8765') as client:
+        result = rpc(client, 'tools/call', {'name': 'capture_observation', 'arguments': {
+            'context_id': '', 'step_id': 'mock_capture', 'request_id': 'mock_capture',
+            'arguments': {}, 'bindings': []}}).json()['result']
+        data = result['structuredContent']
+        assert data['success'] is accepted and data['SIMULATED'] is True
+        assert data['input_mode'] == 'mock_replay'
+        if not accepted:
+            assert data['status'] == 'ISOLATED_MOCK_INPUT_PROVENANCE_REQUIRED'
+        for tool in ('move_to', 'gripper_close', 'execute_plan'):
+            denied = rpc(client, 'tools/call', {'name': tool, 'arguments': {}}).json()['result']
+            assert denied['isError']
+        physical_step = {'step_id': 'forbidden', 'function_name': 'gripper_close',
+                         'arguments': {}, 'bindings': []}
+        for name, arguments in (
+                ('run_step', dict(physical_step, context_id='', request_id='bad_step')),
+                ('submit_steps', {'context_id': '', 'request_id': 'bad_queue',
+                                  'steps': [physical_step]})):
+            denied = rpc(client, 'tools/call', {'name': name,
+                                               'arguments': arguments}).json()['result']
+            assert denied['isError']
+        listing = rpc(client, 'tools/call', {'name': 'list_functions',
+                                           'arguments': {'summary_only': True}}).json()['result']
+        assert listing['structuredContent']['mode'] == 'preparation_only'
+        assert listing['structuredContent']['SIMULATED'] is True
+
+
+def test_mock_guard_cannot_be_used_with_physical_or_live_modes():
+    with pytest.raises(ValueError, match='EXCLUSIVE_PREPARATION_ONLY'):
+        create_app(FakeReads(), TOKEN, DOCS, require_mock_inputs=True)
+    with pytest.raises(ValueError, match='EXCLUSIVE_PREPARATION_ONLY'):
+        create_app(FakeReads(), TOKEN, DOCS, preparation_only=True,
+                   require_mock_inputs=True, require_live_inputs=True)
+
+
+def test_mock_provenance_requires_exactly_one_mock_owner_on_every_topic(monkeypatch):
+    from types import SimpleNamespace
+    from task_pipeline.mcp.bridge import ReadBridge
+    monkeypatch.setenv('ROS_DOMAIN_ID', '89')
+    entries = {topic: [SimpleNamespace(node_name='mock_hardware', node_namespace='/')]
+               for topic in ('/camera/color/image_raw', '/camera/depth_registered/points',
+                             '/feedback/joint_states', '/feedback/tcp_pose')}
+    bridge = ReadBridge.__new__(ReadBridge)
+    bridge.node = SimpleNamespace(get_publishers_info_by_topic=lambda topic: entries[topic])
+    assert bridge.input_provenance()['classification'] == 'mock_replay_publishers'
+    assert bridge.input_provenance()['SIMULATED'] is True
+    entries['/feedback/tcp_pose'] = []
+    assert bridge.input_provenance()['classification'] == 'replay_or_mixed'
+    assert bridge.input_provenance()['SIMULATED'] is False
+
+
+@pytest.mark.parametrize('domain,message', [('0', 'nonzero ROS_DOMAIN_ID'),
+                                             ('89', 'dedicated --execution-ledger')])
+def test_mock_cli_rejects_unsafe_domain_and_default_live_ledger_before_ros(
+        monkeypatch, tmp_path, capsys, domain, message):
+    from task_pipeline.mcp.server import main
+    monkeypatch.setenv('ROS_DOMAIN_ID', domain)
+    monkeypatch.setattr('sys.argv', ['pipeline_mcp', '--preparation-only',
+                                    '--require-mock-inputs', '--token-file',
+                                    str(tmp_path / 'unused_token')])
+    with pytest.raises(SystemExit) as result:
+        main()
+    assert result.value.code == 2
+    assert message in capsys.readouterr().err

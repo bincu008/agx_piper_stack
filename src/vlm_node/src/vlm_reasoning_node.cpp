@@ -128,7 +128,7 @@ public:
         this->declare_parameter<int>("edgesam_cpu_threads", 2);
         this->declare_parameter<int>("edgesam_min_mask_pixels", 80);
         this->declare_parameter<bool>("enable_view_repositioning", false);
-        this->declare_parameter<int>("grasp_plan_cache_ttl_sec", 60);
+        this->declare_parameter<int>("grasp_plan_cache_ttl_sec", 900);
         
         api_ip_ = this->get_parameter("api_server_ip").as_string();
         api_port_ = this->get_parameter("api_server_port").as_int();
@@ -187,7 +187,7 @@ public:
         enable_view_repositioning_ =
             this->get_parameter("enable_view_repositioning").as_bool();
         grasp_plan_cache_ttl_sec_ = static_cast<int>(std::clamp<int64_t>(
-            this->get_parameter("grasp_plan_cache_ttl_sec").as_int(), 1, 60));
+            this->get_parameter("grasp_plan_cache_ttl_sec").as_int(), 1, 900));
         RCLCPP_INFO(
             this->get_logger(),
             "RoboBrain endpoint: %s (model=%s, timeout=%ds, grounding uses original image; other image_limit=%dpx, "
@@ -445,7 +445,7 @@ private:
     std::string edgesam_initialization_error_;
     int edgesam_min_mask_pixels_ = 80;
     bool enable_view_repositioning_ = false;
-    int grasp_plan_cache_ttl_sec_ = 10;
+    int grasp_plan_cache_ttl_sec_ = 900;
 
     struct CachedGraspPlan {
         std::string object_name;

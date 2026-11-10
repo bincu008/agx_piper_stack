@@ -143,7 +143,53 @@ class PreparedExecution:
                 self.save(key, {'fingerprint': fingerprint, 'result': response})
             return response
 
-    async def _call(self, name, arguments):
+    async def _open(self, arguments):
+        """Durably dispatch the fixed open-only master API; never free closing/release."""
+        key = 'request:' + arguments['request_id']
+        fingerprint = json.dumps(['open_empty_hand', arguments], sort_keys=True, allow_nan=False)
+        current, dispatched = self.load('current'), False
+        try:
+            previous = self.load(key)
+            if previous:
+                if previous['fingerprint'] != fingerprint:
+                    raise ValueError('REQUEST_ID_REUSED_WITH_DIFFERENT_ARGUMENTS')
+                return dict(previous.get('result') or outcome('unknown', 'OPEN_OUTCOME_UNKNOWN'),
+                            dispatched=False)
+            if current and (current.get('unknown') or not current.get('complete')):
+                raise ValueError('OTHER_OR_UNKNOWN_EXECUTION_SESSION_OWNS_ARM')
+            world = await self.transport.request('get_world_state', {}, 5.)
+            robot = json.loads(world['state_json'])['robot']
+            if (not robot.get('physical_grasp_execution_enabled') or
+                    robot.get('state') != 'IDLE' or robot.get('holding') is not None or
+                    robot.get('pipeline_executing')):
+                raise ValueError('OPEN_REQUIRES_ENABLED_IDLE_EMPTY_HAND')
+            current = {'task_id': 'open:' + arguments['request_id'], 'running': True,
+                       'complete': False, 'unknown': False}
+            self.save('current', current)
+            self.save(key, {'fingerprint': fingerprint})
+            dispatched = True
+            result = await self.transport.request('open_empty_hand', {
+                k: v for k, v in arguments.items() if k != 'request_id'}, 15.)
+            if not result.get('success') or not result.get('feedback_confirmed'):
+                raise RuntimeError('GRIPPER_OPENING_NOT_CONFIRMED')
+            current.update(running=False, complete=True)
+            self.save('current', current)
+            response = outcome('response', 'Fresh opening detected; aperture not calibrated',
+                               result, True)
+            self.save(key, {'fingerprint': fingerprint, 'result': response})
+            return response
+        except BaseException as error:
+            response = outcome('unknown' if dispatched else 'rejected', str(error),
+                               dispatched=dispatched)
+            if dispatched:
+                current.update(running=False, unknown=True)
+                self.save('current', current)
+                self.save(key, {'fingerprint': fingerprint, 'result': response})
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            return response
+
+    async def _call(self, name, arguments, prepared_kind='prepare_pick_place'):
         current = None
         dispatched = False
         request_key = 'request:'+arguments['request_id']
@@ -190,14 +236,21 @@ class PreparedExecution:
                     raise ValueError('MCP_MUST_OWN_EXECUTION_FROM_PREPARED_START')
                 # This is a handoff check, not planning or actuation. It captures
                 # the source-associated selected pose before any physical stage.
-                checked = await self.transport.request('validate_prepared_pick_place',
+                if prepared_kind not in ('prepare_pick_place', 'prepare_grasp_lift'):
+                    raise ValueError('UNSUPPORTED_PREPARED_HANDOFF_KIND')
+                validator = ('validate_prepared_pick_place' if prepared_kind ==
+                             'prepare_pick_place' else 'validate_prepared_grasp_lift')
+                checked = await self.transport.request(validator,
                                                        {'object_name': ref['object_name']}, 15.)
                 if (not checked['success'] or
                         checked['plan_revision'] != state['plan_revision']):
-                    raise ValueError('COMPLETE_PICK_PLACE_HANDOFF_REQUIRED: '+checked['status'])
+                    raise ValueError('COMPLETE_PREPARED_HANDOFF_REQUIRED: '+checked['status'])
                 current = dict(ref, unknown=False, running=False, complete=False,
                                verified=False, closes=0, operations=[],
-                               selected_pose=checked['selected_pose'])
+                               selected_pose=checked.get('selected_pose'),
+                               prepared_kind=prepared_kind)
+            if current.get('prepared_kind', 'prepare_pick_place') != prepared_kind:
+                raise ValueError('PREPARED_HANDOFF_KIND_CHANGED')
             stage = self.stage(name, query)
             if stage in current['operations']:
                 raise ValueError('STAGE_ALREADY_COMPLETED; use the original request_id')
@@ -285,7 +338,9 @@ class RosExecutionTransport:
         from task_pipeline.registry import FUNCTIONS
         self.node = node
         names = set(MANIPULATION) | {'get_execution_state', 'validate_prepared_pick_place',
-                                     'get_arm_state', 'get_world_state'}
+                                     'get_arm_state', 'get_world_state', 'get_observe_view',
+                                     'plan_next_best_view',
+                                     'validate_prepared_grasp_lift', 'open_empty_hand'}
         self.clients = {name: node.create_client(FUNCTIONS[name].service_type,
                                                  FUNCTIONS[name].endpoint) for name in names}
 
